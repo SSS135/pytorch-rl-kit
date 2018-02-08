@@ -1,0 +1,8 @@
+tensorboardX
+PIL
+scikit-learn
+torchvision
+gym
+torch
+numpy
+cv2
