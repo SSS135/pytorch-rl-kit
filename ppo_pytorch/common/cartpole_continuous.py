@@ -5,21 +5,21 @@ from gym.envs.registration import register
 
 register(
     id='CartPoleContinuous-v0',
-    entry_point='mylib.rl.common.cartpole_continuous:CartPoleContinuousEnv',
+    entry_point='mylib.ppo_pytorch.common.cartpole_continuous:CartPoleContinuousEnv',
     max_episode_steps=200,
     reward_threshold=195.0,
 )
 
 register(
     id='CartPoleContinuous-v1',
-    entry_point='mylib.rl.common.cartpole_continuous:CartPoleContinuousEnv',
+    entry_point='mylib.ppo_pytorch.common.cartpole_continuous:CartPoleContinuousEnv',
     max_episode_steps=500,
     reward_threshold=475.0,
 )
 
 register(
     id='CartPoleContinuous-v2',
-    entry_point='mylib.rl.common.cartpole_continuous:CartPoleContinuousEnv',
+    entry_point='mylib.ppo_pytorch.common.cartpole_continuous:CartPoleContinuousEnv',
     max_episode_steps=2500,
     reward_threshold=2300.0,
 )

@@ -9,7 +9,6 @@ def create_mlp_kwargs(**kwargs):
     """
     Get hyperparameters for simple envs like CartPole or Acrobot
     Args:
-        train_frames: Frames to decay learning rate and clipping.
         **kwargs: Any arguments accepted by `PPO`
 
     Returns: Parameters to initialize PPO
@@ -20,12 +19,9 @@ def create_mlp_kwargs(**kwargs):
         policy_clip=0.1,
         value_clip=0.1,
         ppo_iters=6,
-        entropy_bonus=0.01,
         horizon=64,
         batch_size=128,
-        grad_clip_norm=0.5,
-        value_loss_scale=0.5,
-        learning_decay_frames=2e5,
+        learning_decay_frames=5e5,
         model_factory=MLPActorCritic,
         image_observation=False,
         cuda_eval=False,
@@ -39,7 +35,6 @@ def create_cnn_kwargs(**kwargs):
     """
     Get hyperparameters for Atari
     Args:
-        train_frames: Frames to decay learning rate and clipping.
         **kwargs: Any arguments accepted by `PPO`
 
     Returns: Parameters to initialize PPO
@@ -50,13 +45,10 @@ def create_cnn_kwargs(**kwargs):
         policy_clip=0.1,
         value_clip=0.1,
         ppo_iters=4,
-        entropy_bonus=0.01,
         horizon=128,
         batch_size=32 * 8,
-        value_loss_scale=0.5,
-        grad_clip_norm=0.5,
         learning_decay_frames=10e6,
-        model_factory=partial(CNNActorCritic, cnn_kind='large'),
+        model_factory=CNNActorCritic,
         image_observation=True,
         cuda_eval=True,
         cuda_train=True,

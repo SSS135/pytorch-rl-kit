@@ -1,8 +1,7 @@
 tensorboardX
-PIL
-scikit-learn
-torchvision
-gym
+Pillow
+gym[classic_control]
 torch
 numpy
-cv2
+opencv
+scipy

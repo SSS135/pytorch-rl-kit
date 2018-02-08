@@ -64,7 +64,7 @@ class PPO(RLBase):
                  value_clip=0.1,
                  cuda_eval=False,
                  cuda_train=False,
-                 grad_clip_norm=20,
+                 grad_clip_norm=2,
                  log_time_interval=None,
                  learning_decay_frames=1e6,
                  reward_scale=1.0,
