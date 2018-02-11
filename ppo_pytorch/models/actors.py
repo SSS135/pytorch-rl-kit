@@ -6,6 +6,7 @@ import gym
 import numpy as np
 import torch.nn as nn
 import torch.nn.init as init
+from ppo_pytorch.common.reference_batchnorm import RefBatchNorm2d
 from torch import autograd
 from torch.autograd import Variable
 
@@ -37,14 +38,14 @@ class Actor(nn.Module):
     """
 
     def __init__(self, obs_space: gym.Space, action_space: gym.Space, norm: str = None,
-                 weight_init=init.orthogonal, weight_init_gain=2 ** 0.5):
+                 weight_init=init.orthogonal, weight_init_gain=math.sqrt(2)):
         super().__init__()
         self.obs_space = obs_space
         self.action_space = action_space
         self.weight_init_gain = weight_init_gain
         self.weight_init = weight_init
         self.norm = norm
-        assert norm in (None, 'layer', 'batch')
+        assert norm in (None, 'layer', 'batch', 'ref_batch')
 
         self.do_log = False
         self.logger = None
@@ -173,36 +174,52 @@ class CNNActor(Actor):
         self.activation = activation
         assert cnn_kind in ('small', 'large', 'custom')
 
-        # create convolutional layers
-        if cnn_kind == 'small': # from A3C paper
-            self.convs = nn.ModuleList([
-                nn.Conv2d(obs_space.shape[0], 16, 8, 4),
-                nn.Conv2d(16, 32, 4, 2)])
-            self.linear = nn.Linear(2592, 256)
-        elif cnn_kind == 'large': # Nature DQN
-            self.convs = nn.ModuleList([
-                nn.Conv2d(obs_space.shape[0], 32, 8, 4),
-                nn.Conv2d(32, 64, 4, 2),
-                nn.Conv2d(64, 64, 3, 1)])
-            self.linear = nn.Linear(3136, 512)
-        elif cnn_kind == 'custom': # custom
-            self.convs = nn.ModuleList(
-                [nn.Conv2d(obs_space.shape[0] if i == 0 else 32, 32, 3, 2) for i in range(4)])
-            self.linear = nn.Linear(512, 512)
+        def make_layer(transf):
+            parts = [transf]
 
-        # create normalization layers
-        if self.norm == 'layer':
-            self.linear_norm = LayerNorm1d(self.linear.out_features)
-            self.conv_norms = nn.ModuleList([LayerNorm2d(c.out_channels) for c in self.convs])
-        elif self.norm == 'batch':
-            self.linear_norm = nn.BatchNorm1d(self.linear.out_features)
-            self.conv_norms = nn.ModuleList([nn.BatchNorm2d(c.out_channels) for c in self.convs])
-        else:
-            self.register_parameter('linear_norm', None)
-            self.register_parameter('conv_norms', None)
+            is_linear = isinstance(transf, nn.Linear)
+            features = transf.out_features if is_linear else transf.out_channels
+            if self.norm == 'layer':
+                norm_cls = LayerNorm1d if is_linear else LayerNorm2d
+            elif self.norm == 'batch':
+                norm_cls = nn.BatchNorm1d if is_linear else nn.BatchNorm2d
+            elif self.norm == 'ref_batch':
+                norm_cls = RefBatchNorm2d
+            else:
+                norm_cls = None
+            if norm_cls is not None and not is_linear:
+                parts.append(norm_cls(features))
+
+            parts.append(activation())
+
+            return nn.Sequential(*parts)
+
+        # create convolutional layers
+        if cnn_kind == 'small': # from A3C paper (675,840 parameters)
+            self.convs = nn.ModuleList([
+                make_layer(nn.Conv2d(obs_space.shape[0], 16, 8, 4)),
+                make_layer(nn.Conv2d(16, 32, 4, 2)),
+            ])
+            self.linear = make_layer(nn.Linear(2592, 256))
+        elif cnn_kind == 'large': # Nature DQN (1,683,456 parameters)
+            self.convs = nn.ModuleList([
+                make_layer(nn.Conv2d(obs_space.shape[0], 32, 8, 4)),
+                make_layer(nn.Conv2d(32, 64, 4, 2)),
+                make_layer(nn.Conv2d(64, 64, 3, 1)),
+            ])
+            self.linear = make_layer(nn.Linear(3136, 512))
+        elif cnn_kind == 'custom': # custom (6,950,912 parameters)
+            nf = 64
+            self.convs = nn.ModuleList([
+                make_layer(nn.Conv2d(obs_space.shape[0], nf, 4, 2, 1)),
+                make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0)),
+                make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1)),
+                make_layer(nn.Conv2d(nf * 4, nf * 8, 4, 2, 0)),
+            ])
+            self.linear = make_layer(nn.Linear(nf * 8 * 4 * 4, 512))
 
         # create head
-        self.head = head_factory(self.linear.out_features, self.pd)
+        self.head = head_factory(self.linear[0].out_features, self.pd)
 
         self.reset_weights()
 
@@ -217,25 +234,19 @@ class CNNActor(Actor):
             input = Variable(input.data, requires_grad=True)
 
         x = input
-        for i, conv in enumerate(self.convs):
+        for i, layer in enumerate(self.convs):
             # run conv layer
-            x = conv(x)
-            if self.conv_norms is not None:
-                x = self.conv_norms[i](x)
-            x = self.activation()(x)
-
+            x = layer(x)
             # log
             if self.do_log:
-                self.log_conv_activations(i, conv, x)
-                self.log_conv_filters(i, conv)
+                self.log_conv_activations(i, layer[0], x)
+                self.log_conv_filters(i, layer[0])
 
         # flatten convolution output
         x = x.view(x.size(0), -1)
         # run linear layer
         x = self.linear(x)
-        if self.linear_norm is not None:
-            x = self.linear_norm(x)
-        x = self.activation()(x)
+
         ac_out = self.head(x)
 
         if self.do_log:
@@ -280,111 +291,3 @@ class CNNActor(Actor):
         # img = make_conv_heatmap(img, scale=2*img.std())
         img = make_grid(img, 4, normalize=True, fill_value=0.1)
         self.logger.add_image('state attention', img, self._step)
-
-
-# class _CNNActor(Actor):
-#     """
-#     Convolution network.
-#     """
-#     def __init__(self, obs_space, action_space, head_factory, cnn_kind='large',
-#                  activation=nn.LeakyReLU, **kwargs):
-#         """
-#         Args:
-#             obs_space: Env's observation space
-#             action_space: Env's action space
-#             head_factory: Function which accept (hidden vector size, `ProbabilityDistribution`) and return `HeadBase`
-#             cnn_kind: Type of cnn.
-#                 'small' - small CNN from arxiv DQN paper (Mnih et al. 2013)
-#                 'large' - bigger CNN from Nature DQN paper (Mnih et al. 2015)
-#                 'custom' - largest CNN of custom structure
-#             activation: Activation function
-#         """
-#         super().__init__(obs_space, action_space, **kwargs)
-#         self.activation = activation
-#         assert cnn_kind in ('small', 'large', 'custom')
-#
-#         # create convolutional layers
-#         if cnn_kind == 'small': # from A3C paper
-#             self.convs = nn.ModuleList([
-#                 nn.Conv2d(obs_space.shape[0], 16, 8, 4),
-#                 nn.Conv2d(16, 32, 4, 2)])
-#             self.linear = nn.Linear(2592, 256)
-#         elif cnn_kind == 'large': # Nature DQN
-#             self.convs = nn.ModuleList([
-#                 nn.Conv2d(obs_space.shape[0], 32, 8, 4),
-#                 nn.Conv2d(32, 64, 4, 2),
-#                 nn.Conv2d(64, 64, 3, 1)])
-#             self.linear = nn.Linear(3136, 512)
-#         elif cnn_kind == 'custom': # custom
-#             self.convs = nn.ModuleList(
-#                 [nn.Conv2d(obs_space.shape[0] if i == 0 else 32, 32, 3, 2) for i in range(4)])
-#             self.linear = nn.Linear(512, 512)
-#
-#         # create normalization layers
-#         if self.norm == 'layer':
-#             self.linear_norm = LayerNorm1d(self.linear.out_features)
-#             self.conv_norms = nn.ModuleList([LayerNorm2d(c.out_channels) for c in self.convs])
-#         elif self.norm == 'batch':
-#             self.linear_norm = nn.BatchNorm1d(self.linear.out_features)
-#             self.conv_norms = nn.ModuleList([nn.BatchNorm2d(c.out_channels) for c in self.convs])
-#         else:
-#             self.register_parameter('linear_norm', None)
-#             self.register_parameter('conv_norms', None)
-#
-#         # create head
-#         self.head = head_factory(self.linear.out_features, self.pd)
-#
-#         self.reset_weights()
-#
-#     def reset_weights(self):
-#         super().reset_weights()
-#         self.head.reset_weights()
-#
-#     def _forward(self, x):
-#         for i, conv in enumerate(self.convs):
-#             # run conv layer
-#             x = conv(x)
-#             if self.conv_norms is not None:
-#                 x = self.conv_norms[i](x)
-#             x = self.activation()(x)
-#
-#             # log
-#             if self.do_log:
-#                 self.log_conv_activations(i, conv, x)
-#                 self.log_conv_filters(i, conv)
-#
-#         # flatten convolution output
-#         x = x.view(x.size(0), -1)
-#         # run linear layer
-#         x = self.linear(x)
-#         if self.linear_norm is not None:
-#             x = self.linear_norm(x)
-#         x = self.activation()(x)
-#
-#         if self.do_log:
-#             self.log.add_histogram('conv linear', x, self._step)
-#
-#         return self.head(x)
-#
-#     def log_conv_activations(self, index: int, conv: nn.Conv2d, x: Variable):
-#         img = x[0].data.unsqueeze(1).clone()
-#         img = make_conv_heatmap(img)
-#         img = make_grid(img, nrow=round(math.sqrt(conv.out_channels)), normalize=False)
-#         self.log.add_image('conv activations {} img'.format(index), img, self._step)
-#         self.log.add_histogram('conv activations {} hist'.format(index), x[0], self._step)
-#
-#     def log_conv_filters(self, index: int, conv: nn.Conv2d):
-#         channels = conv.in_channels * conv.out_channels
-#         shape = conv.weight.data.shape
-#         kernel_h, kernel_w = shape[2], shape[3]
-#         img = conv.weight.data.view(channels, 1, kernel_h, kernel_w).clone()
-#         max_img_size = 100 * 5
-#         img_size = channels * math.sqrt(kernel_h * kernel_w)
-#         if img_size > max_img_size:
-#             channels = channels * (max_img_size / img_size)
-#             channels = math.ceil(math.sqrt(channels))**2
-#             img = img[:channels]
-#         img = make_conv_heatmap(img, scale=2*img.std())
-#         img = make_grid(img, nrow=round(math.sqrt(channels)), normalize=False)
-#         self.log.add_image('conv featrues {} img'.format(index), img, self._step)
-#         self.log.add_histogram('conv features {} hist'.format(index), conv.weight.data, self._step)

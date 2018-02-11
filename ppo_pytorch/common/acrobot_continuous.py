@@ -5,7 +5,7 @@ from gym.envs.registration import register
 
 register(
     id='AcrobotContinuous-v1',
-    entry_point='mylib.ppo_pytorch.common.acrobot_continuous:AcrobotContinuousEnv',
+    entry_point='ppo_pytorch.common.acrobot_continuous:AcrobotContinuousEnv',
     max_episode_steps=500,
 )
 

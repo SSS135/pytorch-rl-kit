@@ -47,4 +47,4 @@ def normalized_columns_initializer(weights, std=1.0):
 
 def image_to_float(x):
     name = (x.data if isinstance(x, Variable) else x).__class__.__name__
-    return x if name.find('Byte') == -1 else x.float().div_(127.5).sub_(1)
+    return x if name.find('Byte') == -1 else x.float().div_(255)

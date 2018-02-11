@@ -7,8 +7,7 @@ if sys.version_info.major != 3:
           "Python {}. The installation will likely fail.".format(sys.version_info.major))
 
 setup(name='ppo_pytorch',
-      packages=[package for package in find_packages()
-                if package.startswith('ppo_pytorch')],
+      packages=['ppo_pytorch'],
       install_requires=[
           'gym[mujoco,atari,classic_control]',
           'scipy',

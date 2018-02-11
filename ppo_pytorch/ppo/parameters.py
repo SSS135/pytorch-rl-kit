@@ -44,7 +44,7 @@ def create_cnn_kwargs(**kwargs):
         optimizer_factory=partial(optim.Adam, lr=2.5e-4, eps=1e-5),
         policy_clip=0.1,
         value_clip=0.1,
-        ppo_iters=4,
+        ppo_iters=3,
         horizon=128,
         batch_size=32 * 8,
         learning_decay_frames=10e6,
