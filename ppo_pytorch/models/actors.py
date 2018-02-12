@@ -6,7 +6,7 @@ import gym
 import numpy as np
 import torch.nn as nn
 import torch.nn.init as init
-from ppo_pytorch.common.reference_batchnorm import RefBatchNorm2d
+from ..common.reference_batchnorm import RefBatchNorm2d, RefBatchNorm1d
 from torch import autograd
 from torch.autograd import Variable
 
@@ -22,14 +22,13 @@ class ActorOutput:
     """
 
     def __init__(self, probs=None, state_values=None, conv_out=None, hidden_code=None,
-                 action_values=None, head_raw=None, gan_d=None):
+                 action_values=None, head_raw=None):
         self.probs = probs
         self.state_values = state_values
         self.conv_out = conv_out
         self.hidden_code = hidden_code
         self.action_values = action_values
         self.head_raw = head_raw
-        self.gan_d = gan_d
 
 
 class Actor(nn.Module):
@@ -180,17 +179,17 @@ class CNNActor(Actor):
             is_linear = isinstance(transf, nn.Linear)
             features = transf.out_features if is_linear else transf.out_channels
             if self.norm == 'layer':
-                norm_cls = LayerNorm1d if is_linear else LayerNorm2d
+                norm_cls = LayerNorm1d if is_linear else partial(nn.InstanceNorm2d, affine=True)
             elif self.norm == 'batch':
                 norm_cls = nn.BatchNorm1d if is_linear else nn.BatchNorm2d
             elif self.norm == 'ref_batch':
-                norm_cls = RefBatchNorm2d
+                norm_cls = RefBatchNorm1d if is_linear else RefBatchNorm2d
             else:
                 norm_cls = None
             if norm_cls is not None and not is_linear:
                 parts.append(norm_cls(features))
 
-            parts.append(activation())
+            parts.append(nn.ReLU() if is_linear else activation()) #fixme
 
             return nn.Sequential(*parts)
 
@@ -203,9 +202,9 @@ class CNNActor(Actor):
             self.linear = make_layer(nn.Linear(2592, 256))
         elif cnn_kind == 'large': # Nature DQN (1,683,456 parameters)
             self.convs = nn.ModuleList([
-                make_layer(nn.Conv2d(obs_space.shape[0], 32, 8, 4)),
-                make_layer(nn.Conv2d(32, 64, 4, 2)),
-                make_layer(nn.Conv2d(64, 64, 3, 1)),
+                make_layer(nn.Conv2d(obs_space.shape[0], 32, 8, 4, bias=self.norm is None)),#fixme
+                make_layer(nn.Conv2d(32, 64, 4, 2, bias=self.norm is None)),
+                make_layer(nn.Conv2d(64, 64, 3, 1, bias=self.norm is None)),
             ])
             self.linear = make_layer(nn.Linear(3136, 512))
         elif cnn_kind == 'custom': # custom (6,950,912 parameters)
