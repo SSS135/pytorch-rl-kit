@@ -25,29 +25,29 @@ Training code does not print any information to console, only available output i
 
 ## Results
 
-#### CartPole-v1
-![CartPole-v1](images/cartpole-v1.png)
-
-#### CartPoleContinuous-v2
-![CartPoleContinuous-v2](images/cartpolecontinuous-v2.png)
-
 #### PongNoFrameskip-v4
-![CartPoleContinuous-v2](images/pong.png)
-
-![CartPoleContinuous-v2](images/pong_activations.png)
-
-![CartPoleContinuous-v2](images/pong_filters.png)
-
-![CartPoleContinuous-v2](images/pong_attention.png)
+<img src="images/pong.png" width="500">
+Activations of first convolution layer
+<img src="images/pong_activations.png" width="300">
+Filters of first convolution layer
+<img src="images/pong_filters.png" width="300">
+Absolute value of gradients of state pixels (sort of pixel importance)
+<img src="images/pong_attention.png" width="300">
 
 #### BreakoutNoFrameskip-v4
-![CartPoleContinuous-v2](images/breakout.png)
+<img src="images/breakout.png" width="500">
 
 #### QbertNoFrameskip-v4
-![CartPoleContinuous-v2](images/qbert.png)
+<img src="images/qbert.png" width="500">
 
 #### SpaceInvadersNoFrameskip-v4
-![CartPoleContinuous-v2](images/spaceinvaders.png)
+<img src="images/spaceinvaders.png" width="500">
 
 #### SeaquestNoFrameskip-v4
-![CartPoleContinuous-v2](images/seaquest.png)
+<img src="images/seaquest.png" width="500">
+
+#### CartPole-v1
+<img src="images/cartpole-v1.png" width="500">
+
+#### CartPoleContinuous-v2
+<img src="images/cartpolecontinuous-v2.png" width="500">
