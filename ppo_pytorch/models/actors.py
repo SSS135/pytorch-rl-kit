@@ -6,7 +6,6 @@ import gym
 import numpy as np
 import torch.nn as nn
 import torch.nn.init as init
-from ..common.reference_batchnorm import RefBatchNorm2d, RefBatchNorm1d
 from torch import autograd
 from torch.autograd import Variable
 
@@ -44,7 +43,7 @@ class Actor(nn.Module):
         self.weight_init_gain = weight_init_gain
         self.weight_init = weight_init
         self.norm = norm
-        assert norm in (None, 'layer', 'batch', 'ref_batch')
+        assert norm in (None, 'layer', 'batch')
 
         self.do_log = False
         self.logger = None
@@ -182,14 +181,12 @@ class CNNActor(Actor):
                 norm_cls = LayerNorm1d if is_linear else partial(nn.InstanceNorm2d, affine=True)
             elif self.norm == 'batch':
                 norm_cls = nn.BatchNorm1d if is_linear else nn.BatchNorm2d
-            elif self.norm == 'ref_batch':
-                norm_cls = RefBatchNorm1d if is_linear else RefBatchNorm2d
             else:
                 norm_cls = None
-            if norm_cls is not None and not is_linear:
+            if norm_cls is not None:
                 parts.append(norm_cls(features))
 
-            parts.append(nn.ReLU() if is_linear else activation()) #fixme
+            parts.append(activation())
 
             return nn.Sequential(*parts)
 
@@ -202,9 +199,9 @@ class CNNActor(Actor):
             self.linear = make_layer(nn.Linear(2592, 256))
         elif cnn_kind == 'large': # Nature DQN (1,683,456 parameters)
             self.convs = nn.ModuleList([
-                make_layer(nn.Conv2d(obs_space.shape[0], 32, 8, 4, bias=self.norm is None)),#fixme
-                make_layer(nn.Conv2d(32, 64, 4, 2, bias=self.norm is None)),
-                make_layer(nn.Conv2d(64, 64, 3, 1, bias=self.norm is None)),
+                make_layer(nn.Conv2d(obs_space.shape[0], 32, 8, 4)),
+                make_layer(nn.Conv2d(32, 64, 4, 2)),
+                make_layer(nn.Conv2d(64, 64, 3, 1)),
             ])
             self.linear = make_layer(nn.Linear(3136, 512))
         elif cnn_kind == 'custom': # custom (6,950,912 parameters)

@@ -17,7 +17,6 @@ from ..common.gae import calc_advantages, calc_returns
 from ..common.multi_dataset import MultiDataset
 from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
-from ..common.reference_batchnorm import update_ref_batch, forward_with_ref_batch
 from ..models import MLPActorCritic
 
 
@@ -258,9 +257,6 @@ class PPO(RLBase):
         if next(self.model.parameters()).is_cuda != self.cuda_train:
             self.model = self.model.cuda() if self.cuda_train else self.model.cpu()
 
-        if self.model.norm == 'ref_batch':
-            update_ref_batch(self.model, data.states)
-
         # create dataloader
         dataset = MultiDataset(data.states, data.probs_old, data.values_old, data.actions, data.advantages,
                                data.returns)
@@ -274,16 +270,7 @@ class PPO(RLBase):
                     st = Variable(st.data.cuda())
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
-                # if self.model.norm == 'ref_batch':
-                #     update_ref_batch_norm(self.model, st.data, update_momentum=True,
-                #                           ref_size=st.shape[0], ref_replaced_samples=st.shape[0])
-                #     # update_ref_batch_norm(self.model)
-                # self.optimizer.zero_grad()
-                # execute action-value network
-                if self.model.norm == 'ref_batch':
-                    actor_out = forward_with_ref_batch(self.model, st)
-                else:
-                    actor_out = self.model(st)
+                actor_out = self.model(st)
                 # get loss
                 loss, kl = self._get_ppo_loss(actor_out.probs.cpu(), po, actor_out.state_values.cpu(), vo, ac, adv, ret)
 
@@ -300,9 +287,6 @@ class PPO(RLBase):
                 self.logger.add_scalar('clip mult', self.clip_mult, self.frame)
                 self.logger.add_scalar('total loss', loss, self.frame)
                 self.logger.add_scalar('kl', kl, self.frame)
-
-        if self.model.norm == 'ref_batch':
-            forward_with_ref_batch(self.model, None)
 
     def _from_numpy(self, x, dtype=None, cuda=False):
         """
