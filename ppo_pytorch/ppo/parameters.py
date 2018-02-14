@@ -45,6 +45,8 @@ def create_cnn_kwargs(**kwargs):
         policy_clip=0.1,
         value_clip=0.1,
         ppo_iters=3,
+        constraint='clip_mod',
+        grad_clip_norm=2,
         horizon=128,
         batch_size=32 * 8,
         learning_decay_frames=10e6,
