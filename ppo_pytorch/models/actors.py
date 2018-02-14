@@ -218,7 +218,7 @@ class CNNActor(Actor):
                 make_layer(nn.Conv2d(nf * 4, nf * 8, 4, 2, 0)),
             ])
             self.linear = make_layer(nn.Linear(nf * 8 * 4 * 4, 512))
-        elif cnn_kind == 'rl_a3c_pytorch':
+        elif cnn_kind == 'rl_a3c_pytorch': # 622,720 parameters
             # https://github.com/dgriff777/rl_a3c_pytorch/blob/master/model.py
             nf = 32
             self.convs = nn.ModuleList([
