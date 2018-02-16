@@ -153,7 +153,8 @@ class CNNActor(Actor):
     Convolution network.
     """
     def __init__(self, obs_space, action_space, head_factory, cnn_kind='large',
-                 cnn_activation=nn.ReLU, linear_activation=nn.ReLU, dropout=0, **kwargs):        """
+                 cnn_activation=nn.ReLU, linear_activation=nn.ReLU, dropout=0, **kwargs):
+        """
         Args:
             obs_space: Env's observation space
             action_space: Env's action space
