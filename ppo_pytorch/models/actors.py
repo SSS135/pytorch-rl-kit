@@ -4,8 +4,11 @@ from typing import Optional, List, Callable
 
 import gym
 import numpy as np
+import torch
 import torch.nn as nn
 import torch.nn.init as init
+import torch.nn.functional as F
+from ..common.pre_act_res_net import PreActBlockCustom, Empty
 from torch import autograd
 from torch.autograd import Variable
 
@@ -150,8 +153,7 @@ class CNNActor(Actor):
     Convolution network.
     """
     def __init__(self, obs_space, action_space, head_factory, cnn_kind='large',
-                 activation=nn.ReLU, dropout=0, **kwargs):
-        """
+                 cnn_activation=nn.ReLU, linear_activation=nn.ReLU, dropout=0, **kwargs):        """
         Args:
             obs_space: Env's observation space
             action_space: Env's action space
@@ -160,11 +162,13 @@ class CNNActor(Actor):
                 'small' - small CNN from arxiv DQN paper (Mnih et al. 2013)
                 'large' - bigger CNN from Nature DQN paper (Mnih et al. 2015)
                 'custom' - largest CNN of custom structure
-            activation: Activation function
+            cnn_activation: Activation function
         """
         super().__init__(obs_space, action_space, **kwargs)
-        self.activation = activation
-        assert cnn_kind in ('small', 'large', 'custom')
+        self.cnn_activation = cnn_activation
+        self.linear_activation = linear_activation
+        self.cnn_kind = cnn_kind
+        # assert cnn_kind in ('small', 'large', 'custom')
 
         def make_layer(transf):
             parts = [transf]
@@ -177,10 +181,10 @@ class CNNActor(Actor):
                 norm_cls = nn.BatchNorm1d if is_linear else nn.BatchNorm2d
             else:
                 norm_cls = None
-            if norm_cls is not None:
+            if norm_cls is not None and not is_linear:
                 parts.append(norm_cls(features))
 
-            parts.append(activation())
+            parts.append(linear_activation() if is_linear else cnn_activation())
 
             return nn.Sequential(*parts)
 
@@ -208,6 +212,72 @@ class CNNActor(Actor):
                 nn.Dropout2d(dropout),
             ])
             self.linear = make_layer(nn.Linear(nf * 8 * 4 * 4, 512))
+        elif cnn_kind == 'rl_a3c_pytorch': # 622,720 parameters
+            # https://github.com/dgriff777/rl_a3c_pytorch/blob/master/model.py
+            nf = 32
+            self.convs = nn.ModuleList([
+                make_layer(nn.Conv2d(obs_space.shape[0], nf, 5, 1, 2)),
+                nn.MaxPool2d(2, 2),
+                make_layer(nn.Conv2d(nf, nf, 5, 1, 1)),
+                nn.MaxPool2d(2, 2),
+                make_layer(nn.Conv2d(nf, 2 * nf, 4, 1, 1)),
+                nn.MaxPool2d(2, 2),
+                make_layer(nn.Conv2d(2 * nf, 2 * nf, 3, 1, 1)),
+                nn.MaxPool2d(2, 2),
+            ])
+            self.linear = make_layer(nn.Linear(1024, 512))
+        elif cnn_kind == 'depthwise':
+            nf = 64
+            self.convs = nn.ModuleList([
+                # i x 84 x 84
+                make_layer(nn.Conv2d(obs_space.shape[0], nf, 4, 2, 0)),
+                # 1f x 40 x 40
+                make_layer(nn.Conv2d(nf, nf, 4, 2, 1)),
+                # (1 + 1)f x 20 x 20
+                make_layer(nn.Conv2d(nf * 2, nf * 2, 4, 2, 1)),
+                # (2 + 2)f x 10 x 10
+                make_layer(nn.Conv2d(nf * 4, nf * 4, 4, 2, 1)),
+                # (4 + 4)f x 5 x 5
+            ])
+            self.linear = make_layer(nn.Linear(nf * 8 * 5 * 5, 512))
+        elif cnn_kind == 'resnet':
+            nf = 32
+            if self.norm == 'layer':
+                norm = partial(nn.InstanceNorm2d, affine=True)
+            elif self.norm == 'batch':
+                norm = nn.BatchNorm2d
+            else:
+                norm = None
+
+            self.convs = nn.ModuleList([
+                # i x 84 x 84
+                nn.Conv2d(obs_space.shape[0], nf, 4, 2, 0),
+                nn.Sequential(
+                    PreActBlockCustom(nf, nf, 1, activation=cnn_activation, norm=norm),
+                    PreActBlockCustom(nf, nf, 1, activation=cnn_activation, norm=norm),
+                ),
+                nn.Sequential(
+                    PreActBlockCustom(nf, 2 * nf, 2, activation=cnn_activation, norm=norm),
+                    PreActBlockCustom(2 * nf, 2 * nf, 1, activation=cnn_activation, norm=norm),
+                ),
+                nn.Sequential(
+                    PreActBlockCustom(2 * nf, 4 * nf, 2, activation=cnn_activation, norm=norm),
+                    PreActBlockCustom(4 * nf, 4 * nf, 1, activation=cnn_activation, norm=norm),
+                ),
+                nn.Sequential(
+                    PreActBlockCustom(4 * nf, 8 * nf, 2, activation=cnn_activation, norm=norm),
+                    PreActBlockCustom(8 * nf, 8 * nf, 1, activation=cnn_activation, norm=norm),
+                ),
+                nn.Conv2d(8 * nf, nf, 1, 1, bias=False),
+                # nn.Sequential(
+                #     norm(8 * nf),
+                #     nn.Conv2d(8 * nf, nf, 1, 1, bias=False),
+                #     cnn_activation(),
+                # ),
+            ])
+            self.linear = make_layer(nn.Linear(nf * 6 * 6, 512))
+        else:
+            raise NotImplementedError(cnn_kind)
 
         # create head
         self.head = head_factory(self.linear[0].out_features, self.pd)
@@ -227,9 +297,13 @@ class CNNActor(Actor):
         x = input
         for i, layer in enumerate(self.convs):
             # run conv layer
-            x = layer(x)
+            if self.cnn_kind == 'depthwise' and i != 0:
+                out = layer(x)
+                x = torch.cat([F.max_pool2d(x, 2), out], 1)
+            else:
+                x = layer(x)
             # log
-            if self.do_log:
+            if self.do_log and isinstance(layer, nn.Sequential) and isinstance(layer[0], nn.Conv2d):
                 self.log_conv_activations(i, layer[0], x)
                 self.log_conv_filters(i, layer[0])
 
