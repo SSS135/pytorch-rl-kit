@@ -164,7 +164,7 @@ class PPO(RLBase):
         probs, values = ac_out.probs.data.cpu().numpy(), ac_out.state_values.data.cpu().numpy()
 
         # add step to history
-        if rewards is not None:
+        if len(self.sample.states) != 0:
             self.sample.rewards.append(rewards)
             self.sample.dones.append(dones)
         self.sample.states.append(states)
@@ -172,7 +172,7 @@ class PPO(RLBase):
         self.sample.values.append(values)
         self.sample.actions.append(actions)
 
-        if len(self.sample.states) >= self.horizon:
+        if len(self.sample.rewards) >= self.horizon:
             self._train()
 
         return actions
@@ -213,19 +213,17 @@ class PPO(RLBase):
         norm_rewards = norm_rewards.flatten()
 
         # convert data to Tensors
-        probs_old = torch.cat(self._from_numpy(sample.probs, dtype=np.float32), dim=0)
-        values_old = torch.cat(self._from_numpy(sample.values, dtype=np.float32), dim=0)
-        actions = torch.cat(self._from_numpy(sample.actions, dtype=self.model.pd.dtype_numpy), dim=0)
+        probs_old = torch.cat(self._from_numpy(sample.probs[:-1], dtype=np.float32), dim=0)
+        values_old = torch.cat(self._from_numpy(sample.values[:-1], dtype=np.float32), dim=0)
+        actions = torch.cat(self._from_numpy(sample.actions[:-1], dtype=self.model.pd.dtype_numpy), dim=0)
         returns = self._from_numpy(np_returns, np.float32)
         advantages = self._from_numpy(np_advantages, np.float32)
-        states = torch.cat(sample.states, dim=0)
+        states = torch.cat(sample.states[:-1], dim=0)
         dones = self._from_numpy(dones, np.float32)
         rewards = self._from_numpy(norm_rewards, np.float32)
 
         # clear collected experience which is converted to Tensors and not needed anymore
-        self.sample = Sample(states=sample.states[-1:], probs=sample.probs[-1:],
-                             values=sample.values[-1:], actions=sample.actions[-1:],
-                             rewards=[], dones=[])
+        self.sample = Sample(states=[], probs=[], values=[], actions=[], rewards=[], dones=[])
 
         if self._do_log:
             if states.dim() == 4:

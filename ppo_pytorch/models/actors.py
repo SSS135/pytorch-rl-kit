@@ -144,19 +144,13 @@ class MLPActor(Actor):
         head.hidden_code = hidden
         return head
 
-    def forward_on_hidden_code(self, hidden):
-        return self.head(hidden)
-
-    def params_actor(self):
-        return self.parameters()
-
 
 class CNNActor(Actor):
     """
     Convolution network.
     """
     def __init__(self, obs_space, action_space, head_factory, cnn_kind='large',
-                 activation=nn.ReLU, **kwargs):
+                 activation=nn.ReLU, dropout=0, **kwargs):
         """
         Args:
             obs_space: Env's observation space
@@ -211,6 +205,7 @@ class CNNActor(Actor):
                 make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0)),
                 make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1)),
                 make_layer(nn.Conv2d(nf * 4, nf * 8, 4, 2, 0)),
+                nn.Dropout2d(dropout),
             ])
             self.linear = make_layer(nn.Linear(nf * 8 * 4 * 4, 512))
 
