@@ -4,7 +4,27 @@ import torch
 import torch.nn.functional
 from torch import nn
 from torch.autograd import Variable
-from torchqrnn.forget_mult import ForgetMult
+# from torchqrnn.forget_mult import ForgetMult
+
+
+class ForgetMult(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, f, x, hidden_init=None, use_cuda=False):
+        result = []
+        ###
+        forgets = f.split(1, dim=0)
+        prev_h = hidden_init
+        for i, h in enumerate((f * x).split(1, dim=0)):
+            if prev_h is not None: h = h + (1 - forgets[i]) * prev_h
+            # h is (1, batch, hidden) when it needs to be (batch_hidden)
+            # Calling squeeze will result in badness if batch size is 1
+            h = h.view(h.size()[1:])
+            result.append(h)
+            prev_h = h
+        ###
+        return torch.stack(result)
 
 
 class QRNNLayer(nn.Module):
@@ -28,7 +48,7 @@ class QRNNLayer(nn.Module):
         - h_n (batch, hidden_size): tensor containing the hidden state for t=seq_len
     """
 
-    def __init__(self, input_size, hidden_size=None, save_prev_x=False, zoneout=0, window=1, output_gate=True, use_cuda=True):
+    def __init__(self, input_size, hidden_size=None, save_prev_x=False, zoneout=0, window=1, output_gate=False, use_cuda=True):
         super(QRNNLayer, self).__init__()
 
         assert window in [1, 2], "This QRNN implementation currently only handles convolutional window of size 1 or size 2"
@@ -75,7 +95,7 @@ class QRNNLayer(nn.Module):
             Y = Y.view(seq_len, batch_size, 2 * self.hidden_size)
             Z, F = Y.chunk(2, dim=2)
         ###
-        Z = torch.nn.functional.tanh(Z)
+        Z = torch.nn.functional.elu(Z)
         F = torch.nn.functional.sigmoid(F)
 
         # If zoneout is specified, we perform dropout on the forget gates in F
@@ -93,12 +113,12 @@ class QRNNLayer(nn.Module):
         F = F.contiguous()
         # The O gate doesn't need to be contiguous as it isn't used in the CUDA kernel
 
+        if reset_flags is not None:
+            F = 1 - (1 - F) * (1 - reset_flags.unsqueeze(-1))
+
         # Forget Mult
         # For testing QRNN without ForgetMult CUDA kernel, C = Z * F may be useful
         C = ForgetMult()(F, Z, hidden, use_cuda=self.use_cuda)
-
-        if reset_flags is not None:
-            C = C * (1 - reset_flags)
 
         # Apply (potentially optional) output gate
         if self.output_gate:
@@ -172,3 +192,46 @@ class QRNN(torch.nn.Module):
         next_hidden = torch.cat(next_hidden, 0).view(self.num_layers, *next_hidden[0].size()[-2:])
 
         return input, next_hidden
+
+
+class DenseQRNN(torch.nn.Module):
+    def __init__(self, input_size, hidden_size,
+                 num_layers=1, bias=True, batch_first=False,
+                 dropout=0, bidirectional=False, layers=None, **kwargs):
+        assert bidirectional == False, 'Bidirectional QRNN is not yet supported'
+        assert batch_first == False, 'Batch first mode is not yet supported'
+        assert bias == True, 'Removing underlying bias is not yet supported'
+
+        super().__init__()
+
+        self.layers = torch.nn.ModuleList(layers if layers else [
+            QRNNLayer(input_size if l == 0 else input_size + l * hidden_size,
+                      hidden_size, **kwargs)
+            for l in range(num_layers)])
+
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = len(layers) if layers else num_layers
+        self.bias = bias
+        self.batch_first = batch_first
+        self.dropout = dropout
+        self.bidirectional = bidirectional
+
+    def reset(self):
+        r'''If your convolutional window is greater than 1, you must reset at the beginning of each new sequence'''
+        [layer.reset() for layer in self.layers]
+
+    def forward(self, input, hidden=None, reset_flags=None):
+        next_hidden = []
+
+        for i, layer in enumerate(self.layers):
+            new_input, hn = layer(input, None if hidden is None else hidden[i], reset_flags)
+            input = torch.cat([input, new_input], 2)
+            next_hidden.append(hn)
+
+            if self.dropout != 0 and i < len(self.layers) - 1:
+                input = torch.nn.functional.dropout(input, p=self.dropout, training=self.training, inplace=False)
+
+        next_hidden = torch.cat(next_hidden, 0).view(self.num_layers, *next_hidden[0].size()[-2:])
+
+        return new_input, next_hidden

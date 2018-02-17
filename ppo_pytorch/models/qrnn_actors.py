@@ -14,11 +14,12 @@ from ..common.layer_norm import LayerNorm1d, LayerNorm2d
 from ..common.make_grid import make_grid
 from ..common.probability_distributions import make_pd
 from .actors import Actor
+from ..common.qrnn import QRNN, DenseQRNN
 
 
 class QRNNActor(Actor):
     def __init__(self, obs_space: gym.Space, action_space: gym.Space, head_factory: Callable,
-                 hidden_sizes=(128, 128), activation=nn.ELU, **kwargs):
+                 hidden_size=128, num_layers=3, **kwargs):
         """
         Args:
             obs_space: Env's observation space
@@ -28,26 +29,16 @@ class QRNNActor(Actor):
             activation: Activation function
         """
         super().__init__(obs_space, action_space, **kwargs)
-        self.hidden_sizes = hidden_sizes
-        self.activation = activation
-
         obs_len = int(np.product(obs_space.shape))
-
-        self.linear = self.create_mlp(obs_len, None, hidden_sizes, activation, self.norm)
-        self.head = head_factory(hidden_sizes[-1], self.pd)
+        self.qrnn = DenseQRNN(obs_len, hidden_size, num_layers)
+        self.head = head_factory(hidden_size, self.pd)
         self.reset_weights()
 
     def reset_weights(self):
         super().reset_weights()
         self.head.reset_weights()
 
-    def forward(self, input):
-        x = input
-        for i, layer in enumerate(self.linear):
-            x = layer(x)
-            if self.do_log:
-                self.logger.add_histogram(f'layer {i} output', x, self._step)
-        hidden = x
+    def forward(self, input, memory, done_flags):
+        x, next_memory = self.qrnn(input, memory, done_flags)
         head = self.head(x)
-        head.hidden_code = hidden
-        return head
+        return head, next_memory

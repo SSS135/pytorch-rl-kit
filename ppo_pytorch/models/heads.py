@@ -81,6 +81,12 @@ class ActorCriticHead(HeadBase):
 
     def forward(self, x):
         x = self.linear(x)
-        values = x[:, 0]
-        probs = x[:, 1:]
+        if x.dim() == 2:
+            values = x[:, 0]
+            probs = x[:, 1:]
+        elif x.dim() == 3:
+            values = x[:, :, 0]
+            probs = x[:, :, 1:]
+        else:
+            raise NotImplementedError()
         return ActorOutput(probs=probs, state_values=values, head_raw=x)

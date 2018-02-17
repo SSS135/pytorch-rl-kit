@@ -33,6 +33,26 @@ class ActorOutput:
         self.head_raw = head_raw
 
 
+class GroupTranspose(nn.Module):
+    def __init__(self, groups):
+        super().__init__()
+        self.groups = groups
+
+    def forward(self, input):
+        x = input.view(input.shape[0], self.groups, -1, *input.shape[2:])
+        x = x.transpose(1, 2).contiguous()
+        return x.view_as(input)
+
+
+class ChannelShuffle(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.register_buffer('indices', torch.randperm(channels))
+
+    def forward(self, input):
+        return input[:, Variable(self.indices)].contiguous()
+
+
 class Actor(nn.Module):
     """
     Base class for network in reinforcement learning algorithms.
@@ -208,11 +228,36 @@ class CNNActor(Actor):
             self.convs = nn.ModuleList([
                 make_layer(nn.Conv2d(obs_space.shape[0], nf, 4, 2, 1)),
                 make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0)),
+                nn.Dropout2d(dropout),
                 make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1)),
                 make_layer(nn.Conv2d(nf * 4, nf * 8, 4, 2, 0)),
                 nn.Dropout2d(dropout),
             ])
             self.linear = make_layer(nn.Linear(nf * 8 * 4 * 4, 512))
+        elif cnn_kind == 'grouped32': # custom grouped (6,950,912 parameters)
+            nf = 32
+            self.convs = nn.ModuleList([
+                make_layer(nn.Conv2d(obs_space.shape[0], nf * 2, 4, 2, 1)),
+                make_layer(nn.Conv2d(nf * 2, nf * 8, 4, 2, 0, groups=2)),
+                ChannelShuffle(nf * 8),
+                make_layer(nn.Conv2d(nf * 8, nf * 32, 4, 2, 1, groups=8)),
+                ChannelShuffle(nf * 32),
+                make_layer(nn.Conv2d(nf * 32, nf * 16, 4, 2, 0, groups=4)),
+                nn.Dropout2d(dropout),
+            ])
+            self.linear = make_layer(nn.Linear(nf * 16 * 4 * 4, 512))
+        elif cnn_kind == 'grouped16': # custom grouped (6,950,912 parameters)
+            nf = 16
+            self.convs = nn.ModuleList([
+                make_layer(nn.Conv2d(obs_space.shape[0], nf * 8, 4, 2, 1)),
+                make_layer(nn.Conv2d(nf * 8, nf * 32, 4, 2, 0, groups=8)),
+                GroupTranspose(8),
+                make_layer(nn.Conv2d(nf * 32, nf * 128, 4, 2, 1, groups=32)),
+                GroupTranspose(32),
+                make_layer(nn.Conv2d(nf * 128, nf * 32, 4, 2, 0, groups=16)),
+                nn.Dropout2d(dropout),
+            ])
+            self.linear = make_layer(nn.Linear(nf * 32 * 4 * 4, 512))
         elif cnn_kind == 'rl_a3c_pytorch': # 622,720 parameters
             # https://github.com/dgriff777/rl_a3c_pytorch/blob/master/model.py
             nf = 32
@@ -306,7 +351,7 @@ class CNNActor(Actor):
             # log
             if self.do_log and isinstance(layer, nn.Sequential) and isinstance(layer[0], nn.Conv2d):
                 self.log_conv_activations(i, layer[0], x)
-                self.log_conv_filters(i, layer[0])
+                # self.log_conv_filters(i, layer[0])
 
         # flatten convolution output
         x = x.view(x.size(0), -1)

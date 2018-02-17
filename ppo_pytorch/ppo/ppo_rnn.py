@@ -17,14 +17,21 @@ from ..common.gae import calc_advantages, calc_returns
 from ..common.multi_dataset import MultiDataset
 from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
-from ..models import MLPActorCritic
+from ..models import QRNNActorCritic
+from ..models.actors import ActorOutput
 from .ppo import PPO, TrainingData
+from collections import namedtuple
+
+
+RNNData = namedtuple('RNNData', 'memory, dones')
 
 
 class PPO_QRNN(PPO):
     def __init__(self, observation_space, action_space,
+                 model_factory=QRNNActorCritic,
                  *args, **kwargs):
-        super().__init__(observation_space, action_space, *args, **kwargs)
+        super().__init__(observation_space, action_space, model_factory=model_factory, *args, **kwargs)
+        self._rnn_data = RNNData([], [])
 
     def _reorder_data(self, data) -> (TrainingData, TrainingData):
         def reorder(input):
@@ -35,6 +42,20 @@ class PPO_QRNN(PPO):
         data = [reorder(v) for v in data.values()]
         return TrainingData._make(data)
 
+    def _take_step(self, states, dones):
+        mem = Variable(self._rnn_data.memory[-1], volatile=True) if len(self._rnn_data.memory) != 0 else None
+        dones = torch.zeros(self.num_actors) if dones is None else torch.from_numpy(np.asarray(dones, np.float32))
+        dones = Variable(dones.unsqueeze(0))
+        if self.cuda_eval:
+            dones = dones.cuda()
+        states = Variable(states.unsqueeze(0), volatile=True)
+        ac_out, next_mem = self.model(states, mem, dones)
+        if len(self._rnn_data.memory) == 0:
+            self._rnn_data.memory.append(next_mem.data.clone().fill_(0))
+        self._rnn_data.memory.append(next_mem.data)
+        self._rnn_data.dones.append(dones.data[0])
+        return ActorOutput(ac_out.probs.squeeze(0), ac_out.state_values.squeeze(0))
+
     def _ppo_update(self, data):
         self.model.train()
         # move model to cuda or cpu
@@ -43,27 +64,47 @@ class PPO_QRNN(PPO):
 
         data = self._reorder_data(data)
 
-        actor_switch_flags = torch.zeros(self.horizon)
-        actor_switch_flags[-1] = 1
-        actor_switch_flags = actor_switch_flags.repeat(self.num_actors)
+        memory = torch.stack(self._rnn_data.memory[:-2], 0)  # (steps, layers, actors, hidden_size)
+        memory = memory.permute(2, 0, 1, 3).contiguous()  # (actors, steps, layers, hidden_size)
+        memory = memory.view(-1, *memory.shape[2:])
 
-        # create dataloader
-        dataset = MultiDataset(data.states, data.probs_old, data.values_old, data.actions, data.advantages,
-                               data.returns, data.dones, actor_switch_flags)
-        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
+        dones = self._rnn_data.dones[:-1]
+        dones = torch.stack(dones, 0).transpose(0, 1).contiguous().view(-1)
+
+        self._rnn_data = RNNData(self._rnn_data.memory[-1:], [])
+
+        # actor_switch_flags = torch.zeros(self.horizon)
+        # actor_switch_flags[-1] = 1
+        # actor_switch_flags = actor_switch_flags.repeat(self.num_actors)
+
+        data = (data.states, data.probs_old, data.values_old, data.actions, data.advantages,
+                data.returns, memory, dones)
+        data = [x.view(self.num_actors, -1, *x.shape[1:]) for x in data]
+
+        num_actors = max(1, self.batch_size // self.horizon)
+        batches = max(1, self.num_actors * self.horizon // self.batch_size)
 
         for ppo_iter in range(self.ppo_iters):
-            for loader_iter, batch in enumerate(dataloader):
+            env_ids = torch.randperm(self.num_actors)
+            for loader_iter in range(batches):
                 # prepare batch data
-                st, po, vo, ac, adv, ret, done, ac_switch = [Variable(x) for x in batch]
+                slc = slice(loader_iter * num_actors, (loader_iter + 1) * num_actors)
+                st, po, vo, ac, adv, ret, mem, done = [Variable(x[env_ids[slc]].contiguous().view(-1, *x.shape[2:])) for x in data]
+                st, mem, done = [x.data.view(num_actors, -1, *x.shape[1:]).transpose(0, 1) for x in (st, mem, done)]
+                # print(st.shape, mem.shape, done.shape)
+                mem = mem[0].transpose(0, 1)
                 if self.cuda_train:
-                    st, done, ac_switch = [Variable(x.data.cuda()) for x in (st, done, ac_switch)]
+                    st, mem, done = [x.data.cuda() for x in (st, mem, done)]
+                done = done.contiguous().view(done.shape[:2])
+                st, mem, done = [Variable(x) for x in (st, mem, done)]
 
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
-                actor_out = self.model(st, done, ac_switch)
+                actor_out, _ = self.model(st, mem, done)
+                probs = actor_out.probs.cpu().transpose(0, 1).contiguous().view(-1, actor_out.probs.shape[2])
+                state_values = actor_out.state_values.cpu().transpose(0, 1).contiguous().view(-1)
                 # get loss
-                loss, kl = self._get_ppo_loss(actor_out.probs.cpu(), po, actor_out.state_values.cpu(), vo, ac, adv, ret)
+                loss, kl = self._get_ppo_loss(probs, po, state_values, vo, ac, adv, ret)
 
                 # optimize
                 loss.backward()

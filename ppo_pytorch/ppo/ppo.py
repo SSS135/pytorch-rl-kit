@@ -159,7 +159,8 @@ class PPO(RLBase):
             states = self._from_numpy(cur_states, dtype=np.float32, cuda=self.cuda_eval)
 
         # run network
-        ac_out = self.model(Variable(states, volatile=True))
+        # ac_out = self.model(Variable(states, volatile=True))
+        ac_out = self._take_step(states, dones)
         actions = self.model.pd.sample(ac_out.probs.data).cpu().numpy()
         probs, values = ac_out.probs.data.cpu().numpy(), ac_out.state_values.data.cpu().numpy()
 
@@ -176,6 +177,9 @@ class PPO(RLBase):
             self._train()
 
         return actions
+
+    def _take_step(self, states, dones):
+        return self.model(Variable(states, volatile=True))
 
     def _train(self):
         data = self._prepare_training_data()
