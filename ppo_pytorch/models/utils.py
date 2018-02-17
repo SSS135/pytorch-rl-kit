@@ -32,7 +32,7 @@ def weights_init(m, init_alg=init.xavier_uniform, gain=1):
         #     m.bias.data.fill_(0)
     if norm and hasattr(m, 'bias'):
         m.weight.data.normal_(1, 0.02)
-        # m.bias.data.fill_(-1)
+        m.bias.data.fill_(-1)
 
 
 def normalized_columns_initializer(weights, std=1.0):

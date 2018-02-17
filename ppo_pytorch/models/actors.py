@@ -210,31 +210,24 @@ class CNNActor(Actor):
             return nn.Sequential(*parts)
 
         # create convolutional layers
-        if cnn_kind == 'small': # from A3C paper (675,840 parameters)
-            self.convs = nn.ModuleList([
-                make_layer(nn.Conv2d(obs_space.shape[0], 16, 8, 4)),
-                make_layer(nn.Conv2d(16, 32, 4, 2)),
-            ])
-            self.linear = make_layer(nn.Linear(2592, 256))
-        elif cnn_kind == 'large': # Nature DQN (1,683,456 parameters)
+        if cnn_kind == 'normal': # Nature DQN (1,683,456 parameters)
             self.convs = nn.ModuleList([
                 make_layer(nn.Conv2d(obs_space.shape[0], 32, 8, 4)),
                 make_layer(nn.Conv2d(32, 64, 4, 2)),
                 make_layer(nn.Conv2d(64, 64, 3, 1)),
             ])
             self.linear = make_layer(nn.Linear(3136, 512))
-        elif cnn_kind == 'custom': # custom (6,950,912 parameters)
-            nf = 64
+        elif cnn_kind == 'large': # custom (2,066,432 parameters)
+            nf = 32
             self.convs = nn.ModuleList([
-                make_layer(nn.Conv2d(obs_space.shape[0], nf, 4, 2, 1)),
+                make_layer(nn.Conv2d(obs_space.shape[0], nf, 4, 2, 0)),
                 make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0)),
-                nn.Dropout2d(dropout),
                 make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1)),
-                make_layer(nn.Conv2d(nf * 4, nf * 8, 4, 2, 0)),
+                make_layer(nn.Conv2d(nf * 4, nf * 8, 4, 2, 1)),
                 nn.Dropout2d(dropout),
             ])
             self.linear = make_layer(nn.Linear(nf * 8 * 4 * 4, 512))
-        elif cnn_kind == 'grouped32': # custom grouped (6,950,912 parameters)
+        elif cnn_kind == 'grouped': # custom grouped (6,950,912 parameters)
             nf = 32
             self.convs = nn.ModuleList([
                 make_layer(nn.Conv2d(obs_space.shape[0], nf * 2, 4, 2, 1)),
@@ -246,82 +239,20 @@ class CNNActor(Actor):
                 nn.Dropout2d(dropout),
             ])
             self.linear = make_layer(nn.Linear(nf * 16 * 4 * 4, 512))
-        elif cnn_kind == 'grouped16': # custom grouped (6,950,912 parameters)
-            nf = 16
-            self.convs = nn.ModuleList([
-                make_layer(nn.Conv2d(obs_space.shape[0], nf * 8, 4, 2, 1)),
-                make_layer(nn.Conv2d(nf * 8, nf * 32, 4, 2, 0, groups=8)),
-                GroupTranspose(8),
-                make_layer(nn.Conv2d(nf * 32, nf * 128, 4, 2, 1, groups=32)),
-                GroupTranspose(32),
-                make_layer(nn.Conv2d(nf * 128, nf * 32, 4, 2, 0, groups=16)),
-                nn.Dropout2d(dropout),
-            ])
-            self.linear = make_layer(nn.Linear(nf * 32 * 4 * 4, 512))
-        elif cnn_kind == 'rl_a3c_pytorch': # 622,720 parameters
-            # https://github.com/dgriff777/rl_a3c_pytorch/blob/master/model.py
-            nf = 32
-            self.convs = nn.ModuleList([
-                make_layer(nn.Conv2d(obs_space.shape[0], nf, 5, 1, 2)),
-                nn.MaxPool2d(2, 2),
-                make_layer(nn.Conv2d(nf, nf, 5, 1, 1)),
-                nn.MaxPool2d(2, 2),
-                make_layer(nn.Conv2d(nf, 2 * nf, 4, 1, 1)),
-                nn.MaxPool2d(2, 2),
-                make_layer(nn.Conv2d(2 * nf, 2 * nf, 3, 1, 1)),
-                nn.MaxPool2d(2, 2),
-            ])
-            self.linear = make_layer(nn.Linear(1024, 512))
         elif cnn_kind == 'depthwise':
-            nf = 64
+            nf = 32
             self.convs = nn.ModuleList([
                 # i x 84 x 84
                 make_layer(nn.Conv2d(obs_space.shape[0], nf, 4, 2, 0)),
                 # 1f x 40 x 40
-                make_layer(nn.Conv2d(nf, nf, 4, 2, 1)),
+                make_layer(nn.Conv2d(nf, nf, 4, 2, 0)),
                 # (1 + 1)f x 20 x 20
                 make_layer(nn.Conv2d(nf * 2, nf * 2, 4, 2, 1)),
                 # (2 + 2)f x 10 x 10
                 make_layer(nn.Conv2d(nf * 4, nf * 4, 4, 2, 1)),
                 # (4 + 4)f x 5 x 5
             ])
-            self.linear = make_layer(nn.Linear(nf * 8 * 5 * 5, 512))
-        elif cnn_kind == 'resnet':
-            nf = 32
-            if self.norm == 'layer':
-                norm = partial(nn.InstanceNorm2d, affine=True)
-            elif self.norm == 'batch':
-                norm = nn.BatchNorm2d
-            else:
-                norm = None
-
-            self.convs = nn.ModuleList([
-                # i x 84 x 84
-                nn.Conv2d(obs_space.shape[0], nf, 4, 2, 0),
-                nn.Sequential(
-                    PreActBlockCustom(nf, nf, 1, activation=cnn_activation, norm=norm),
-                    PreActBlockCustom(nf, nf, 1, activation=cnn_activation, norm=norm),
-                ),
-                nn.Sequential(
-                    PreActBlockCustom(nf, 2 * nf, 2, activation=cnn_activation, norm=norm),
-                    PreActBlockCustom(2 * nf, 2 * nf, 1, activation=cnn_activation, norm=norm),
-                ),
-                nn.Sequential(
-                    PreActBlockCustom(2 * nf, 4 * nf, 2, activation=cnn_activation, norm=norm),
-                    PreActBlockCustom(4 * nf, 4 * nf, 1, activation=cnn_activation, norm=norm),
-                ),
-                nn.Sequential(
-                    PreActBlockCustom(4 * nf, 8 * nf, 2, activation=cnn_activation, norm=norm),
-                    PreActBlockCustom(8 * nf, 8 * nf, 1, activation=cnn_activation, norm=norm),
-                ),
-                nn.Conv2d(8 * nf, nf, 1, 1, bias=False),
-                # nn.Sequential(
-                #     norm(8 * nf),
-                #     nn.Conv2d(8 * nf, nf, 1, 1, bias=False),
-                #     cnn_activation(),
-                # ),
-            ])
-            self.linear = make_layer(nn.Linear(nf * 6 * 6, 512))
+            self.linear = make_layer(nn.Linear(nf * 8 * 4 * 4, 512))
         else:
             raise NotImplementedError(cnn_kind)
 
@@ -345,7 +276,10 @@ class CNNActor(Actor):
             # run conv layer
             if self.cnn_kind == 'depthwise' and i != 0:
                 out = layer(x)
-                x = torch.cat([F.max_pool2d(x, 2), out], 1)
+                pool = F.max_pool2d(x, 2)
+                if pool.shape[2:] != out.shape[2:]:
+                    pool = pool[:, :, :-1, :-1]
+                x = torch.cat([pool, out], 1)
             else:
                 x = layer(x)
             # log
