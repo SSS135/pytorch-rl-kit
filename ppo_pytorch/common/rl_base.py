@@ -14,7 +14,8 @@ class RLStep(Enum):
 
 
 class RLBase:
-    def __init__(self, observation_space: gym.Space, action_space: gym.Space, log_time_interval: float=None):
+    def __init__(self, observation_space: gym.Space, action_space: gym.Space,
+                 num_actors=1, log_time_interval: float=None):
         """
         Base class for all reinforcement learning algorithms. Supports running parallely on multiple envs.
         Args:
@@ -24,10 +25,10 @@ class RLBase:
         """
         self.observation_space = observation_space
         self.action_space = action_space
+        self.num_actors = num_actors
         self.step_type = RLStep.EVAL
         self.cur_states, self.prev_states, self.rewards, self.dones = [None] * 4
         self._logger = None
-        self.envs = None
         self.log_time_interval = log_time_interval
         self._last_log_time = 0
         self._do_log = False
@@ -51,11 +52,6 @@ class RLBase:
         self._logger = log
         self._log_set()
 
-    @property
-    def num_actors(self) -> int:
-        """Parallely running envs count"""
-        raise NotImplementedError
-
     def _step(self, prev_states: np.ndarray, rewardss: np.ndarray,
               doness: np.ndarray, cur_states: np.ndarray) -> np.ndarray:
         """
@@ -70,7 +66,7 @@ class RLBase:
         """
         raise NotImplementedError
 
-    def eval(self, input: np.ndarray or list, envs: list = None) -> np.ndarray:
+    def eval(self, input: np.ndarray or list) -> np.ndarray:
         """
         Process new observations and return actions.
         Args:
@@ -79,7 +75,6 @@ class RLBase:
 
         Returns: Taken actions.
         """
-        self.envs = envs
         self.prev_states = self.cur_states
         self.cur_states = self._check_states(input)
         actions = self._step(self.prev_states, self.rewards, self.dones, self.cur_states)
@@ -87,9 +82,9 @@ class RLBase:
         if actions is None:
             return None
         if isinstance(self.action_space, Discrete):
-            actions = np.reshape(actions, (len(self.envs),))
+            actions = np.reshape(actions, (self.num_actors,))
         else:
-            actions = np.reshape(actions, (len(self.envs), -1))
+            actions = np.reshape(actions, (self.num_actors, -1))
         return actions
 
     def reward(self, reward: np.ndarray or list) -> None:

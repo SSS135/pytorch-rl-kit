@@ -81,20 +81,20 @@ class PPO_QRNN(PPO):
                 data.returns, memory, dones)
         data = [x.view(self.num_actors, -1, *x.shape[1:]) for x in data]
 
-        num_actors = max(1, self.batch_size // self.horizon)
         batches = max(1, self.num_actors * self.horizon // self.batch_size)
 
         for ppo_iter in range(self.ppo_iters):
-            env_ids = torch.randperm(self.num_actors)
-            for loader_iter in range(batches):
+            env_ids = torch.randperm(self.num_actors).chunk(batches)
+            for loader_iter, ids in enumerate(env_ids):
                 # prepare batch data
-                slc = slice(loader_iter * num_actors, (loader_iter + 1) * num_actors)
-                st, po, vo, ac, adv, ret, mem, done = [Variable(x[env_ids[slc]].contiguous().view(-1, *x.shape[2:])) for x in data]
-                st, mem, done = [x.data.view(num_actors, -1, *x.shape[1:]).transpose(0, 1) for x in (st, mem, done)]
+                st, po, vo, ac, adv, ret, mem, done = [
+                    Variable(x[ids.cuda() if x.is_cuda else ids].contiguous().view(-1, *x.shape[2:]))
+                    for x in data]
+                st, mem, done = [x.data.view(ids.shape[0], -1, *x.shape[1:]).transpose(0, 1) for x in (st, mem, done)]
                 # print(st.shape, mem.shape, done.shape)
                 mem = mem[0].transpose(0, 1)
                 if self.cuda_train:
-                    st, mem, done = [x.data.cuda() for x in (st, mem, done)]
+                    st, mem, done = [x.cuda() for x in (st, mem, done)]
                 done = done.contiguous().view(done.shape[:2])
                 st, mem, done = [Variable(x) for x in (st, mem, done)]
 

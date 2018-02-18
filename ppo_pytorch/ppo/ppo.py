@@ -51,7 +51,6 @@ class PPO(RLBase):
     def __init__(self, observation_space, action_space,
                  reward_discount=0.99,
                  advantage_discount=0.95,
-                 num_actors=1,
                  horizon=64,
                  ppo_iters=10,
                  batch_size=64,
@@ -106,7 +105,6 @@ class PPO(RLBase):
         self.policy_clip = policy_clip
         self.value_clip = value_clip
         self.entropy_bonus = entropy_bonus
-        self._num_actors = num_actors
         self.horizon = horizon
         self.ppo_iters = ppo_iters
         self.batch_size = batch_size
@@ -132,10 +130,6 @@ class PPO(RLBase):
         self.clip_decay = ValueDecay(start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=False)
         self.entropy_decay = ValueDecay(start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=True,
                                         temp=2)
-
-    @property
-    def num_actors(self):
-        return self._num_actors
 
     @property
     def learning_rate(self):
@@ -259,15 +253,16 @@ class PPO(RLBase):
         if next(self.model.parameters()).is_cuda != self.cuda_train:
             self.model = self.model.cuda() if self.cuda_train else self.model.cpu()
 
-        # create dataloader
-        dataset = MultiDataset(data.states, data.probs_old, data.values_old, data.actions, data.advantages,
-                               data.returns)
-        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+        data = (data.states, data.probs_old, data.values_old, data.actions, data.advantages, data.returns)
+        batches = max(1, self.num_actors * self.horizon // self.batch_size)
 
         for ppo_iter in range(self.ppo_iters):
-            for loader_iter, batch in enumerate(dataloader):
+            rand_idx = torch.randperm(len(data[0]))
+            for loader_iter in range(batches):
                 # prepare batch data
-                st, po, vo, ac, adv, ret = [Variable(x) for x in batch]
+                batch_idx = rand_idx[loader_iter * self.batch_size: (loader_iter + 1) * self.batch_size]
+                batch_idx_cuda = batch_idx.cuda()
+                st, po, vo, ac, adv, ret = [Variable(x[batch_idx_cuda if x.is_cuda else batch_idx]) for x in data]
                 if self.cuda_train:
                     st = Variable(st.data.cuda())
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
