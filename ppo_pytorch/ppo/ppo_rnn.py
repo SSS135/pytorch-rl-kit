@@ -120,3 +120,7 @@ class PPO_QRNN(PPO):
                 self.logger.add_scalar('total loss', loss, self.frame)
                 self.logger.add_scalar('kl', kl, self.frame)
 
+    def drop_collected_steps(self):
+        super().drop_collected_steps()
+        self._rnn_data = RNNData([], [])
+
