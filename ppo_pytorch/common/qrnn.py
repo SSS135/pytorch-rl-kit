@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn.functional
+from .layer_norm import LayerNorm1d
 from torch import nn
 from torch.autograd import Variable
 # from torchqrnn.forget_mult import ForgetMult
@@ -62,7 +63,10 @@ class QRNNLayer(nn.Module):
         self.use_cuda = use_cuda
 
         # One large matmul with concat is faster than N small matmuls and no concat
-        self.linear = nn.Linear(self.window * self.input_size, 3 * self.hidden_size if self.output_gate else 2 * self.hidden_size)
+        self.linear = nn.Linear(self.window * self.input_size, 3 * self.hidden_size if self.output_gate else 2 * self.hidden_size, bias=False)
+        self.norm_z = LayerNorm1d(self.hidden_size)
+        self.norm_f = LayerNorm1d(self.hidden_size)
+        self.norm_o = LayerNorm1d(self.hidden_size)
 
     def reset(self):
         # If you are saving the previous value of x, you should call this when starting with a new state
@@ -95,8 +99,9 @@ class QRNNLayer(nn.Module):
             Y = Y.view(seq_len, batch_size, 2 * self.hidden_size)
             Z, F = Y.chunk(2, dim=2)
         ###
-        Z = torch.nn.functional.tanh(Z)
-        F = torch.nn.functional.sigmoid(F)
+
+        Z = torch.nn.functional.elu(self.norm_z(Z))
+        F = torch.nn.functional.sigmoid(self.norm_f(F))
 
         # If zoneout is specified, we perform dropout on the forget gates in F
         # If an element of F is zero, that means the corresponding neuron keeps the old value
@@ -122,7 +127,7 @@ class QRNNLayer(nn.Module):
 
         # Apply (potentially optional) output gate
         if self.output_gate:
-            H = torch.nn.functional.sigmoid(O) * C
+            H = torch.nn.functional.sigmoid(self.norm_o(O)) * C
         else:
             H = C
 
