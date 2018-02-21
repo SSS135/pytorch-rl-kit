@@ -55,7 +55,7 @@ class GymWrapper:
         if self.atari_preprocessing:
             env = make_atari(self.env_factory)
             env = Monitor(env)
-            env = wrap_deepmind(env, scale=True, clip_rewards=False, frame_stack=True)
+            env = wrap_deepmind(env, scale=True, clip_rewards=True, frame_stack=True)
         else:
             if isinstance(self.env_factory, str):
                 env = gym.make(self.env_factory)

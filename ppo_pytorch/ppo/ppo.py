@@ -197,13 +197,7 @@ class PPO(RLBase):
         values_old = np.asarray(sample.values)
         dones = np.asarray(sample.dones)
 
-        # clip rewards
-        norm_rewards = self.reward_scale * rewards.clip(-1, 1)
-
-        # calculate returns and advantages
-        np_returns = calc_returns(norm_rewards, values_old, dones, self.reward_discount)
-        np_advantages = calc_advantages(norm_rewards, values_old, dones, self.reward_discount, self.advantage_discount)
-        np_advantages = (np_advantages - np_advantages.mean()) / max(np_advantages.std(), 1e-5)
+        norm_rewards, np_returns, np_advantages = self._process_rewards(rewards, values_old, dones)
 
         np_advantages = np_advantages.flatten()
         np_returns = np_returns.flatten()
@@ -246,6 +240,17 @@ class PPO(RLBase):
                 self.logger.add_histogram(name, param, self.frame)
 
         return TrainingData(states, probs_old, values_old, actions, advantages, returns, dones, rewards)
+
+    def _process_rewards(self, rewards, values, dones):
+        # clip rewards
+        norm_rewards = self.reward_scale * rewards  # .clip(-1, 1)
+
+        # calculate returns and advantages
+        np_returns = calc_returns(norm_rewards, values, dones, self.reward_discount)
+        np_advantages = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
+        np_advantages = (np_advantages - np_advantages.mean()) / max(np_advantages.std(), 1e-5)
+
+        return norm_rewards, np_returns, np_advantages
 
     def _ppo_update(self, data):
         self.model.train()
