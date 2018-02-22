@@ -64,10 +64,10 @@ class PPO(RLBase):
                  cuda_eval=False,
                  cuda_train=False,
                  grad_clip_norm=2,
-                 log_time_interval=None,
                  learning_decay_frames=1e6,
                  reward_scale=1.0,
-                 image_observation=True, ):
+                 image_observation=True,
+                 **kwargs):
         """
         Args:
             observation_space (gym.Space): Environment's observation space
@@ -98,7 +98,7 @@ class PPO(RLBase):
                 will decrease to 0 after `learning_decay_frames`
             reward_scale (float): Scale factor for environment's rewards
         """
-        super().__init__(observation_space, action_space, log_time_interval=log_time_interval)
+        super().__init__(observation_space, action_space, **kwargs)
         self._init_args = locals()
         self.reward_discount = reward_discount
         self.advantage_discount = advantage_discount

@@ -72,7 +72,7 @@ class GymWrapper:
         """Do single step of RL alg"""
 
         # evaluate RL alg
-        actions = self.rl_alg.eval(self.states, self.envs)
+        actions = self.rl_alg.eval(self.states)
         self.states = []
         rewards = []
         dones = []
