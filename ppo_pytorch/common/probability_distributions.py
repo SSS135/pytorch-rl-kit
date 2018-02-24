@@ -85,11 +85,11 @@ class ProbabilityDistribution:
 
     @property
     def dtype_numpy(self):
-        """Action's numpy data type"""
+        """Action's numpy input type"""
         raise NotImplementedError
 
     def dtype_torch(self, cuda):
-        """Action's Pytorch data type"""
+        """Action's Pytorch input type"""
         raise NotImplementedError
 
     def neglogp(self, a, prob):

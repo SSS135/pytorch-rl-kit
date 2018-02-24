@@ -292,10 +292,10 @@ class PPO(RLBase):
 
     def _from_numpy(self, x, dtype=None, cuda=False):
         """
-        Helper function which converts data to Tensor
+        Helper function which converts input to Tensor
         Args:
             x: Anything from which numpy array could be created
-            dtype: Numpy data type. `x` is cast to it.
+            dtype: Numpy input type. `x` is cast to it.
             cuda: Transfer tensor to CUDA
 
         Returns: Tensor created from `x`
