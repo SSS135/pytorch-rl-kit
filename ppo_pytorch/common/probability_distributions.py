@@ -265,7 +265,7 @@ class DiagGaussianPd(ProbabilityDistribution):
 
     def entropy(self, prob):
         logstd = prob[:, self.d:]
-        ent = torch.sum(logstd + .5 * math.log(2.0 * math.pi * math.e), dim=-1)
+        ent = torch.mean(logstd + .5 * math.log(2.0 * math.pi * math.e), dim=-1)
         return ent
 
     @property

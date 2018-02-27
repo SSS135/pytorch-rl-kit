@@ -1,6 +1,6 @@
 from functools import partial
 
-from .actors import MLPActor, CNNActor
+from .actors import MLPActor, CNNActor, Actor, ActorOutput
 from .qrnn_actors import QRNNActor
 from .heads import ActionValuesHead, ActorCriticHead, HeadBase
 

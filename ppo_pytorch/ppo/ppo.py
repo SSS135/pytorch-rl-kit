@@ -18,6 +18,7 @@ from ..common.multi_dataset import MultiDataset
 from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
 from ..models import MLPActorCritic
+from ..common.param_groups_getter import get_param_groups
 
 
 def lerp(start, end, weight):
@@ -64,9 +65,11 @@ class PPO(RLBase):
                  cuda_eval=False,
                  cuda_train=False,
                  grad_clip_norm=2,
-                 learning_decay_frames=1e6,
                  reward_scale=1.0,
                  image_observation=True,
+                 lr_scheduler_factory=None,
+                 clip_decay_factory=None,
+                 entropy_decay_factory=None,
                  **kwargs):
         """
         Args:
@@ -124,12 +127,10 @@ class PPO(RLBase):
         self.sample = Sample([], [], [], [], [], [])
 
         self.model = model_factory(observation_space, action_space)
-        self.optimizer = optimizer_factory(self.model.parameters())
-        self.lr_scheduler = DecayLR(self.optimizer, start_value=1, end_value=0.01, end_epoch=learning_decay_frames,
-                                    exp=False)
-        self.clip_decay = ValueDecay(start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=False)
-        self.entropy_decay = ValueDecay(start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=True,
-                                        temp=2)
+        self.optimizer = optimizer_factory(get_param_groups(self.model))
+        self.lr_scheduler = lr_scheduler_factory(self.optimizer) if lr_scheduler_factory is not None else None
+        self.clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
+        self.entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
 
     @property
     def learning_rate(self):
@@ -144,7 +145,7 @@ class PPO(RLBase):
         if next(self.model.parameters()).is_cuda != self.cuda_eval:
             self.model = self.model.cuda() if self.cuda_eval else self.model.cpu()
 
-        self.model.eval()
+        # self.model.eval()
 
         # convert observations to tensors
         if self.image_observation:
