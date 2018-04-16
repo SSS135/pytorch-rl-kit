@@ -57,15 +57,14 @@ class Actor(nn.Module):
     Base class for network in reinforcement learning algorithms.
     """
 
-    def __init__(self, obs_space: gym.Space, action_space: gym.Space, norm: str = None,
+    def __init__(self, observation_space: gym.Space, action_space: gym.Space, norm: str = None,
                  weight_init=init.orthogonal, weight_init_gain=math.sqrt(2)):
         super().__init__()
-        self.obs_space = obs_space
+        self.observation_space = observation_space
         self.action_space = action_space
         self.weight_init_gain = weight_init_gain
         self.weight_init = weight_init
         self.norm = norm
-        assert norm in (None, 'layer', 'batch')
 
         self.do_log = False
         self.logger = None
@@ -166,21 +165,21 @@ class MLPActor(Actor):
     Fully connected network.
     """
 
-    def __init__(self, obs_space: gym.Space, action_space: gym.Space, head_factory: Callable,
+    def __init__(self, observation_space: gym.Space, action_space: gym.Space, head_factory: Callable,
                  hidden_sizes=(128, 128), activation=nn.ELU, **kwargs):
         """
         Args:
-            obs_space: Env's observation space
+            observation_space: Env's observation space
             action_space: Env's action space
             head_factory: Function which accept (hidden vector size, `ProbabilityDistribution`) and return `HeadBase`
             hidden_sizes: List of hidden layers sizes
             activation: Activation function
         """
-        super().__init__(obs_space, action_space, **kwargs)
+        super().__init__(observation_space, action_space, **kwargs)
         self.hidden_sizes = hidden_sizes
         self.activation = activation
 
-        obs_len = int(np.product(obs_space.shape))
+        obs_len = int(np.product(observation_space.shape))
 
         self.linear = self.create_mlp(obs_len, None, hidden_sizes, activation, self.norm)
         self.head = head_factory(hidden_sizes[-1], self.pd)
@@ -206,11 +205,11 @@ class CNNActor(Actor):
     """
     Convolution network.
     """
-    def __init__(self, obs_space, action_space, head_factory, cnn_kind='large',
+    def __init__(self, observation_space, action_space, head_factory, cnn_kind='large',
                  cnn_activation=nn.ReLU, linear_activation=nn.ReLU, dropout=0, **kwargs):
         """
         Args:
-            obs_space: Env's observation space
+            observation_space: Env's observation space
             action_space: Env's action space
             head_factory: Function which accept (hidden vector size, `ProbabilityDistribution`) and return `HeadBase`
             cnn_kind: Type of cnn.
@@ -219,76 +218,57 @@ class CNNActor(Actor):
                 'custom' - largest CNN of custom structure
             cnn_activation: Activation function
         """
-        super().__init__(obs_space, action_space, **kwargs)
+        super().__init__(observation_space, action_space, **kwargs)
         self.cnn_activation = cnn_activation
         self.linear_activation = linear_activation
         self.cnn_kind = cnn_kind
-        # assert cnn_kind in ('small', 'large', 'custom')
-
-        def make_layer(transf):
-            parts = [transf]
-
-            is_linear = isinstance(transf, nn.Linear)
-            features = transf.out_features if is_linear else transf.out_channels
-            if self.norm == 'layer':
-                norm_cls = LayerNorm1d if is_linear else partial(nn.InstanceNorm2d, affine=True)
-            elif self.norm == 'batch':
-                norm_cls = nn.BatchNorm1d if is_linear else nn.BatchNorm2d
-            else:
-                norm_cls = None
-            if norm_cls is not None and not is_linear:
-                parts.append(norm_cls(features))
-
-            parts.append(linear_activation() if is_linear else cnn_activation())
-
-            return nn.Sequential(*parts)
 
         # create convolutional layers
         if cnn_kind == 'normal': # Nature DQN (1,683,456 parameters)
             self.convs = nn.ModuleList([
-                make_layer(nn.Conv2d(obs_space.shape[0], 32, 8, 4)),
-                make_layer(nn.Conv2d(32, 64, 4, 2)),
-                make_layer(nn.Conv2d(64, 64, 3, 1)),
+                self.make_layer(nn.Conv2d(observation_space.shape[0], 32, 8, 4)),
+                self.make_layer(nn.Conv2d(32, 64, 4, 2)),
+                self.make_layer(nn.Conv2d(64, 64, 3, 1)),
             ])
-            self.linear = make_layer(nn.Linear(3136, 512))
+            self.linear = self.make_layer(nn.Linear(3136, 512))
         elif cnn_kind == 'large': # custom (2,066,432 parameters)
             nf = 32
             self.convs = nn.ModuleList([
-                make_layer(nn.Conv2d(obs_space.shape[0], nf, 4, 2, 0)),
-                make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0)),
-                make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1)),
-                make_layer(nn.Conv2d(nf * 4, nf * 8, 4, 2, 1)),
+                self.make_layer(nn.Conv2d(observation_space.shape[0], nf, 4, 2, 0)),
+                self.make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0)),
+                self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1)),
+                self.make_layer(nn.Conv2d(nf * 4, nf * 8, 4, 2, 1)),
                 nn.Dropout2d(dropout),
             ])
-            self.linear = make_layer(nn.Linear(nf * 8 * 4 * 4, 512))
+            self.linear = self.make_layer(nn.Linear(nf * 8 * 4 * 4, 512))
         elif cnn_kind == 'grouped': # custom grouped (6,950,912 parameters)
             nf = 32
             self.convs = nn.ModuleList([
-                make_layer(nn.Conv2d(obs_space.shape[0], nf * 2, 4, 2, 1)),
-                make_layer(nn.Conv2d(nf * 2, nf * 8, 4, 2, 0, groups=2)),
+                self.make_layer(nn.Conv2d(observation_space.shape[0], nf * 2, 4, 2, 1)),
+                self.make_layer(nn.Conv2d(nf * 2, nf * 8, 4, 2, 0, groups=2)),
                 ChannelShuffle(nf * 8),
-                make_layer(nn.Conv2d(nf * 8, nf * 32, 4, 2, 1, groups=8)),
+                self.make_layer(nn.Conv2d(nf * 8, nf * 32, 4, 2, 1, groups=8)),
                 ChannelShuffle(nf * 32),
-                make_layer(nn.Conv2d(nf * 32, nf * 16, 4, 2, 0, groups=4)),
+                self.make_layer(nn.Conv2d(nf * 32, nf * 16, 4, 2, 0, groups=4)),
                 nn.Dropout2d(dropout),
             ])
-            self.linear = make_layer(nn.Linear(nf * 16 * 4 * 4, 512))
+            self.linear = self.make_layer(nn.Linear(nf * 16 * 4 * 4, 512))
         elif cnn_kind == 'depthwise':
             nf = 32
             self.convs = nn.ModuleList([
                 # i x 84 x 84
-                make_layer(nn.Conv2d(obs_space.shape[0], nf, 4, 2, 0)),
+                self.make_layer(nn.Conv2d(observation_space.shape[0], nf, 4, 2, 0)),
                 # 1f x 40 x 40
-                make_layer(nn.Conv2d(nf, nf, 4, 2, 0)),
+                self.make_layer(nn.Conv2d(nf, nf, 4, 2, 0)),
                 # (1 + 1)f x 20 x 20
-                make_layer(nn.Conv2d(nf * 2, nf * 2, 4, 2, 1)),
+                self.make_layer(nn.Conv2d(nf * 2, nf * 2, 4, 2, 1)),
                 # (2 + 2)f x 10 x 10
-                make_layer(nn.Conv2d(nf * 4, nf * 4, 4, 2, 1)),
+                self.make_layer(nn.Conv2d(nf * 4, nf * 4, 4, 2, 1)),
                 # (4 + 4)f x 5 x 5
             ])
-            self.linear = make_layer(nn.Linear(nf * 8 * 4 * 4, 512))
+            self.linear = self.make_layer(nn.Linear(nf * 8 * 4 * 4, 512))
         else:
-            raise NotImplementedError(cnn_kind)
+            raise ValueError(cnn_kind)
 
         # create head
         self.head = head_factory(self.linear[0].out_features, self.pd)
@@ -299,8 +279,29 @@ class CNNActor(Actor):
         super().reset_weights()
         self.head.reset_weights()
 
+    def make_layer(self, transf):
+        parts = [transf]
+
+        is_linear = isinstance(transf, nn.Linear)
+        features = transf.out_features if is_linear else transf.out_channels
+        norm_cls = None
+        if self.norm is not None:
+            if 'instance' in self.norm and not is_linear:
+                norm_cls = partial(nn.InstanceNorm2d, affine=True)
+            if 'layer' in self.norm and is_linear:
+                norm_cls = partial(LayerNorm1d, affine=True)
+            if 'batch' in self.norm:
+                norm_cls = nn.BatchNorm1d if is_linear else nn.BatchNorm2d
+            if norm_cls is not None and not is_linear:
+                parts.append(norm_cls(features))
+
+        parts.append(self.linear_activation() if is_linear else self.cnn_activation())
+
+        return nn.Sequential(*parts)
+
     def _extract_features(self, input):
         x = input
+        x = x - x.mean(-1, keepdim=True).mean(-2, keepdim=True)
         for i, layer in enumerate(self.convs):
             # run conv layer
             if self.cnn_kind == 'depthwise' and i != 0:

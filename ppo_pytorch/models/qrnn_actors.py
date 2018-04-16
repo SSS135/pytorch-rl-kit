@@ -20,18 +20,18 @@ from optfn.qrnn import QRNN, DenseQRNN
 
 
 class QRNNActor(Actor):
-    def __init__(self, obs_space: gym.Space, action_space: gym.Space, head_factory: Callable,
+    def __init__(self, observation_space: gym.Space, action_space: gym.Space, head_factory: Callable,
                  hidden_size=128, num_layers=3, **kwargs):
         """
         Args:
-            obs_space: Env's observation space
+            observation_space: Env's observation space
             action_space: Env's action space
             head_factory: Function which accept (hidden vector size, `ProbabilityDistribution`) and return `HeadBase`
             hidden_sizes: List of hidden layers sizes
             activation: Activation function
         """
-        super().__init__(obs_space, action_space, **kwargs)
-        obs_len = int(np.product(obs_space.shape))
+        super().__init__(observation_space, action_space, **kwargs)
+        obs_len = int(np.product(observation_space.shape))
         self.qrnn = DenseQRNN(obs_len, hidden_size, num_layers)
         self.head = head_factory(hidden_size, self.pd)
         self.reset_weights()
@@ -47,21 +47,33 @@ class QRNNActor(Actor):
 
 
 class CNN_QRNNActor(CNNActor):
-    def __init__(self, obs_space, action_space, head_factory, cnn_kind='large',
+    def __init__(self, observation_space, action_space, head_factory, cnn_kind='large',
                  cnn_activation=nn.ReLU, linear_activation=nn.ReLU,
                  qrnn_hidden_size=512, qrnn_layers=3, dropout=0, **kwargs):
         """
         Args:
-            obs_space: Env's observation space
+            observation_space: Env's observation space
             action_space: Env's action space
             head_factory: Function which accept (hidden vector size, `ProbabilityDistribution`) and return `HeadBase`
             hidden_sizes: List of hidden layers sizes
             activation: Activation function
         """
-        super().__init__(obs_space, action_space, head_factory, cnn_kind,
+        super().__init__(observation_space, action_space, head_factory, cnn_kind,
                          cnn_activation, linear_activation, dropout, **kwargs)
-        obs_len = int(np.product(obs_space.shape))
-        self.linear = DenseQRNN(self.linear[0].in_features, qrnn_hidden_size, qrnn_layers)
+        self.qrnn_hidden_size = qrnn_hidden_size
+        self.qrnn_layers = qrnn_layers
+        assert cnn_kind == 'large' # custom (2,066,432 parameters)
+        nf = 32
+        self.convs = nn.ModuleList([
+            nn.AvgPool2d(2),
+            self.make_layer(nn.Conv2d(observation_space.shape[0], nf, 4, 2, 0, bias=False)),
+            nn.MaxPool2d(3, 2),
+            self.make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0, bias=False)),
+            self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1, bias=False)),
+            self.make_layer(nn.Conv2d(nf * 4, nf * 8, 4, 2, 1, bias=False)),
+            nn.Dropout2d(dropout),
+        ])
+        self.linear = DenseQRNN(1024, qrnn_hidden_size, qrnn_layers)
         self.head = head_factory(qrnn_hidden_size, self.pd)
         self.reset_weights()
 
@@ -71,7 +83,6 @@ class CNN_QRNNActor(CNNActor):
 
         input = image_to_float(input)
         x = self._extract_features(input)
-
         x = x.view(seq_len, batch_len, -1)
         x, next_memory = self.linear(x, memory, done_flags)
 
@@ -81,3 +92,19 @@ class CNN_QRNNActor(CNNActor):
             self.logger.add_histogram('conv linear', x, self._step)
 
         return head, next_memory
+
+
+class Sega_CNN_QRNNActor(CNN_QRNNActor):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        nf = 32
+        self.convs = nn.ModuleList([
+            nn.AvgPool2d(2),
+            self.make_layer(nn.Conv2d(self.observation_space.shape[0], nf, 4, 2, 0, bias=False)),
+            nn.MaxPool2d(3, 2),
+            self.make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0, bias=False)),
+            self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1, bias=False)),
+            self.make_layer(nn.Conv2d(nf * 4, nf * 4, 4, 2, 1, bias=False)),
+        ])
+        self.linear = DenseQRNN(1536, self.qrnn_hidden_size, self.qrnn_layers)
+        self.reset_weights()

@@ -3,6 +3,7 @@ import torch.nn.init as init
 
 from .actors import ActorOutput
 from ..common.probability_distributions import ProbabilityDistribution, CategoricalPd
+from optfn.grad_running_norm import GradRunningNorm
 
 
 class HeadBase(nn.Module):
@@ -81,12 +82,6 @@ class ActorCriticHead(HeadBase):
 
     def forward(self, x):
         x = self.linear(x)
-        if x.dim() == 2:
-            values = x[:, 0]
-            probs = x[:, 1:]
-        elif x.dim() == 3:
-            values = x[:, :, 0]
-            probs = x[:, :, 1:]
-        else:
-            raise NotImplementedError()
+        values = x[..., 0]
+        probs = x[..., 1:]
         return ActorOutput(probs=probs, state_values=values, head_raw=x)

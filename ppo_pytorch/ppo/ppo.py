@@ -194,12 +194,14 @@ class PPO(RLBase):
         sample = self.sample
 
         # convert list to numpy array
+        # (seq, num_actors, ...)
         rewards = np.asarray(sample.rewards)
         values_old = np.asarray(sample.values)
         dones = np.asarray(sample.dones)
 
         norm_rewards, np_returns, np_advantages = self._process_rewards(rewards, values_old, dones)
 
+        # (seq * num_actors, ...)
         np_advantages = np_advantages.flatten()
         np_returns = np_returns.flatten()
         dones = dones.flatten()
@@ -220,11 +222,16 @@ class PPO(RLBase):
 
         if self._do_log:
             if states.dim() == 4:
-                img = states[:4]
-                img = img.view(-1, *img.shape[2:]).unsqueeze(1)
+                if states.shape[1] in (1, 3):
+                    img = states[:4]
+                    nrow = 2
+                else:
+                    img = states[:4]
+                    img = img.view(-1, *img.shape[2:]).unsqueeze(1)
+                    nrow = states.shape[1]
                 if self.image_observation:
                     img = img.float() / 255
-                img = make_grid(img, nrow=states.shape[1], normalize=False)
+                img = make_grid(img, nrow=nrow, normalize=False)
                 self.logger.add_image('state', img, self.frame)
             self.logger.add_histogram('rewards', rewards, self.frame)
             self.logger.add_histogram('norm rewards', norm_rewards, self.frame)
