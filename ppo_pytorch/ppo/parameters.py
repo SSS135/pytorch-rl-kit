@@ -91,16 +91,13 @@ def create_sega_kwargs(learning_decay_frames=10e6, **kwargs):
         batch_size=32 * 8,
         reward_scale=0.005,
         entropy_bonus=0.001,
-        model_factory=CNNActorCritic,
+        model_factory=None,
         image_observation=True,
         cuda_eval=True,
         cuda_train=True,
-        lr_scheduler_factory=partial(
-            DecayLR, start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=False),
-        clip_decay_factory=partial(
-            ValueDecay, start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=False),
-        entropy_decay_factory=partial(
-            ValueDecay, start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=True, temp=2),
+        lr_scheduler_factory=None,
+        clip_decay_factory=None,
+        entropy_decay_factory=None,
     )
     defaults.update(kwargs)
     return defaults

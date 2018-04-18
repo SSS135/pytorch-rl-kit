@@ -19,6 +19,7 @@ from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
 from ..models import MLPActorCritic
 from ..common.param_groups_getter import get_param_groups
+from pathlib import Path
 
 
 def lerp(start, end, weight):
@@ -70,6 +71,10 @@ class PPO(RLBase):
                  lr_scheduler_factory=None,
                  clip_decay_factory=None,
                  entropy_decay_factory=None,
+                 model_save_folder=None,
+                 model_save_interval=None,
+                 save_intermediate_models=False,
+                 model_save_tag='ppo_model',
                  **kwargs):
         """
         Args:
@@ -119,6 +124,10 @@ class PPO(RLBase):
         self.constraint = constraint
         self.reward_scale = reward_scale
         self.image_observation = image_observation
+        self.model_save_folder = model_save_folder
+        self.model_save_interval = model_save_interval
+        self.save_intermediate_models = save_intermediate_models
+        self.model_save_tag = model_save_tag
 
         assert constraint in (None, 'clip', 'clip_mod')
         assert not image_observation or \
@@ -131,6 +140,7 @@ class PPO(RLBase):
         self.lr_scheduler = lr_scheduler_factory(self.optimizer) if lr_scheduler_factory is not None else None
         self.clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
         self.entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
+        self.last_model_save_frame = 0
 
     @property
     def learning_rate(self):
@@ -179,6 +189,7 @@ class PPO(RLBase):
     def _train(self):
         data = self._prepare_training_data()
         self._ppo_update(data)
+        self.check_save_model()
 
     def _prepare_training_data(self) -> TrainingData:
         self._check_log()
@@ -256,7 +267,8 @@ class PPO(RLBase):
         # calculate returns and advantages
         np_returns = calc_returns(norm_rewards, values, dones, self.reward_discount)
         np_advantages = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
-        np_advantages = (np_advantages - np_advantages.mean()) / max(np_advantages.std(), 1e-5)
+        # np_advantages = (np_advantages - np_advantages.mean()) / max(np_advantages.std(), 1e-5)
+        np_advantages = np_advantages / np.sqrt((np_advantages ** 2).mean())
 
         return norm_rewards, np_returns, np_advantages
 
@@ -350,8 +362,8 @@ class PPO(RLBase):
 
         # value loss
         v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
-        vf_clip_loss = F.mse_loss(v_pred_clipped, returns, reduce=False)
-        vf_nonclip_loss = F.mse_loss(values, returns, reduce=False)
+        vf_clip_loss = F.smooth_l1_loss(v_pred_clipped, returns, reduce=False)
+        vf_nonclip_loss = F.smooth_l1_loss(values, returns, reduce=False)
         loss_value = self.value_loss_scale * 0.5 * torch.max(vf_nonclip_loss, vf_clip_loss)
 
         # entropy bonus for better exploration
@@ -384,3 +396,13 @@ class PPO(RLBase):
 
     def drop_collected_steps(self):
         self.sample = Sample(states=[], probs=[], values=[], actions=[], rewards=[], dones=[])
+
+    def check_save_model(self):
+        if self.model_save_interval is None or \
+           self.last_model_save_frame + self.model_save_interval > self.frame:
+            return
+        self.last_model_save_frame = self.frame
+        name = f'{self.model_save_tag}_{self.frame}' if self.save_intermediate_models else self.model_save_tag
+        path = Path(self.model_save_folder) / (name + '.pth')
+        print('saving to path', path)
+        torch.save(self.model.state_dict(), path)

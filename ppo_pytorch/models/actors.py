@@ -222,6 +222,7 @@ class CNNActor(Actor):
         self.cnn_activation = cnn_activation
         self.linear_activation = linear_activation
         self.cnn_kind = cnn_kind
+        self.head_factory = head_factory
 
         # create convolutional layers
         if cnn_kind == 'normal': # Nature DQN (1,683,456 parameters)
