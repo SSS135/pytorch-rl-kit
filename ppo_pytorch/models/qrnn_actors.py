@@ -17,6 +17,11 @@ from ..common.make_grid import make_grid
 from ..common.probability_distributions import make_pd
 from .actors import Actor, CNNActor, ActorOutput
 from optfn.qrnn import QRNN, DenseQRNN
+from optfn.sigmoid_pow import sigmoid_pow
+from optfn.rnn.dlstm import DLSTM
+from pretrainedmodels import nasnetamobile
+from optfn.shuffle_conv import ShuffleConv2d
+from optfn.swish import Swish
 
 
 class QRNNActor(Actor):
@@ -47,9 +52,7 @@ class QRNNActor(Actor):
 
 
 class CNN_QRNNActor(CNNActor):
-    def __init__(self, observation_space, action_space, head_factory, cnn_kind='large',
-                 cnn_activation=nn.ReLU, linear_activation=nn.ReLU,
-                 qrnn_hidden_size=512, qrnn_layers=3, dropout=0, **kwargs):
+    def __init__(self, *args, qrnn_hidden_size=512, qrnn_layers=3, **kwargs):
         """
         Args:
             observation_space: Env's observation space
@@ -58,23 +61,21 @@ class CNN_QRNNActor(CNNActor):
             hidden_sizes: List of hidden layers sizes
             activation: Activation function
         """
-        super().__init__(observation_space, action_space, head_factory, cnn_kind,
-                         cnn_activation, linear_activation, dropout, **kwargs)
+        super().__init__(*args, **kwargs)
         self.qrnn_hidden_size = qrnn_hidden_size
         self.qrnn_layers = qrnn_layers
-        assert cnn_kind == 'large' # custom (2,066,432 parameters)
+        assert self.cnn_kind == 'large' # custom (2,066,432 parameters)
         nf = 32
         self.convs = nn.ModuleList([
-            self.make_layer(nn.Conv2d(observation_space.shape[0], nf, 4, 2, 0, bias=False)),
+            self.make_layer(nn.Conv2d(self.observation_space.shape[0], nf, 4, 2, 0, bias=False)),
             nn.MaxPool2d(3, 2),
             self.make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0, bias=False)),
             self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1, bias=False)),
             self.make_layer(nn.Conv2d(nf * 4, nf * 8, 4, 2, 1, bias=False)),
-            nn.Dropout2d(dropout),
         ])
         # self.linear = self.make_layer(nn.Linear(1024, 512))
         self.qrnn = DenseQRNN(512, qrnn_hidden_size, qrnn_layers)
-        self.head = head_factory(qrnn_hidden_size, self.pd)
+        self.head = self.head_factory(qrnn_hidden_size, self.pd)
         self.reset_weights()
 
     def forward(self, input, memory, done_flags):

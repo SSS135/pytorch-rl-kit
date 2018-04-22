@@ -162,13 +162,13 @@ class PPO(RLBase):
 
         # convert observations to tensors
         if self.image_observation:
-            states = self._from_numpy(cur_states * 255, dtype=np.uint8, cuda=self.cuda_eval)
+            states = self._from_numpy(cur_states * 255, dtype=np.uint8, cuda=False)
         else:
-            states = self._from_numpy(cur_states, dtype=np.float32, cuda=self.cuda_eval)
+            states = self._from_numpy(cur_states, dtype=np.float32, cuda=False)
 
         # run network
         # ac_out = self.model(Variable(states, volatile=True))
-        ac_out = self._take_step(states, dones)
+        ac_out = self._take_step(states.cuda() if self.cuda_eval else states, dones)
         actions = self.model.pd.sample(ac_out.probs.data).cpu().numpy()
         probs, values = ac_out.probs.data.cpu().numpy(), ac_out.state_values.data.cpu().numpy()
 
@@ -176,7 +176,7 @@ class PPO(RLBase):
         if len(self.sample.states) != 0:
             self.sample.rewards.append(rewards)
             self.sample.dones.append(dones)
-        self.sample.states.append(states)
+        self.sample.states.append(states.cpu())
         self.sample.probs.append(probs)
         self.sample.values.append(values)
         self.sample.actions.append(actions)
@@ -281,7 +281,8 @@ class PPO(RLBase):
         if next(self.model.parameters()).is_cuda != self.cuda_train:
             self.model = self.model.cuda() if self.cuda_train else self.model.cpu()
 
-        data = (data.states, data.probs_old, data.values_old, data.actions, data.advantages, data.returns)
+        data = (data.states.pin_memory() if self.cuda_train else data.states,
+                data.probs_old, data.values_old, data.actions, data.advantages, data.returns)
         batches = max(1, self.num_actors * self.horizon // self.batch_size)
 
         for ppo_iter in range(self.ppo_iters):

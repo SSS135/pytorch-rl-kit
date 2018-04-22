@@ -32,7 +32,7 @@ class PPO_QRNN(PPO):
                  *args, **kwargs):
         super().__init__(observation_space, action_space, model_factory=model_factory, *args, **kwargs)
         self._rnn_data = RNNData([], [])
-        assert self.horizon <= self.batch_size and (self.horizon * self.num_actors) % self.batch_size == 0
+        assert (self.horizon * self.num_actors) % self.batch_size == 0
 
     def _reorder_data(self, data) -> TrainingData:
         def reorder(input):
@@ -82,15 +82,22 @@ class PPO_QRNN(PPO):
         # actor_switch_flags = actor_switch_flags.repeat(self.num_actors)
 
         # (actors * steps, ...)
-        data = (data.states, data.probs_old, data.values_old, data.actions, data.advantages,
+        data = (data.states.pin_memory() if self.cuda_train else data.states,
+                data.probs_old, data.values_old, data.actions, data.advantages,
                 data.returns, memory, dones)
         # (actors, steps, ...)
-        data = [x.view(self.num_actors, -1, *x.shape[1:]) for x in data]
+        num_actors = self.num_actors
+        if self.horizon > self.batch_size:
+            assert self.horizon % self.batch_size == 0
+            num_actors *= self.horizon // self.batch_size
+            batches = num_actors
+        else:
+            batches = max(1, num_actors * self.horizon // self.batch_size)
 
-        batches = max(1, self.num_actors * self.horizon // self.batch_size)
+        data = [x.view(num_actors, -1, *x.shape[1:]) for x in data]
 
         for ppo_iter in range(self.ppo_iters):
-            actor_index_chunks = torch.randperm(self.num_actors).chunk(batches)
+            actor_index_chunks = torch.randperm(num_actors).chunk(batches)
             for loader_iter, ids in enumerate(actor_index_chunks):
                 # prepare batch data
                 # (actors * steps, ...)

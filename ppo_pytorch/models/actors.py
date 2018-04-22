@@ -303,8 +303,7 @@ class CNNActor(Actor):
         return nn.Sequential(*parts)
 
     def _extract_features(self, input):
-        x = input
-        x = x - x.mean(-1, keepdim=True).mean(-2, keepdim=True)
+        x = input * 2 - 1
         for i, layer in enumerate(self.convs):
             # run conv layer
             if self.cnn_kind == 'depthwise' and i != 0:
