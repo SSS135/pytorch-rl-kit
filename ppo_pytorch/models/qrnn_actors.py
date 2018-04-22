@@ -65,7 +65,6 @@ class CNN_QRNNActor(CNNActor):
         assert cnn_kind == 'large' # custom (2,066,432 parameters)
         nf = 32
         self.convs = nn.ModuleList([
-            nn.AvgPool2d(2),
             self.make_layer(nn.Conv2d(observation_space.shape[0], nf, 4, 2, 0, bias=False)),
             nn.MaxPool2d(3, 2),
             self.make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0, bias=False)),
@@ -73,7 +72,8 @@ class CNN_QRNNActor(CNNActor):
             self.make_layer(nn.Conv2d(nf * 4, nf * 8, 4, 2, 1, bias=False)),
             nn.Dropout2d(dropout),
         ])
-        self.linear = DenseQRNN(1024, qrnn_hidden_size, qrnn_layers)
+        # self.linear = self.make_layer(nn.Linear(1024, 512))
+        self.qrnn = DenseQRNN(512, qrnn_hidden_size, qrnn_layers)
         self.head = head_factory(qrnn_hidden_size, self.pd)
         self.reset_weights()
 
@@ -83,8 +83,10 @@ class CNN_QRNNActor(CNNActor):
 
         input = image_to_float(input)
         x = self._extract_features(input)
+        # x = x.view(seq_len * batch_len, -1)
+        # x = self.linear(x)
         x = x.view(seq_len, batch_len, -1)
-        x, next_memory = self.linear(x, memory, done_flags)
+        x, next_memory = self.qrnn(x, memory, done_flags)
 
         head = self.head(x)
 
@@ -98,13 +100,13 @@ class Sega_CNN_QRNNActor(CNN_QRNNActor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         nf = 32
+        in_c = self.observation_space.shape[0]
         self.convs = nn.ModuleList([
-            nn.AvgPool2d(2),
-            self.make_layer(nn.Conv2d(self.observation_space.shape[0], nf, 4, 2, 0, bias=False)),
-            nn.MaxPool2d(3, 2),
-            self.make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0, bias=False)),
-            self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1, bias=False)),
-            self.make_layer(nn.Conv2d(nf * 4, nf * 4, 4, 2, 1, bias=False)),
+            self.make_layer(nn.Conv2d(in_c,   nf    , 8, 4, 0), allow_norm=False),
+            self.make_layer(nn.Conv2d(nf    , nf * 2, 6, 3, 0, bias=self.norm is None)),
+            self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 0, bias=self.norm is None)),
+            self.make_layer(nn.Conv2d(nf * 4, nf * 8, 3, 1, 0, bias=self.norm is None)),
         ])
-        self.linear = DenseQRNN(1536, self.qrnn_hidden_size, self.qrnn_layers)
+        # self.linear = self.make_layer(nn.Linear(1536, 512, bias='layer' not in self.norm))
+        self.qrnn = DenseQRNN(768, self.qrnn_hidden_size, self.qrnn_layers)
         self.reset_weights()

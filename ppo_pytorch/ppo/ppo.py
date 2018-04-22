@@ -73,6 +73,7 @@ class PPO(RLBase):
                  entropy_decay_factory=None,
                  model_save_folder=None,
                  model_save_interval=None,
+                 model_init_path=None,
                  save_intermediate_models=False,
                  model_save_tag='ppo_model',
                  **kwargs):
@@ -136,6 +137,8 @@ class PPO(RLBase):
         self.sample = Sample([], [], [], [], [], [])
 
         self.model = model_factory(observation_space, action_space)
+        if model_init_path is not None:
+            self.model.load_state_dict(torch.load(model_init_path))
         self.optimizer = optimizer_factory(get_param_groups(self.model))
         self.lr_scheduler = lr_scheduler_factory(self.optimizer) if lr_scheduler_factory is not None else None
         self.clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
@@ -267,8 +270,8 @@ class PPO(RLBase):
         # calculate returns and advantages
         np_returns = calc_returns(norm_rewards, values, dones, self.reward_discount)
         np_advantages = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
-        # np_advantages = (np_advantages - np_advantages.mean()) / max(np_advantages.std(), 1e-5)
-        np_advantages = np_advantages / np.sqrt((np_advantages ** 2).mean())
+        np_advantages = (np_advantages - np_advantages.mean()) / max(np_advantages.std(), 1e-5)
+        # np_advantages = np_advantages / np.sqrt((np_advantages ** 2).mean())
 
         return norm_rewards, np_returns, np_advantages
 

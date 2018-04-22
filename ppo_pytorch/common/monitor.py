@@ -25,6 +25,12 @@ class Monitor(gym.Wrapper):
         self.episode_reward += reward
         self.episode_len += 1
         if done:
+            ep_orig = info.get('episode')
+            if ep_orig is not None:
+                info['episode_orig'] = ep_orig
             info['episode'] = EpisodeInfo(self.episode_reward, self.episode_len)
 
         return state, reward, done, info
+
+    def _ensure_no_double_wrap(self):
+        pass

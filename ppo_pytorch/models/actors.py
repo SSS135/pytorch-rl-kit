@@ -15,6 +15,8 @@ from .utils import weights_init, make_conv_heatmap, image_to_float
 from optfn.layer_norm import LayerNorm1d
 from ..common.make_grid import make_grid
 from ..common.probability_distributions import make_pd
+from optfn.gated_instance_norm import GatedInstanceNorm2d
+from optfn.learned_norm import LearnedNorm2d
 
 
 class ActorOutput:
@@ -280,13 +282,13 @@ class CNNActor(Actor):
         super().reset_weights()
         self.head.reset_weights()
 
-    def make_layer(self, transf):
+    def make_layer(self, transf, allow_norm=True):
         parts = [transf]
 
         is_linear = isinstance(transf, nn.Linear)
         features = transf.out_features if is_linear else transf.out_channels
         norm_cls = None
-        if self.norm is not None:
+        if self.norm is not None and allow_norm:
             if 'instance' in self.norm and not is_linear:
                 norm_cls = partial(nn.InstanceNorm2d, affine=True)
             if 'layer' in self.norm and is_linear:
@@ -341,3 +343,18 @@ class CNNActor(Actor):
             self.log_policy_attention(input, ac_out)
 
         return ac_out
+
+
+class Sega_CNNActor(CNNActor):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        nf = 32
+        self.convs = nn.ModuleList([
+            self.make_layer(nn.Conv2d(self.observation_space.shape[0], nf, 4, 2, 0), allow_norm=False),
+            nn.MaxPool2d(3, 2),
+            self.make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0, bias=self.norm is None)),
+            self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1, bias=self.norm is None)),
+            self.make_layer(nn.Conv2d(nf * 4, nf * 4, 4, 2, 1, bias=self.norm is None)),
+        ])
+        self.linear = self.make_layer(nn.Linear(1536, 512))
+        self.reset_weights()

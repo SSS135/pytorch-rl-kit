@@ -38,6 +38,7 @@ class TensorboardEnvLogger:
         self.reward_sum = np.zeros(self.env_count)
         self.episode_lens = np.zeros(self.env_count)
         self.new_rewards = []
+        self.new_rewards_orig = []
         self.episode = 0
         self.frame = 0
         self.last_log_time = time.time()
@@ -66,6 +67,9 @@ class TensorboardEnvLogger:
                 self.new_rewards.append(Reward(ep_info.reward, ep_info.len, self.episode, self.frame))
                 self.episode += 1
                 self.episodes_file.write(f'{ep_info.reward}, {ep_info.len}\n')
+            ep_info_orig = info.get('episode_orig')
+            if ep_info_orig is not None:
+                self.new_rewards_orig.append(Reward(ep_info_orig.reward, ep_info_orig.len, self.episode, self.frame))
 
         if len(self.new_rewards) != 0 and self.logger is not None and \
            (time.time() > self.last_log_time + self.log_time_interval or force_log):
@@ -82,10 +86,13 @@ class TensorboardEnvLogger:
             avg_frame = np.mean([r.frame for r in self.new_rewards])
             avg_len = np.mean([r.len for r in self.new_rewards])
             avg_r = np.mean([r.reward for r in self.new_rewards])
+            avg_r_orig = np.mean([r.reward for r in self.new_rewards_orig])
             self.logger.add_scalar('avg episode lengths', avg_len, avg_ep)
             self.logger.add_scalar('avg reward by episode', avg_r, avg_ep)
             self.logger.add_scalar('avg reward by frame', avg_r, avg_frame)
+            self.logger.add_scalar('avg reward by frame orig', avg_r_orig, avg_frame)
             self.new_rewards.clear()
+            self.new_rewards_orig.clear()
             self.episodes_file.flush()
 
     def add_scalar(self, *args, **kwargs):

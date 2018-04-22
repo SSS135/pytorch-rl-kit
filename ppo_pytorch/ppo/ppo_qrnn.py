@@ -32,6 +32,7 @@ class PPO_QRNN(PPO):
                  *args, **kwargs):
         super().__init__(observation_space, action_space, model_factory=model_factory, *args, **kwargs)
         self._rnn_data = RNNData([], [])
+        assert self.horizon <= self.batch_size and (self.horizon * self.num_actors) % self.batch_size == 0
 
     def _reorder_data(self, data) -> TrainingData:
         def reorder(input):
