@@ -15,8 +15,8 @@ from .utils import weights_init, make_conv_heatmap, image_to_float
 from optfn.layer_norm import LayerNorm1d
 from ..common.make_grid import make_grid
 from ..common.probability_distributions import make_pd
-from optfn.gated_instance_norm import GatedInstanceNorm2d
-from optfn.learned_norm import LearnedNorm2d
+from optfn.swish import Swish
+from optfn.group_norm import GroupNorm2d
 
 
 class ActorOutput:
@@ -291,6 +291,8 @@ class CNNActor(Actor):
         if self.norm is not None and allow_norm:
             if 'instance' in self.norm and not is_linear:
                 norm_cls = partial(nn.InstanceNorm2d, affine=True)
+            if 'group' in self.norm and not is_linear:
+                norm_cls = partial(GroupNorm2d, groups=transf.out_channels // 8, affine=True)
             if 'layer' in self.norm and is_linear:
                 norm_cls = partial(LayerNorm1d, affine=True)
             if 'batch' in self.norm:

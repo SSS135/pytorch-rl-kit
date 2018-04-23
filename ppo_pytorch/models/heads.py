@@ -74,7 +74,7 @@ class ActorCriticHead(HeadBase):
         self.linear = nn.Linear(in_features, self.pd.prob_vector_len + 1)
 
     def reset_weights(self):
-        init.orthogonal(self.linear.weight.data[0:1], 1)
+        init.orthogonal(self.linear.weight.data[:1], 1)
         init.orthogonal(self.linear.weight.data[1:], 0.01)
         # normalized_columns_initializer(self.linear.weight.data[0:1], 1.0)
         # normalized_columns_initializer(self.linear.weight.data[1:], 0.01)

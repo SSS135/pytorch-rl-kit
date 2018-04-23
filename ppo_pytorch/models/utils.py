@@ -1,9 +1,10 @@
 import torch
 import torch.nn.init as init
 from torch.autograd import Variable
+import torch.nn.functional as F
 
 
-def make_conv_heatmap(x, scale=2):
+def make_conv_heatmap(x, scale=0.5):
     """
     Convert convolution output to blue-black-yellow color space for better visualization.
     Args:
@@ -12,7 +13,7 @@ def make_conv_heatmap(x, scale=2):
     Returns: Blue-black-yellow images
     """
     img = x.repeat(1, 3, 1, 1).fill_(0)
-    x = (x / scale).squeeze(1)
+    x = F.tanh(x * scale).squeeze(1)
     img[:, 0] = img[:, 1] = x.clamp(0, 1)
     img[:, 2] = -x.clamp(-1, 0)
     return img
@@ -31,10 +32,10 @@ def weights_init(m, init_alg=init.xavier_uniform, gain=1):
         init_alg(m.weight, gain)
         # if m.bias is not None:
         #     m.bias.data.fill_(0)
-    if norm and hasattr(m, 'bias'):
+    if norm and hasattr(m, 'weight'):
         m.weight.data.normal_(1, 0.01)
-        if layer_2d:
-            m.bias.data.normal_(-1, 0.01)
+        # if layer_2d:
+        #     m.bias.data.normal_(-1, 0.01)
 
 
 def normalized_columns_initializer(weights, std=1.0):
