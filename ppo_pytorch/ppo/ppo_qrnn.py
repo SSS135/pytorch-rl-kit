@@ -1,5 +1,6 @@
+import copy
 import pprint
-from collections import namedtuple
+from collections import namedtuple, OrderedDict
 from functools import partial
 
 import gym.spaces
@@ -18,7 +19,7 @@ from ..common.multi_dataset import MultiDataset
 from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
 from ..models import QRNNActorCritic
-from ..models.actors import ActorOutput
+from ..models.heads import HeadOutput
 from .ppo import PPO, TrainingData
 from collections import namedtuple
 
@@ -36,6 +37,8 @@ class PPO_QRNN(PPO):
 
     def _reorder_data(self, data) -> TrainingData:
         def reorder(input):
+            if input is None:
+                return None
             # input: (seq * num_actors, ...)
             # (seq, num_actors, ...)
             x = input.view(-1, self.num_actors, *input.shape[1:])
@@ -53,12 +56,13 @@ class PPO_QRNN(PPO):
         if self.cuda_eval:
             dones = dones.cuda()
         states = Variable(states.unsqueeze(0), volatile=True)
+        self.model.eval()
         ac_out, next_mem = self.model(states, mem, dones)
         if len(self._rnn_data.memory) == 0:
             self._rnn_data.memory.append(next_mem.data.clone().fill_(0))
         self._rnn_data.memory.append(next_mem.data)
         self._rnn_data.dones.append(dones.data[0])
-        return ActorOutput(ac_out.probs.squeeze(0), ac_out.state_values.squeeze(0))
+        return HeadOutput(ac_out.probs.squeeze(0), ac_out.state_values.squeeze(0))
 
     def _ppo_update(self, data):
         self.model.train()

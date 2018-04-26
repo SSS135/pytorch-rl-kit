@@ -103,10 +103,6 @@ class ProbabilityDistribution:
     def entropy(self, prob):
         raise NotImplementedError
 
-    @property
-    def max_entropy(self):
-        raise NotImplementedError
-
     def logp(self, a, prob):
         """Log probability"""
         return - self.neglogp(a, prob)
@@ -159,10 +155,6 @@ class CategoricalPd(ProbabilityDistribution):
         po = ea / z
         return torch.sum(po * (torch.log(z) - a), dim=-1)
 
-    @property
-    def max_entropy(self):
-        return math.log(self.n)
-
     def sample(self, prob):
         return softmax(prob).multinomial(1)
 
@@ -212,10 +204,6 @@ class BernoulliPd(ProbabilityDistribution):
         ps = sigmoid(prob)
         return sigmoid_cross_entropy_with_logits(prob, ps).sum(-1)
 
-    @property
-    def max_entropy(self):
-        return self.n * math.log(2)  # TODO: check if correct
-
     def sample(self, prob):
         return sigmoid(prob).bernoulli()
 
@@ -243,40 +231,108 @@ class DiagGaussianPd(ProbabilityDistribution):
     def dtype_torch(self, cuda):
         return torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
-    def neglogp(self, x, prob):
-        mean = prob[:, :self.d]
-        logstd = prob[:, self.d:]
-        std = torch.exp(logstd)
-        x = x.view_as(mean.data if isinstance(mean, Variable) else mean)
-        nll = 0.5 * torch.sum(square((x - mean) / std), dim=-1) \
-              + 0.5 * math.log(2.0 * math.pi) * self.d \
-              + torch.sum(logstd, dim=-1)
-        return nll.squeeze(-1)
+    def neglogp(self, x, prob, reduce=True):
+        mean = prob[..., :self.d]
+        logvar = prob[..., self.d:]
+        assert x.shape == mean.shape
+        var = torch.exp(logvar)
+        # logp = -((x - mean) ** 2) / (2 * var) - logstd - math.log(math.sqrt(2 * math.pi))
+        # return logp.mean(-1) if reduce else logp
 
-    def kl(self, prob1, prob2):
-        mean1 = prob1[:, :self.d]
-        mean2 = prob2[:, :self.d]
-        logstd1 = prob1[:, self.d:]
-        logstd2 = prob2[:, self.d:]
+        # x = x.view_as(mean.data if isinstance(mean, Variable) else mean)
+        # nll = 0.5 * square((x - mean) / std) + 0.5 * math.log(2.0 * math.pi) + logstd
+        nll = 0.5 * ((x - mean) ** 2 / var + math.log(2 * math.pi) + logvar)
+        return nll.sum(-1) if reduce else nll
+
+    def kl(self, prob1, prob2, reduce=True):
+        mean1 = prob1[..., :self.d]
+        mean2 = prob2[..., :self.d]
+        logstd1 = prob1[..., self.d:]
+        logstd2 = prob2[..., self.d:]
         std1 = torch.exp(logstd1)
         std2 = torch.exp(logstd2)
-        kl = torch.sum(logstd2 - logstd1 + (square(std1) + square(mean1 - mean2)) / (2.0 * square(std2)) - 0.5, dim=-1)
-        return kl
+        kl = logstd2 - logstd1 + (square(std1) + square(mean1 - mean2)) / (2.0 * square(std2)) - 0.5
+        return kl.sum(-1) if reduce else kl
 
-    def entropy(self, prob):
-        logstd = prob[:, self.d:]
-        ent = torch.mean(logstd + .5 * math.log(2.0 * math.pi * math.e), dim=-1)
-        return ent
-
-    @property
-    def max_entropy(self):
-        return self.d * .5 * math.log(2.0 * math.pi * math.e)
+    def entropy(self, prob, reduce=True):
+        logvar = prob[..., self.d:]
+        # ent = 0.5 + 0.5 * math.log(2 * math.pi) + logstd
+        # ent = logvar + .5 * math.log(2.0 * math.pi * math.e)
+        ent = 0.5 * (math.log(2 * math.pi * math.e) + logvar)
+        return ent.sum(-1) if reduce else ent
 
     def sample(self, prob):
-        mean = prob[:, :self.d]
-        logstd = prob[:, self.d:]
-        std = torch.exp(logstd)
-        return mean + std * torch.randn(std.size()).type_as(std.data if isinstance(std, Variable) else std)
+        mean = prob[..., :self.d]
+        logvar = prob[..., self.d:]
+        std = torch.exp(0.5 * logvar)
+        return torch.normal(mean, std)
+
+
+class MultivecGaussianPd(ProbabilityDistribution):
+    def __init__(self, d, num_vec):
+        self.d = d
+        self.num_vec = num_vec
+
+    @property
+    def prob_vector_len(self):
+        return self.d * self.num_vec
+
+    @property
+    def action_vector_len(self):
+        return self.d
+
+    @property
+    def input_vector_len(self):
+        return self.d
+
+    @property
+    def dtype_numpy(self):
+        return np.float32
+
+    def dtype_torch(self, cuda):
+        return torch.cuda.FloatTensor if cuda else torch.FloatTensor
+
+    def pdf(self, x, prob, reduce=True):
+        vecs = prob.contiguous().view(*prob.shape[:-1], self.d, self.num_vec)
+        var = vecs.var(-1).add(1e-5)
+        mean = vecs.mean(-1)
+        pdf = 1 / torch.sqrt(2 * math.pi * var) + torch.exp(-(x - mean) ** 2 / (2 * var))
+        return pdf.mean(-1) if reduce else pdf
+
+    def logp(self, x, prob, reduce=True):
+        logp = self.pdf(x, prob, False).log()
+        return logp.mean(-1) if reduce else logp
+
+    def neglogp(self, x, prob, reduce=True):
+        return -self.logp(x, prob, reduce)
+
+    def kl(self, prob1, prob2, reduce=True):
+        vecs1 = prob1.contiguous().view(*prob1.shape[:-1], self.d, self.num_vec)
+        vecs2 = prob2.contiguous().view(*prob2.shape[:-1], self.d, self.num_vec)
+        var1 = vecs1.var(-1).add(1e-5)
+        var2 = vecs2.var(-1).add(1e-5)
+        mean1 = vecs1.mean(-1)
+        mean2 = vecs2.mean(-1)
+        std1 = var1.sqrt()
+        std2 = var2.sqrt()
+        logstd1 = std1.log()
+        logstd2 = std2.log()
+        kl = logstd2 - logstd1 + (square(std1) + square(mean1 - mean2)) / (2.0 * square(std2)) - 0.5
+        return kl.mean(-1) if reduce else kl
+
+    def entropy(self, prob, reduce=True):
+        vecs = prob.contiguous().view(*prob.shape[:-1], self.d, self.num_vec)
+        var = vecs.var(-1).add(1e-5)
+        ent = 0.5 * (2 * math.pi * math.e * var).log()
+        return ent.mean(-1) if reduce else ent
+
+    def sample(self, prob):
+        vecs = prob.contiguous().view(*prob.shape[:-1], self.d, self.num_vec)
+        rand = np.random.randint(self.num_vec, size=vecs.shape[0])
+        actions = []
+        for sample_idx, vec_idx in enumerate(rand):
+            actions.append(vecs[sample_idx, ..., vec_idx])
+        return torch.stack(actions, 0)
 
 
 def test_probtypes():

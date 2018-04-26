@@ -20,6 +20,7 @@ from ..common.rl_base import RLBase
 from ..models import MLPActorCritic
 from ..common.param_groups_getter import get_param_groups
 from pathlib import Path
+import math
 
 
 def lerp(start, end, weight):
@@ -134,7 +135,7 @@ class PPO(RLBase):
         assert not image_observation or \
                isinstance(observation_space, gym.spaces.Box) and len(observation_space.shape) == 3
 
-        self.sample = Sample([], [], [], [], [], [])
+        self.sample = self.create_new_sample()
 
         self.model = model_factory(observation_space, action_space)
         if model_init_path is not None:
@@ -169,17 +170,10 @@ class PPO(RLBase):
         # run network
         # ac_out = self.model(Variable(states, volatile=True))
         ac_out = self._take_step(states.cuda() if self.cuda_eval else states, dones)
-        actions = self.model.pd.sample(ac_out.probs.data).cpu().numpy()
+        actions = self.model.pd.sample(ac_out.probs).data.cpu().numpy()
         probs, values = ac_out.probs.data.cpu().numpy(), ac_out.state_values.data.cpu().numpy()
 
-        # add step to history
-        if len(self.sample.states) != 0:
-            self.sample.rewards.append(rewards)
-            self.sample.dones.append(dones)
-        self.sample.states.append(states.cpu())
-        self.sample.probs.append(probs)
-        self.sample.values.append(values)
-        self.sample.actions.append(actions)
+        self.append_to_sample(self.sample, states, rewards, dones, actions, probs, values)
 
         if len(self.sample.rewards) >= self.horizon:
             self._train()
@@ -190,11 +184,6 @@ class PPO(RLBase):
         return self.model(Variable(states, volatile=True))
 
     def _train(self):
-        data = self._prepare_training_data()
-        self._ppo_update(data)
-        self.check_save_model()
-
-    def _prepare_training_data(self) -> TrainingData:
         self._check_log()
 
         # update clipping and learning rate decay schedulers
@@ -205,7 +194,63 @@ class PPO(RLBase):
         if self.entropy_decay is not None:
             self.entropy_decay.step(self.frame)
 
-        sample = self.sample
+        data = self._process_sample(self.sample)
+        self._log_training_data(data)
+        self._ppo_update(data)
+        self.check_save_model()
+        self.sample = self.create_new_sample()
+
+    def _log_training_data(self, data):
+        if self._do_log:
+            if data.states.dim() == 4:
+                if data.states.shape[1] in (1, 3):
+                    img = data.states[:4]
+                    nrow = 2
+                else:
+                    img = data.states[:4]
+                    img = img.view(-1, *img.shape[2:]).unsqueeze(1)
+                    nrow = data.states.shape[1]
+                if self.image_observation:
+                    img = img.float() / 255
+                img = make_grid(img, nrow=nrow, normalize=False)
+                self.logger.add_image('state', img, self.frame)
+            self.logger.add_histogram('rewards', data.rewards, self.frame)
+            self.logger.add_histogram('returns', data.returns, self.frame)
+            self.logger.add_histogram('advantages', data.advantages, self.frame)
+            self.logger.add_histogram('values', data.values_old, self.frame)
+            if isinstance(self.model.pd, DiagGaussianPd):
+                mean, std = data.probs_old.chunk(2, dim=1)
+                self.logger.add_histogram('probs mean', mean, self.frame)
+                self.logger.add_histogram('probs std', std, self.frame)
+            else:
+                self.logger.add_histogram('probs', F.log_softmax(Variable(data.probs_old), dim=-1), self.frame)
+            for name, param in self.model.named_parameters():
+                self.logger.add_histogram(name, param, self.frame)
+
+    @staticmethod
+    def append_to_sample(sample, states, rewards, dones, actions, probs, values):
+        # add step to history
+        if len(sample.states) != 0:
+            sample.rewards.append(rewards)
+            sample.dones.append(dones)
+        sample.states.append(states.cpu())
+        sample.probs.append(probs)
+        sample.values.append(values)
+        sample.actions.append(actions)
+
+    @staticmethod
+    def create_new_sample():
+        return Sample([], [], [], [], [], [])
+
+    def _process_sample(self, sample, pd=None, reward_discount=None, advantage_discount=None, reward_scale=None):
+        if pd is None:
+            pd = self.model.pd
+        if reward_discount is None:
+            reward_discount = self.reward_discount
+        if advantage_discount is None:
+            advantage_discount = self.advantage_discount
+        if reward_scale is None:
+            reward_scale = self.reward_scale
 
         # convert list to numpy array
         # (seq, num_actors, ...)
@@ -213,7 +258,8 @@ class PPO(RLBase):
         values_old = np.asarray(sample.values)
         dones = np.asarray(sample.dones)
 
-        norm_rewards, np_returns, np_advantages = self._process_rewards(rewards, values_old, dones)
+        norm_rewards, np_returns, np_advantages = self._process_rewards(
+            rewards, values_old, dones, reward_discount, advantage_discount, reward_scale)
 
         # (seq * num_actors, ...)
         np_advantages = np_advantages.flatten()
@@ -224,52 +270,21 @@ class PPO(RLBase):
         # convert data to Tensors
         probs_old = torch.cat(self._from_numpy(sample.probs[:-1], dtype=np.float32), dim=0)
         values_old = torch.cat(self._from_numpy(sample.values[:-1], dtype=np.float32), dim=0)
-        actions = torch.cat(self._from_numpy(sample.actions[:-1], dtype=self.model.pd.dtype_numpy), dim=0)
+        actions = torch.cat(self._from_numpy(sample.actions[:-1], dtype=pd.dtype_numpy), dim=0)
         returns = self._from_numpy(np_returns, np.float32)
         advantages = self._from_numpy(np_advantages, np.float32)
-        states = torch.cat(sample.states[:-1], dim=0)
+        states = torch.cat(sample.states[:-1], dim=0) if sample.states is not None else None
         dones = self._from_numpy(dones, np.float32)
         rewards = self._from_numpy(norm_rewards, np.float32)
 
-        # clear collected experience which is converted to Tensors and not needed anymore
-        self.sample = Sample(states=[], probs=[], values=[], actions=[], rewards=[], dones=[])
-
-        if self._do_log:
-            if states.dim() == 4:
-                if states.shape[1] in (1, 3):
-                    img = states[:4]
-                    nrow = 2
-                else:
-                    img = states[:4]
-                    img = img.view(-1, *img.shape[2:]).unsqueeze(1)
-                    nrow = states.shape[1]
-                if self.image_observation:
-                    img = img.float() / 255
-                img = make_grid(img, nrow=nrow, normalize=False)
-                self.logger.add_image('state', img, self.frame)
-            self.logger.add_histogram('rewards', rewards, self.frame)
-            self.logger.add_histogram('norm rewards', norm_rewards, self.frame)
-            self.logger.add_histogram('returns', returns, self.frame)
-            self.logger.add_histogram('advantages', advantages, self.frame)
-            self.logger.add_histogram('values', values_old, self.frame)
-            if isinstance(self.model.pd, DiagGaussianPd):
-                mean, std = probs_old.chunk(2, dim=1)
-                self.logger.add_histogram('probs mean', mean, self.frame)
-                self.logger.add_histogram('probs std', std, self.frame)
-            else:
-                self.logger.add_histogram('probs', F.log_softmax(Variable(probs_old), dim=-1), self.frame)
-            for name, param in self.model.named_parameters():
-                self.logger.add_histogram(name, param, self.frame)
-
         return TrainingData(states, probs_old, values_old, actions, advantages, returns, dones, rewards)
 
-    def _process_rewards(self, rewards, values, dones):
-        # clip rewards
-        norm_rewards = self.reward_scale * rewards  # .clip(-1, 1)
+    def _process_rewards(self, rewards, values, dones, reward_discount, advantage_discount, reward_scale):
+        norm_rewards = reward_scale * rewards
 
         # calculate returns and advantages
-        np_returns = calc_returns(norm_rewards, values, dones, self.reward_discount)
-        np_advantages = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
+        np_returns = calc_returns(norm_rewards, values, dones, reward_discount)
+        np_advantages = calc_advantages(norm_rewards, values, dones, reward_discount, advantage_discount)
         np_advantages = (np_advantages - np_advantages.mean()) / max(np_advantages.std(), 1e-5)
         # np_advantages = np_advantages / np.sqrt((np_advantages ** 2).mean())
 
@@ -330,11 +345,14 @@ class PPO(RLBase):
             x = x.cuda()
         return x
 
-    def _get_ppo_loss(self, probs, probs_old, values, values_old, actions, advantages, returns):
+    def _get_ppo_loss(self, probs, probs_old, values, values_old, actions, advantages, returns, pd=None, tag=''):
         """
         Single iteration of PPO algorithm.
         Returns: Total loss and KL divergence.
         """
+
+        if pd is None:
+            pd = self.model.pd
 
         # prepare data
         actions = actions.detach()
@@ -347,17 +365,15 @@ class PPO(RLBase):
 
         # action probability ratio
         # log probabilities used for better numerical stability
-        logp = self.model.pd.logp(actions, probs)
-        logp_old = self.model.pd.logp(actions, probs_old).detach()
-        ratio = (logp - logp_old).exp()
+        logp = pd.logp(actions, probs)
+        logp_old = pd.logp(actions, probs_old).detach()
+        ratio = logp - logp_old #(logp - logp_old).exp()
 
         # policy loss
         unclipped_policy_loss = ratio * advantages
         if self.constraint == 'clip' or self.constraint == 'clip_mod':
             # clip policy loss
-            c_low = 1 - policy_clip if self.constraint == 'clip' else 1 / (1 + policy_clip)
-            c_high = 1 + policy_clip
-            clipped_ratio = ratio.clamp(c_low, c_high)
+            clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
             clipped_policy_loss = clipped_ratio * advantages
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
         else:
@@ -371,27 +387,29 @@ class PPO(RLBase):
         loss_value = self.value_loss_scale * 0.5 * torch.max(vf_nonclip_loss, vf_clip_loss)
 
         # entropy bonus for better exploration
-        entropy = self.model.pd.entropy(probs)
+        entropy = pd.entropy(probs)
         loss_ent = -self.entropy_bonus * entropy
 
         # sum all losses
         total_loss = loss_clip.mean() + loss_value.mean() + loss_ent.mean()
+        assert not np.isnan(total_loss.data[0]) and not np.isinf(total_loss.data[0]), \
+            (loss_clip.data.mean(), loss_value.data.mean(), loss_ent.data.mean())
 
-        kl = self.model.pd.kl(probs_old, probs).mean()
+        kl = pd.kl(probs_old, probs).mean()
 
         if self.model.do_log:
-            self.logger.add_histogram('loss value', loss_value, self.frame)
-            self.logger.add_histogram('loss ent', loss_ent, self.frame)
-            self.logger.add_scalar('entropy', entropy.mean(), self.frame)
-            self.logger.add_scalar('loss entropy', loss_ent.mean(), self.frame)
-            self.logger.add_scalar('loss value', loss_value.mean(), self.frame)
-            self.logger.add_histogram('ratio', ratio, self.frame)
-            self.logger.add_scalar('ratio mean', ratio.mean(), self.frame)
-            self.logger.add_scalar('ratio abs mean', (ratio - 1).abs().mean(), self.frame)
-            self.logger.add_scalar('ratio abs max', (ratio - 1).abs().max(), self.frame)
+            self.logger.add_histogram('loss value' + tag, loss_value, self.frame)
+            self.logger.add_histogram('loss ent' + tag, loss_ent, self.frame)
+            self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame)
+            self.logger.add_scalar('loss entropy' + tag, loss_ent.mean(), self.frame)
+            self.logger.add_scalar('loss value' + tag, loss_value.mean(), self.frame)
+            self.logger.add_histogram('ratio' + tag, ratio, self.frame)
+            self.logger.add_scalar('ratio mean' + tag, ratio.mean(), self.frame)
+            self.logger.add_scalar('ratio abs mean' + tag, (ratio - 1).abs().mean(), self.frame)
+            self.logger.add_scalar('ratio abs max' + tag, (ratio - 1).abs().max(), self.frame)
             if self.constraint == 'clip' or self.constraint == 'clip_mod':
-                self.logger.add_histogram('loss clip', loss_clip, self.frame)
-                self.logger.add_scalar('loss clip', loss_clip.mean(), self.frame)
+                self.logger.add_histogram('loss clip' + tag, loss_clip, self.frame)
+                self.logger.add_scalar('loss clip' + tag, loss_clip.mean(), self.frame)
 
         return total_loss, kl
 

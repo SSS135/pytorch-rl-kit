@@ -32,7 +32,7 @@ def weights_init(m, init_alg=init.xavier_uniform, gain=1):
         init_alg(m.weight, gain)
         # if m.bias is not None:
         #     m.bias.data.fill_(0)
-    if norm and hasattr(m, 'weight'):
+    if norm and hasattr(m, 'weight') and m.weight is not None:
         m.weight.data.normal_(1, 0.01)
         # if layer_2d:
         #     m.bias.data.normal_(-1, 0.01)

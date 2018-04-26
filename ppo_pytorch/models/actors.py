@@ -17,21 +17,7 @@ from ..common.make_grid import make_grid
 from ..common.probability_distributions import make_pd
 from optfn.swish import Swish
 from optfn.group_norm import GroupNorm2d
-
-
-class ActorOutput:
-    """
-    Output of `Actor`. Different actors may fill different arguments.
-    """
-
-    def __init__(self, probs=None, state_values=None, conv_out=None, hidden_code=None,
-                 action_values=None, head_raw=None):
-        self.probs = probs
-        self.state_values = state_values
-        self.conv_out = conv_out
-        self.hidden_code = hidden_code
-        self.action_values = action_values
-        self.head_raw = head_raw
+from optfn.learned_norm import LearnedNorm2d
 
 
 class GroupTranspose(nn.Module):
@@ -297,6 +283,8 @@ class CNNActor(Actor):
                 norm_cls = partial(LayerNorm1d, affine=True)
             if 'batch' in self.norm:
                 norm_cls = nn.BatchNorm1d if is_linear else nn.BatchNorm2d
+            if 'learned' in self.norm and not is_linear:
+                norm_cls = partial(LearnedNorm2d, groups=transf.out_channels // 8)
             if norm_cls is not None and not is_linear:
                 parts.append(norm_cls(features))
 
@@ -322,7 +310,7 @@ class CNNActor(Actor):
                 # self.log_conv_filters(i, layer[0])
         return x
 
-    def forward(self, input) -> ActorOutput:
+    def forward(self, input):
         log_policy_attention = self.do_log and input.is_leaf
         input = image_to_float(input)
         if log_policy_attention:

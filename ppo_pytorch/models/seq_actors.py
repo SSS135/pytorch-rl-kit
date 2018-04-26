@@ -16,7 +16,7 @@ from .utils import weights_init, make_conv_heatmap, image_to_float
 from optfn.layer_norm import LayerNorm1d, LayerNorm2d
 from ..common.make_grid import make_grid
 from ..common.probability_distributions import make_pd
-from .actors import Actor, CNNActor, ActorOutput
+from .actors import Actor, CNNActor
 from optfn.qrnn import QRNN, DenseQRNN
 from optfn.sigmoid_pow import sigmoid_pow
 from optfn.rnn.dlstm import DLSTM
@@ -34,20 +34,19 @@ class Sega_CNNSeqActor(CNNActor):
         nf = 32
         in_c = self.observation_space.shape[0]
         self.convs = nn.ModuleList([
-            self.make_layer(nn.Conv2d(in_c,   nf    , 4, 2, 0), allow_norm=False),
-            self.make_layer(nn.Conv2d(nf    , nf * 2, 4, 2, 0, bias=self.norm is None)),
+            self.make_layer(nn.Conv2d(in_c,   nf,     8, 4, 0, bias=self.norm is None)),
+            self.make_layer(nn.Conv2d(nf,     nf * 2, 6, 3, 0, bias=self.norm is None)),
             self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 0, bias=self.norm is None)),
-            self.make_layer(nn.Conv2d(nf * 4, nf * 4, 4, 2, 0, bias=self.norm is None)),
-            self.make_layer(nn.Conv2d(nf * 4, nf * 4, 3, 1, 0, bias=self.norm is None)),
         ])
+        layer_norm = self.norm is not None and 'layer' in self.norm
         self.seq_conv = nn.Sequential(
             nn.ReplicationPad1d((3, 0)),
-            nn.Conv1d(2304, seq_channels, 4),
-            LayerNorm1d(seq_channels),
+            nn.Conv1d(1920, seq_channels, 4),
+            *([LayerNorm1d(seq_channels)] if layer_norm else []),
             nn.ReLU(),
             nn.ReplicationPad1d((3, 0)),
             nn.Conv1d(seq_channels, seq_channels, 4, bias=False),
-            LayerNorm1d(seq_channels),
+            *([LayerNorm1d(seq_channels)] if layer_norm else []),
             nn.ReLU(),
         )
         self.reset_weights()
@@ -70,13 +69,12 @@ class Sega_CNNSeqActor(CNNActor):
 
         if memory is not None:
             x = x[memory.shape[0]:]
-
         head = self.head(x)
 
         if self.do_log:
             self.logger.add_histogram('conv linear', x, self._step)
 
-        return head, features[-1:] #Variable(torch.zeros(*input.shape[:2], 1))
+        return head, features[-1:]
 
 
 class Sega_CNNHSeqActor(CNNActor):
@@ -93,7 +91,7 @@ class Sega_CNNHSeqActor(CNNActor):
         nf = 32
         in_c = self.observation_space.shape[0]
         self.convs = nn.ModuleList([
-            self.make_layer(nn.Conv2d(in_c,   nf,  8, 4, 0), allow_norm=False),
+            self.make_layer(nn.Conv2d(in_c,   nf,     8, 4, 0, bias=self.norm is None)),
             self.make_layer(nn.Conv2d(nf,     nf * 2, 6, 3, 0, bias=self.norm is None)),
             self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 0, bias=self.norm is None)),
             self.make_layer(nn.Conv2d(nf * 4, nf * 8, 3, 1, 0, bias=self.norm is None)),
@@ -137,11 +135,12 @@ class Sega_CNNHSeqActor(CNNActor):
         input = input.contiguous().view(seq_len * batch_len, *input.shape[2:])
 
         input = image_to_float(input)
-        x = self._extract_features(input)
-        # x = x.view(seq_len * batch_len, -1)
-        # x = self.linear(x)
+        features = self._extract_features(input).view(seq_len, batch_len, -1)
+        if memory is not None:
+            features = torch.cat([memory, features], 0)
         # (B, C, S)
-        x = x.view(seq_len, batch_len, -1).permute(1, 2, 0).contiguous()
+        x = features.permute(1, 2, 0).contiguous()
+
         hidden_l1 = self.seq_conv(x)
         hidden_l2 = self.seq_conv(hidden_l1)
         # (S * B, C)
@@ -153,9 +152,11 @@ class Sega_CNNHSeqActor(CNNActor):
         action_l2_dist = F.smooth_l1_loss(action_l2_up, hidden_l1)
         merged_l1 = self.l1_merge(torch.cat([hidden_l1, action_l2_up], 1))
 
+        if memory is not None:
+            x = x[memory.shape[0]:]
         head = self.head(x)
 
         if self.do_log:
             self.logger.add_histogram('conv linear', x, self._step)
 
-        return head, Variable(torch.zeros(*input.shape[:2], 1))
+        return head, features[-1:]

@@ -1,9 +1,21 @@
 import torch.nn as nn
 import torch.nn.init as init
-
-from .actors import ActorOutput
 from ..common.probability_distributions import ProbabilityDistribution, CategoricalPd
 from optfn.grad_running_norm import GradRunningNorm
+
+
+class HeadOutput:
+    """
+    Output of `HeadBase`. Different heads may fill different arguments.
+    """
+    def __init__(self, probs=None, state_values=None, conv_out=None, hidden_code=None,
+                 action_values=None, head_raw=None):
+        self.probs = probs
+        self.state_values = state_values
+        self.conv_out = conv_out
+        self.hidden_code = hidden_code
+        self.action_values = action_values
+        self.head_raw = head_raw
 
 
 class HeadBase(nn.Module):
@@ -56,7 +68,7 @@ class ActionValuesHead(HeadBase):
             Q = V + (A - A.max(1, keepdim=True)[0])
         else:
             Q = A
-        return ActorOutput(action_values=Q, head_raw=av)
+        return HeadOutput(action_values=Q)
 
 
 class ActorCriticHead(HeadBase):
@@ -84,4 +96,4 @@ class ActorCriticHead(HeadBase):
         x = self.linear(x)
         values = x[..., 0]
         probs = x[..., 1:]
-        return ActorOutput(probs=probs, state_values=values, head_raw=x)
+        return HeadOutput(probs=probs, state_values=values)

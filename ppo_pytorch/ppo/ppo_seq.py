@@ -18,7 +18,7 @@ from ..common.multi_dataset import MultiDataset
 from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
 from ..models import Sega_CNNSeqActor
-from ..models.actors import ActorOutput
+from ..models.heads import HeadOutput
 from .ppo import PPO, TrainingData
 from collections import namedtuple
 from .ppo_qrnn import RNNData, PPO_QRNN
@@ -45,7 +45,7 @@ class PPO_Seq(PPO_QRNN):
             self._rnn_data.memory.append(next_mem.data.clone().fill_(0))
         self._rnn_data.memory.append(next_mem.data)
         self._rnn_data.dones.append(dones.data[0])
-        return ActorOutput(ac_out.probs.squeeze(0), ac_out.state_values.squeeze(0))
+        return HeadOutput(ac_out.probs.squeeze(0), ac_out.state_values.squeeze(0))
 
     def _ppo_update(self, data):
         last_mem = self._rnn_data.memory[-self.eval_seq_len:]
