@@ -46,7 +46,7 @@ class Actor(nn.Module):
     """
 
     def __init__(self, observation_space: gym.Space, action_space: gym.Space, norm: str = None,
-                 weight_init=init.orthogonal, weight_init_gain=math.sqrt(2)):
+                 weight_init=init.orthogonal_, weight_init_gain=math.sqrt(2)):
         super().__init__()
         self.observation_space = observation_space
         self.action_space = action_space
@@ -113,39 +113,42 @@ class Actor(nn.Module):
         return seq
 
     def log_conv_activations(self, index: int, conv: nn.Conv2d, x: Variable):
-        img = x[0].data.unsqueeze(1).clone()
-        img = make_conv_heatmap(img)
-        img = make_grid(img, nrow=round(math.sqrt(conv.out_channels)), normalize=False, fill_value=0.1)
-        self.logger.add_image('conv activations {} img'.format(index), img, self._step)
-        self.logger.add_histogram('conv activations {} hist'.format(index), x[0], self._step)
+        with torch.no_grad():
+            img = x[0].unsqueeze(1).clone()
+            img = make_conv_heatmap(img)
+            img = make_grid(img, nrow=round(math.sqrt(conv.out_channels)), normalize=False, fill_value=0.1)
+            self.logger.add_image('conv activations {} img'.format(index), img, self._step)
+            self.logger.add_histogram('conv activations {} hist'.format(index), x[0], self._step)
 
     def log_conv_filters(self, index: int, conv: nn.Conv2d):
-        channels = conv.in_channels * conv.out_channels
-        shape = conv.weight.data.shape
-        kernel_h, kernel_w = shape[2], shape[3]
-        img = conv.weight.data.view(channels, 1, kernel_h, kernel_w).clone()
-        max_img_size = 100 * 5
-        img_size = channels * math.sqrt(kernel_h * kernel_w)
-        if img_size > max_img_size:
-            channels = channels * (max_img_size / img_size)
-            channels = math.ceil(math.sqrt(channels)) ** 2
-            img = img[:channels]
-        img = make_conv_heatmap(img, scale=2 * img.std())
-        img = make_grid(img, nrow=round(math.sqrt(channels)), normalize=False, fill_value=0.1)
-        self.logger.add_image('conv featrues {} img'.format(index), img, self._step)
-        self.logger.add_histogram('conv features {} hist'.format(index), conv.weight.data, self._step)
+        with torch.no_grad():
+            channels = conv.in_channels * conv.out_channels
+            shape = conv.weight.shape
+            kernel_h, kernel_w = shape[2], shape[3]
+            img = conv.weight.view(channels, 1, kernel_h, kernel_w).clone()
+            max_img_size = 100 * 5
+            img_size = channels * math.sqrt(kernel_h * kernel_w)
+            if img_size > max_img_size:
+                channels = channels * (max_img_size / img_size)
+                channels = math.ceil(math.sqrt(channels)) ** 2
+                img = img[:channels]
+            img = make_conv_heatmap(img, scale=2 * img.std())
+            img = make_grid(img, nrow=round(math.sqrt(channels)), normalize=False, fill_value=0.1)
+            self.logger.add_image('conv featrues {} img'.format(index), img, self._step)
+            self.logger.add_histogram('conv features {} hist'.format(index), conv.weight, self._step)
 
     def log_policy_attention(self, states, head_out):
         states_grad = autograd.grad(
             head_out.probs.abs().mean() + head_out.state_values.abs().mean(), states,
             only_inputs=True, retain_graph=True)[0]
-        img = states_grad.data[:4]
-        img.abs_()
-        img /= img.view(4, -1).pow(2).mean(1).sqrt_().add_(1e-5).view(4, 1, 1, 1)
-        img = img.view(-1, 1, *img.shape[2:]).abs()
-        # img = make_conv_heatmap(img, scale=2*img.std())
-        img = make_grid(img, 4, normalize=True, fill_value=0.1)
-        self.logger.add_image('state attention', img, self._step)
+        with torch.no_grad():
+            img = states_grad[:4]
+            img.abs_()
+            img /= img.view(4, -1).pow(2).mean(1).sqrt_().add_(1e-5).view(4, 1, 1, 1)
+            img = img.view(-1, 1, *img.shape[2:]).abs()
+            # img = make_conv_heatmap(img, scale=2*img.std())
+            img = make_grid(img, 4, normalize=True, fill_value=0.1)
+            self.logger.add_image('state attention', img, self._step)
 
 
 class MLPActor(Actor):
@@ -314,7 +317,7 @@ class CNNActor(Actor):
         log_policy_attention = self.do_log and input.is_leaf
         input = image_to_float(input)
         if log_policy_attention:
-            input = Variable(input.data, requires_grad=True)
+            input.requires_grad = True
 
         x = self._extract_features(input)
 

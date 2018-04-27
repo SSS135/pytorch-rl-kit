@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch.nn.init as init
 from ..common.probability_distributions import ProbabilityDistribution, CategoricalPd
 from optfn.grad_running_norm import GradRunningNorm
+from .utils import normalized_columns_initializer
 
 
 class HeadOutput:
@@ -55,8 +56,7 @@ class ActionValuesHead(HeadBase):
         self.linear = nn.Linear(in_features, self.pd.prob_vector_len + 1)
 
     def reset_weights(self):
-        init.orthogonal(self.linear.weight.data, 1)
-        # normalized_columns_initializer(self.linear.weight.data, 1.0)
+        normalized_columns_initializer(self.linear.weight.data, 1.0)
         self.linear.bias.data.fill_(0)
 
     def forward(self, x):
@@ -86,10 +86,8 @@ class ActorCriticHead(HeadBase):
         self.linear = nn.Linear(in_features, self.pd.prob_vector_len + 1)
 
     def reset_weights(self):
-        init.orthogonal(self.linear.weight.data[:1], 1)
-        init.orthogonal(self.linear.weight.data[1:], 0.01)
-        # normalized_columns_initializer(self.linear.weight.data[0:1], 1.0)
-        # normalized_columns_initializer(self.linear.weight.data[1:], 0.01)
+        normalized_columns_initializer(self.linear.weight.data[0:1], 1.0)
+        normalized_columns_initializer(self.linear.weight.data[1:], 0.01)
         self.linear.bias.data.fill_(0)
 
     def forward(self, x):

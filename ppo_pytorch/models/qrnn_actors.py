@@ -130,9 +130,17 @@ class Sega_CNN_HQRNNActor(Sega_CNN_QRNNActor):
 
         layer_norm = self.norm is not None and 'layer' in self.norm
 
-        self.qrnn_l1 = self.qrnn
+        # self.qrnn_l1 = self.qrnn
         del self.qrnn
-        self.qrnn_l2 = DenseQRNN(self.qrnn_hidden_size + h_action_size, self.qrnn_hidden_size, self.qrnn_layers, layer_norm=layer_norm)
+        # self.qrnn_l2 = DenseQRNN(self.qrnn_hidden_size + h_action_size, self.qrnn_hidden_size, self.qrnn_layers, layer_norm=layer_norm)
+        self.qrnn_l1 = nn.Sequential(
+            nn.Linear(1920, self.qrnn_hidden_size),
+            nn.ReLU(),
+        )
+        self.qrnn_l2 = nn.Sequential(
+            nn.Linear(self.qrnn_hidden_size + h_action_size, self.qrnn_hidden_size),
+            nn.ReLU(),
+        )
         # self.action_upsample_l2 = nn.Sequential(
         #     nn.Linear(h_action_size, self.qrnn_hidden_size, bias=not layer_norm),
         #     *([TemporalLayerNorm1(self.qrnn_hidden_size)] if layer_norm else []),
@@ -154,15 +162,15 @@ class Sega_CNN_HQRNNActor(Sega_CNN_QRNNActor):
         self.head_l2 = ActorCriticHead(self.qrnn_hidden_size, self.h_pd)
         self.reset_weights()
 
-    def extract_l1_features(self, input, memory_l1, done_flags):
+    def extract_l1_features(self, input):
         seq_len, batch_len = input.shape[:2]
         input = input.contiguous().view(seq_len * batch_len, *input.shape[2:])
 
         input = image_to_float(input)
         x = self._extract_features(input)
         x = x.view(seq_len, batch_len, -1)
-        hidden_l1, next_memory_l1 = self.qrnn_l1(x, memory_l1, done_flags)
-        return hidden_l1, next_memory_l1
+        hidden_l1 = self.qrnn_l1(x)
+        return hidden_l1
 
     def act_l1(self, hidden_l1, target_l1):
         x = torch.cat([hidden_l1, target_l1], -1)
@@ -170,13 +178,13 @@ class Sega_CNN_HQRNNActor(Sega_CNN_QRNNActor):
         return x
 
     def forward(self, input, memory, done_flags, action_l2=None):
-        memory_l1, memory_l2 = memory.chunk(2, 0) if memory is not None else (None, None)
+        # memory_l1, memory_l2 = memory.chunk(2, 0) if memory is not None else (None, None)
 
-        hidden_l1, next_memory_l1 = self.extract_l1_features(input, memory_l1, done_flags)
+        hidden_l1 = self.extract_l1_features(input)
         state_vec_l1 = self.state_vec_extractor_l1(hidden_l1)
         input_l2 = torch.cat([hidden_l1, state_vec_l1], -1)
         # gate_l2 = self.head_gate_l2(hidden_l1)
-        hidden_l2, next_memory_l2 = self.qrnn_l2(input_l2, memory_l2, done_flags)
+        hidden_l2 = self.qrnn_l2(input_l2)
 
         head_l2 = self.head_l2(hidden_l2)
         if action_l2 is None:
@@ -186,9 +194,9 @@ class Sega_CNN_HQRNNActor(Sega_CNN_QRNNActor):
         preact_l1 = self.act_l1(state_vec_l1, target_l2)
 
         head_l1 = self.head(preact_l1)
-        head_l1.state_values = head_l1.state_values
+        # head_l1.state_values = 0 * head_l1.state_values
 
-        next_memory = torch.cat([next_memory_l1, next_memory_l2], 0)
+        next_memory = Variable(input.new(2, input.shape[1], 2))
 
         return head_l1, head_l2, action_l2, state_vec_l1, target_l2, next_memory
 

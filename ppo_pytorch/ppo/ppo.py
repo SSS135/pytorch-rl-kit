@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
-from torch.nn.utils import clip_grad_norm
+from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
 
@@ -118,8 +118,8 @@ class PPO(RLBase):
         self.horizon = horizon
         self.ppo_iters = ppo_iters
         self.batch_size = batch_size
-        self.cuda_eval = cuda_eval
-        self.cuda_train = cuda_train
+        self.device_eval = torch.device('cuda' if cuda_eval else 'cpu')
+        self.device_train = torch.device('cuda' if cuda_train else 'cpu')
         self.grad_clip_norm = grad_clip_norm
         self.value_loss_scale = value_loss_scale
         self.model_factory = model_factory
@@ -156,32 +156,34 @@ class PPO(RLBase):
 
     def _step(self, prev_states, rewards, dones, cur_states) -> np.ndarray:
         # move network to cuda or cpu
-        if next(self.model.parameters()).is_cuda != self.cuda_eval:
-            self.model = self.model.cuda() if self.cuda_eval else self.model.cpu()
+        torch.set_grad_enabled(False)
+
+        self.model = self.model.to(self.device_eval)
 
         # self.model.eval()
 
         # convert observations to tensors
         if self.image_observation:
-            states = self._from_numpy(cur_states * 255, dtype=np.uint8, cuda=False)
+            states = self._from_numpy(cur_states * 255, dtype=np.uint8)
         else:
-            states = self._from_numpy(cur_states, dtype=np.float32, cuda=False)
+            states = self._from_numpy(cur_states, dtype=np.float32)
 
         # run network
-        # ac_out = self.model(Variable(states, volatile=True))
-        ac_out = self._take_step(states.cuda() if self.cuda_eval else states, dones)
-        actions = self.model.pd.sample(ac_out.probs).data.cpu().numpy()
-        probs, values = ac_out.probs.data.cpu().numpy(), ac_out.state_values.data.cpu().numpy()
+        ac_out = self._take_step(states.to(self.device_eval), dones)
+        actions = self.model.pd.sample(ac_out.probs).cpu().numpy()
 
+        probs, values = ac_out.probs.cpu().numpy(), ac_out.state_values.cpu().numpy()
         self.append_to_sample(self.sample, states, rewards, dones, actions, probs, values)
 
         if len(self.sample.rewards) >= self.horizon:
             self._train()
 
+        torch.set_grad_enabled(True)
+
         return actions
 
     def _take_step(self, states, dones):
-        return self.model(Variable(states, volatile=True))
+        return self.model(states)
 
     def _train(self):
         self._check_log()
@@ -261,21 +263,17 @@ class PPO(RLBase):
         norm_rewards, np_returns, np_advantages = self._process_rewards(
             rewards, values_old, dones, reward_discount, advantage_discount, reward_scale)
 
-        # (seq * num_actors, ...)
-        np_advantages = np_advantages.flatten()
-        np_returns = np_returns.flatten()
-        dones = dones.flatten()
-        norm_rewards = norm_rewards.flatten()
-
         # convert data to Tensors
-        probs_old = torch.cat(self._from_numpy(sample.probs[:-1], dtype=np.float32), dim=0)
-        values_old = torch.cat(self._from_numpy(sample.values[:-1], dtype=np.float32), dim=0)
-        actions = torch.cat(self._from_numpy(sample.actions[:-1], dtype=pd.dtype_numpy), dim=0)
-        returns = self._from_numpy(np_returns, np.float32)
-        advantages = self._from_numpy(np_advantages, np.float32)
+        probs_old = self._from_numpy(sample.probs[:-1], dtype=np.float32)
+        actions = self._from_numpy(sample.actions[:-1], dtype=pd.dtype_numpy)
+        values_old = self._from_numpy(sample.values[:-1], dtype=np.float32).reshape(-1)
+        returns = self._from_numpy(np_returns, np.float32).reshape(-1)
+        advantages = self._from_numpy(np_advantages, np.float32).reshape(-1)
+        dones = self._from_numpy(dones, np.float32).reshape(-1)
+        rewards = self._from_numpy(norm_rewards, np.float32).reshape(-1)
         states = torch.cat(sample.states[:-1], dim=0) if sample.states is not None else None
-        dones = self._from_numpy(dones, np.float32)
-        rewards = self._from_numpy(norm_rewards, np.float32)
+
+        probs_old, actions = [v.reshape(-1, v.shape[-1]) for v in (probs_old, actions)]
 
         return TrainingData(states, probs_old, values_old, actions, advantages, returns, dones, rewards)
 
@@ -285,18 +283,17 @@ class PPO(RLBase):
         # calculate returns and advantages
         np_returns = calc_returns(norm_rewards, values, dones, reward_discount)
         np_advantages = calc_advantages(norm_rewards, values, dones, reward_discount, advantage_discount)
-        np_advantages = (np_advantages - np_advantages.mean()) / max(np_advantages.std(), 1e-5)
-        # np_advantages = np_advantages / np.sqrt((np_advantages ** 2).mean())
+        # np_advantages = (np_advantages - np_advantages.mean()) / max(np_advantages.std(), 1e-5)
+        np_advantages = np_advantages / np.sqrt((np_advantages ** 2).mean())
 
         return norm_rewards, np_returns, np_advantages
 
     def _ppo_update(self, data):
         self.model.train()
         # move model to cuda or cpu
-        if next(self.model.parameters()).is_cuda != self.cuda_train:
-            self.model = self.model.cuda() if self.cuda_train else self.model.cpu()
+        self.model = self.model.to(self.device_train)
 
-        data = (data.states.pin_memory() if self.cuda_train else data.states,
+        data = (data.states.pin_memory() if self.device_train.type == 'cuda' else data.states,
                 data.probs_old, data.values_old, data.actions, data.advantages, data.returns)
         batches = max(1, self.num_actors * self.horizon // self.batch_size)
 
@@ -306,20 +303,20 @@ class PPO(RLBase):
                 # prepare batch data
                 batch_idx = rand_idx[loader_iter * self.batch_size: (loader_iter + 1) * self.batch_size]
                 batch_idx_cuda = batch_idx.cuda()
-                st, po, vo, ac, adv, ret = [Variable(x[batch_idx_cuda if x.is_cuda else batch_idx]) for x in data]
-                if self.cuda_train:
-                    st = Variable(st.data.cuda())
+                st, po, vo, ac, adv, ret = [x[batch_idx_cuda if x.is_cuda else batch_idx] for x in data]
+                st = st.to(self.device_train)
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
-                actor_out = self.model(st)
-                # get loss
-                loss, kl = self._get_ppo_loss(actor_out.probs.cpu(), po, actor_out.state_values.cpu(), vo, ac, adv, ret)
+                with torch.enable_grad():
+                    actor_out = self.model(st)
+                    # get loss
+                    loss, kl = self._get_ppo_loss(actor_out.probs.cpu(), po, actor_out.state_values.cpu(), vo, ac, adv, ret)
 
-                # optimize
-                loss.backward()
-                clip_grad_norm(self.model.parameters(), self.grad_clip_norm)
-                self.optimizer.step()
-                self.optimizer.zero_grad()
+                    # optimize
+                    loss.backward()
+                    clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
 
                 self.model.set_log(self.logger, False, self.step)
 
@@ -329,7 +326,7 @@ class PPO(RLBase):
                 self.logger.add_scalar('total loss', loss, self.frame)
                 self.logger.add_scalar('kl', kl, self.frame)
 
-    def _from_numpy(self, x, dtype=None, cuda=False):
+    def _from_numpy(self, x, dtype=None):
         """
         Helper function which converts input to Tensor
         Args:
@@ -341,8 +338,6 @@ class PPO(RLBase):
         """
         x = np.asarray(x, dtype=dtype)
         x = torch.from_numpy(x)
-        if cuda:
-            x = x.cuda()
         return x
 
     def _get_ppo_loss(self, probs, probs_old, values, values_old, actions, advantages, returns, pd=None, tag=''):
@@ -367,13 +362,15 @@ class PPO(RLBase):
         # log probabilities used for better numerical stability
         logp = pd.logp(actions, probs)
         logp_old = pd.logp(actions, probs_old).detach()
-        ratio = logp - logp_old #(logp - logp_old).exp()
+        ratio = (logp - logp_old).exp()
 
         # policy loss
         unclipped_policy_loss = ratio * advantages
         if self.constraint == 'clip' or self.constraint == 'clip_mod':
             # clip policy loss
-            clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
+            c_low = 1 - policy_clip if self.constraint == 'clip' else 1 / (1 + policy_clip)
+            c_high = 1 + policy_clip
+            clipped_ratio = ratio.clamp(c_low, c_high)
             clipped_policy_loss = clipped_ratio * advantages
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
         else:
@@ -392,8 +389,8 @@ class PPO(RLBase):
 
         # sum all losses
         total_loss = loss_clip.mean() + loss_value.mean() + loss_ent.mean()
-        assert not np.isnan(total_loss.data[0]) and not np.isinf(total_loss.data[0]), \
-            (loss_clip.data.mean(), loss_value.data.mean(), loss_ent.data.mean())
+        assert not np.isnan(total_loss.item()) and not np.isinf(total_loss.item()), \
+            (loss_clip.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
 
         kl = pd.kl(probs_old, probs).mean()
 

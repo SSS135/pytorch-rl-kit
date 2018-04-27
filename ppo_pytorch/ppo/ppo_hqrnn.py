@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
-from torch.nn.utils import clip_grad_norm
+from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
 
@@ -73,11 +73,11 @@ class PPO_HQRNN(PPO_QRNN):
 
     def get_l1_l2_samples(self):
         next_l1 = torch.stack(self._rnn_data.cur_l1[1:], 0)
-        cur_l1 = torch.stack(self._rnn_data.cur_l1[:-1], 0)
+        # cur_l1 = torch.stack(self._rnn_data.cur_l1[:-1], 0)
         target_l1 = torch.stack(self._rnn_data.target_l1[:-1], 0)
-        r_next_l1 = (target_l1 - next_l1).pow(2).mean(-1).sqrt().neg()
-        r_cur_l1 = (target_l1 - cur_l1).pow(2).mean(-1).sqrt().neg()
-        rewards_l1 = (r_next_l1 - r_cur_l1).cpu().numpy()
+        r_next_l1 = (target_l1 - next_l1).pow(2).mean(-1).sqrt().neg().exp()
+        # r_cur_l1 = (target_l1 - cur_l1).pow(2).mean(-1).sqrt().neg()
+        rewards_l1 = r_next_l1.cpu().numpy()
         probs_l2 = torch.stack(self._rnn_data.probs_l2, 0).cpu().numpy()
         values_l2 = torch.stack(self._rnn_data.values_l2, 0).cpu().numpy()
         actions_l2 = torch.stack(self._rnn_data.action_l2, 0).cpu().numpy()
@@ -95,6 +95,7 @@ class PPO_HQRNN(PPO_QRNN):
             sample_l2, self.model.h_pd, self.reward_discount_l2, self.advantage_discount_l2, self.reward_scale_l2)
 
         if self._do_log:
+            self.logger.add_scalar('rewards l1', np.mean(self.sample.rewards), self.frame)
             self.logger.add_histogram('rewards l2', self.data_l2.rewards, self.frame)
             self.logger.add_histogram('returns l2', self.data_l2.returns, self.frame)
             self.logger.add_histogram('advantages l2', self.data_l2.advantages, self.frame)
@@ -178,13 +179,13 @@ class PPO_HQRNN(PPO_QRNN):
                 # get loss
                 loss_l1, kl_l1 = self._get_ppo_loss(probs_l1, po_l1, state_values_l1, vo_l1, ac_l1, adv_l1, ret_l1,
                                                     self.model.pd, tag='')
-                loss_l2, kl_l2 = self._get_ppo_loss(probs_l2, po_l2, state_values_l2, vo_l2, ac_l2, adv_l2, ret_l2,
-                                                    self.model.h_pd, tag=' l2')
-                loss = loss_l1 + loss_l2
+                # loss_l2, kl_l2 = self._get_ppo_loss(probs_l2, po_l2, state_values_l2, vo_l2, ac_l2, adv_l2, ret_l2,
+                #                                     self.model.h_pd, tag=' l2')
+                loss = loss_l1 #+ loss_l2
 
                 # optimize
                 loss.backward()
-                clip_grad_norm(self.model.parameters(), self.grad_clip_norm)
+                clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
@@ -195,7 +196,7 @@ class PPO_HQRNN(PPO_QRNN):
                 self.logger.add_scalar('clip mult', self.clip_mult, self.frame)
                 self.logger.add_scalar('total loss', loss, self.frame)
                 self.logger.add_scalar('kl', kl_l1, self.frame)
-                self.logger.add_scalar('kl_l2', kl_l2, self.frame)
+                # self.logger.add_scalar('kl_l2', kl_l2, self.frame)
 
     def drop_collected_steps(self):
         super().drop_collected_steps()

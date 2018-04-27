@@ -19,7 +19,7 @@ def make_conv_heatmap(x, scale=0.5):
     return img
 
 
-def weights_init(m, init_alg=init.xavier_uniform, gain=1):
+def weights_init(m, init_alg=init.xavier_uniform_, gain=1):
     """
     Initialization function for `Actor`. Xavier init is used by default.
     """
@@ -38,20 +38,17 @@ def weights_init(m, init_alg=init.xavier_uniform, gain=1):
         #     m.bias.data.normal_(-1, 0.01)
 
 
-def normalized_columns_initializer(weights, std=1.0):
+def normalized_columns_initializer(weights, norm=1.0):
     """
-    Initialization makes layer output have approximately zero mean and `std` standard distribution.
-    `std` should be small (0.01) for action probability output in policy gradient to ensure better exploration.
-    For state-value or action-value output `std` is usually around 1.
+    Initialization makes layer output have approximately zero mean and `norm` norm.
     Args:
         weights: `nn.Linear` weights
-        std: Scale of output vector.
+        norm: Scale of output vector.
     """
-    out = torch.randn(weights.size())
-    out *= std / out.norm(2, dim=1, keepdim=True)
+    out = torch.nn.init.orthogonal_(weights)
+    out *= norm / out.norm(2, dim=1, keepdim=True)
     weights.copy_(out)
 
 
 def image_to_float(x):
-    name = (x.data if isinstance(x, Variable) else x).__class__.__name__
-    return x if name.find('Byte') == -1 else x.float().div_(255)
+    return x if x.dtype.is_floating_point else x.float().div_(255)

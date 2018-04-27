@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
-from torch.nn.utils import clip_grad_norm
+from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
 
@@ -50,25 +50,26 @@ class PPO_QRNN(PPO):
         return TrainingData._make(data)
 
     def _take_step(self, states, dones):
-        mem = Variable(self._rnn_data.memory[-1], volatile=True) if len(self._rnn_data.memory) != 0 else None
-        dones = torch.zeros(self.num_actors) if dones is None else torch.from_numpy(np.asarray(dones, np.float32))
-        dones = Variable(dones.unsqueeze(0))
-        if self.cuda_eval:
-            dones = dones.cuda()
-        states = Variable(states.unsqueeze(0), volatile=True)
         self.model.eval()
+
+        mem = self._rnn_data.memory[-1] if len(self._rnn_data.memory) != 0 else None
+        dones = torch.zeros(self.num_actors) if dones is None else torch.from_numpy(np.asarray(dones, np.float32))
+        dones = dones.unsqueeze(0)
+        dones = dones.to(self.device_eval)
+        states = states.unsqueeze(0)
         ac_out, next_mem = self.model(states, mem, dones)
+
         if len(self._rnn_data.memory) == 0:
-            self._rnn_data.memory.append(next_mem.data.clone().fill_(0))
-        self._rnn_data.memory.append(next_mem.data)
-        self._rnn_data.dones.append(dones.data[0])
+            self._rnn_data.memory.append(next_mem.clone().fill_(0))
+        self._rnn_data.memory.append(next_mem)
+        self._rnn_data.dones.append(dones[0])
+
         return HeadOutput(ac_out.probs.squeeze(0), ac_out.state_values.squeeze(0))
 
     def _ppo_update(self, data):
         self.model.train()
         # move model to cuda or cpu
-        if next(self.model.parameters()).is_cuda != self.cuda_train:
-            self.model = self.model.cuda() if self.cuda_train else self.model.cpu()
+        self.model = self.model.to(self.device_train)
 
         data = self._reorder_data(data)
 
@@ -86,7 +87,7 @@ class PPO_QRNN(PPO):
         # actor_switch_flags = actor_switch_flags.repeat(self.num_actors)
 
         # (actors * steps, ...)
-        data = (data.states.pin_memory() if self.cuda_train else data.states,
+        data = (data.states.pin_memory() if self.device_train.type == 'cuda' else data.states,
                 data.probs_old, data.values_old, data.actions, data.advantages,
                 data.returns, memory, dones)
         # (actors, steps, ...)
@@ -105,34 +106,35 @@ class PPO_QRNN(PPO):
             for loader_iter, ids in enumerate(actor_index_chunks):
                 # prepare batch data
                 # (actors * steps, ...)
+                ids_cuda = ids.cuda()
                 st, po, vo, ac, adv, ret, mem, done = [
-                    Variable(x[ids.cuda() if x.is_cuda else ids].contiguous().view(-1, *x.shape[2:]))
+                    Variable(x[ids_cuda if x.is_cuda else ids].contiguous().view(-1, *x.shape[2:]))
                     for x in data]
                 # (steps, actors, ...)
-                st, mem, done = [x.data.view(ids.shape[0], -1, *x.shape[1:]).transpose(0, 1) for x in (st, mem, done)]
+                st, mem, done = [x.view(ids.shape[0], -1, *x.shape[1:]).transpose(0, 1) for x in (st, mem, done)]
                 # (layers, actors, hidden_size)
                 mem = mem[0].transpose(0, 1)
-                if self.cuda_train:
-                    st, mem, done = [x.cuda() for x in (st, mem, done)]
+                st, mem, done = [x.to(self.device_train) for x in (st, mem, done)]
                 # (steps, actors)
                 done = done.contiguous().view(done.shape[:2])
-                st, mem, done = [Variable(x) for x in (st, mem, done)]
 
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
-                actor_out, _ = self.model(st, mem, done)
-                # (actors * steps, probs)
-                probs = actor_out.probs.cpu().transpose(0, 1).contiguous().view(-1, actor_out.probs.shape[2])
-                # (actors * steps)
-                state_values = actor_out.state_values.cpu().transpose(0, 1).contiguous().view(-1)
-                # get loss
-                loss, kl = self._get_ppo_loss(probs, po, state_values, vo, ac, adv, ret)
 
-                # optimize
-                loss.backward()
-                clip_grad_norm(self.model.parameters(), self.grad_clip_norm)
-                self.optimizer.step()
-                self.optimizer.zero_grad()
+                with torch.enable_grad():
+                    actor_out, _ = self.model(st, mem, done)
+                    # (actors * steps, probs)
+                    probs = actor_out.probs.cpu().transpose(0, 1).contiguous().view(-1, actor_out.probs.shape[2])
+                    # (actors * steps)
+                    state_values = actor_out.state_values.cpu().transpose(0, 1).contiguous().view(-1)
+                    # get loss
+                    loss, kl = self._get_ppo_loss(probs, po, state_values, vo, ac, adv, ret)
+
+                    # optimize
+                    loss.backward()
+                    clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
 
                 self.model.set_log(self.logger, False, self.step)
 
