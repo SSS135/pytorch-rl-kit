@@ -101,6 +101,8 @@ class PPO_QRNN(PPO):
 
         data = [x.view(num_actors, -1, *x.shape[1:]) for x in data]
 
+        prev_model_dict = copy.deepcopy(self.model.state_dict())
+
         for ppo_iter in range(self.ppo_iters):
             actor_index_chunks = torch.randperm(num_actors).chunk(batches)
             for loader_iter, ids in enumerate(actor_index_chunks):
@@ -122,19 +124,64 @@ class PPO_QRNN(PPO):
                     self.model.set_log(self.logger, self._do_log, self.step)
 
                 with torch.enable_grad():
+                    # actor_out, _ = self.model(st, mem, done)
+                    # # (actors * steps, probs)
+                    # probs = actor_out.probs.cpu().transpose(0, 1).contiguous().view(-1, actor_out.probs.shape[2])
+                    # # (actors * steps)
+                    # state_values = actor_out.state_values.cpu().transpose(0, 1).contiguous().view(-1)
+                    # # get loss
+                    # loss, kl = self._get_ppo_loss(probs, po, state_values, vo, ac, adv, ret)
+                    #
+                    # # optimize
+                    # loss.backward()
+                    # clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                    # self.optimizer.step()
+                    # self.optimizer.zero_grad()
+
+                    for src, dst in zip(self.model.state_dict().values(), prev_model_dict.values()):
+                        dst.copy_(src)
+
                     actor_out, _ = self.model(st, mem, done)
                     # (actors * steps, probs)
-                    probs = actor_out.probs.cpu().transpose(0, 1).contiguous().view(-1, actor_out.probs.shape[2])
+                    probs_prev = actor_out.probs.cpu().transpose(0, 1).contiguous().view(-1, actor_out.probs.shape[2])
                     # (actors * steps)
-                    state_values = actor_out.state_values.cpu().transpose(0, 1).contiguous().view(-1)
+                    values_prev = actor_out.state_values.cpu().transpose(0, 1).contiguous().view(-1)
                     # get loss
-                    loss, kl = self._get_ppo_loss(probs, po, state_values, vo, ac, adv, ret)
+                    loss, kl = self._get_ppo_loss(probs_prev, po, values_prev, vo, ac, adv, ret, tag=None)
+                    loss = loss.mean()
 
                     # optimize
                     loss.backward()
                     clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                     self.optimizer.step()
                     self.optimizer.zero_grad()
+
+                    actor_out, _ = self.model(st, mem, done)
+                    # (actors * steps, probs)
+                    probs_cur = actor_out.probs.cpu().transpose(0, 1).contiguous().view(-1, actor_out.probs.shape[2])
+                    # (actors * steps)
+                    values_cur = actor_out.state_values.cpu().transpose(0, 1).contiguous().view(-1)
+                    sample_weights = self._get_sample_weights(
+                        probs_cur, probs_prev, po, values_cur, values_prev, vo, ac, adv, ret)
+
+                    for dst, src in zip(self.model.state_dict().values(), prev_model_dict.values()):
+                        dst.copy_(src)
+                    prev_optim_dict = copy.deepcopy(self.optimizer.state_dict())
+
+                    actor_out, _ = self.model(st, mem, done)
+                    # (actors * steps, probs)
+                    probs_prev = actor_out.probs.cpu().transpose(0, 1).contiguous().view(-1, actor_out.probs.shape[2])
+                    # (actors * steps)
+                    values_prev = actor_out.state_values.cpu().transpose(0, 1).contiguous().view(-1)
+                    # get loss
+                    loss, kl = self._get_ppo_loss(probs_prev, po, values_prev, vo, ac, adv, ret)
+                    loss = (loss * sample_weights).mean()
+                    loss.backward()
+                    clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+
+                    self.optimizer.load_state_dict(prev_optim_dict)
 
                 self.model.set_log(self.logger, False, self.step)
 

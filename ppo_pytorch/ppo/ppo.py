@@ -1,3 +1,4 @@
+import copy
 import pprint
 from collections import namedtuple
 from functools import partial
@@ -297,6 +298,9 @@ class PPO(RLBase):
                 data.probs_old, data.values_old, data.actions, data.advantages, data.returns)
         batches = max(1, self.num_actors * self.horizon // self.batch_size)
 
+        prev_model_dict = copy.deepcopy(self.model.state_dict())
+        prev_optim_dict = copy.deepcopy(self.optimizer.state_dict())
+
         for ppo_iter in range(self.ppo_iters):
             rand_idx = torch.randperm(len(data[0]))
             for loader_iter in range(batches):
@@ -308,12 +312,40 @@ class PPO(RLBase):
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
                 with torch.enable_grad():
+                    for src, dst in zip(self.model.state_dict().items(), prev_model_dict.items()):
+                        dst.copy_(src)
+                    for src, dst in zip(self.optimizer.state_dict().items(), prev_optim_dict.items()):
+                        dst.copy_(src)
+
                     actor_out = self.model(st)
+                    probs_prev = actor_out.probs.cpu()
+                    values_prev = actor_out.state_values.cpu()
                     # get loss
-                    loss, kl = self._get_ppo_loss(actor_out.probs.cpu(), po, actor_out.state_values.cpu(), vo, ac, adv, ret)
+                    loss, kl = self._get_ppo_loss(probs_prev, po, values_prev, vo, ac, adv, ret)
 
                     # optimize
-                    loss.backward()
+                    loss.mean().backward()
+                    clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+
+                    actor_out = self.model(st)
+                    probs_cur = actor_out.probs.cpu()
+                    values_cur = actor_out.state_values.cpu()
+                    sample_weights = self._get_sample_weights(
+                        probs_cur, probs_prev, po, values_cur, values_prev, vo, ac, adv, ret)
+
+                    for dst, src in zip(self.model.state_dict().items(), prev_model_dict.items()):
+                        dst.copy_(src)
+                    for dst, src in zip(self.optimizer.state_dict().items(), prev_optim_dict.items()):
+                        dst.copy_(src)
+
+                    actor_out = self.model(st)
+                    probs_prev = actor_out.probs.cpu()
+                    values_prev = actor_out.state_values.cpu()
+                    # get loss
+                    loss, kl = self._get_ppo_loss(probs_prev, po, values_prev, vo, ac, adv, ret)
+                    (loss * sample_weights).mean().backward()
                     clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                     self.optimizer.step()
                     self.optimizer.zero_grad()
@@ -340,6 +372,37 @@ class PPO(RLBase):
         x = torch.from_numpy(x)
         return x
 
+    def _get_sample_weights(self, probs_cur, probs_prev, probs_policy,
+                      values_cur, values_prev, values_policy,
+                      actions, advantages, returns, pd=None, tag=''):
+        if pd is None:
+            pd = self.model.pd
+
+        # clipping factors
+        value_clip = self.value_clip * self.clip_mult
+        policy_clip = self.policy_clip * self.clip_mult
+
+        # action probability ratio
+        # log probabilities used for better numerical stability
+        logp_cur = pd.logp(actions, probs_cur)
+        logp_prev = pd.logp(actions, probs_prev)
+        logp_policy = pd.logp(actions, probs_policy).detach()
+        logp_target = logp_policy + advantages.sign() * policy_clip
+
+        def inv_lerp(a, b, x):
+            return (x - a) / (b - a)
+
+        def calc_overshot(cur, prev, target, clip):
+            return torch.min((cur - prev).abs(), (cur - target).abs()) / clip
+
+        logp_overshot = calc_overshot(logp_cur, logp_prev, logp_target, policy_clip)
+
+        values_target = values_policy + (returns - values_policy).clamp(-value_clip, value_clip)
+        values_overshot = calc_overshot(values_cur, values_prev, values_target, value_clip)
+
+        sample_weights = 1.0 / torch.max(values_overshot.abs(), logp_overshot.abs()).clamp(min=1)
+        return sample_weights.detach()
+
     def _get_ppo_loss(self, probs, probs_old, values, values_old, actions, advantages, returns, pd=None, tag=''):
         """
         Single iteration of PPO algorithm.
@@ -349,10 +412,10 @@ class PPO(RLBase):
         if pd is None:
             pd = self.model.pd
 
-        # prepare data
-        actions = actions.detach()
-        values, values_old, actions, advantages, returns = \
-            [x.squeeze() for x in (values, values_old, actions, advantages, returns)]
+        # # prepare data
+        # actions = actions.detach()
+        # values, values_old, actions, advantages, returns = \
+        #     [x.squeeze() for x in (values, values_old, actions, advantages, returns)]
 
         # clipping factors
         value_clip = self.value_clip * self.clip_mult
@@ -362,15 +425,13 @@ class PPO(RLBase):
         # log probabilities used for better numerical stability
         logp = pd.logp(actions, probs)
         logp_old = pd.logp(actions, probs_old).detach()
-        ratio = (logp - logp_old).exp()
+        ratio = logp - logp_old
 
         # policy loss
         unclipped_policy_loss = ratio * advantages
         if self.constraint == 'clip' or self.constraint == 'clip_mod':
             # clip policy loss
-            c_low = 1 - policy_clip if self.constraint == 'clip' else 1 / (1 + policy_clip)
-            c_high = 1 + policy_clip
-            clipped_ratio = ratio.clamp(c_low, c_high)
+            clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
             clipped_policy_loss = clipped_ratio * advantages
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
         else:
@@ -388,13 +449,13 @@ class PPO(RLBase):
         loss_ent = -self.entropy_bonus * entropy
 
         # sum all losses
-        total_loss = loss_clip.mean() + loss_value.mean() + loss_ent.mean()
-        assert not np.isnan(total_loss.item()) and not np.isinf(total_loss.item()), \
+        total_loss = loss_clip + loss_value + loss_ent
+        assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_clip.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
 
         kl = pd.kl(probs_old, probs).mean()
 
-        if self.model.do_log:
+        if self.model.do_log and tag is not None:
             self.logger.add_histogram('loss value' + tag, loss_value, self.frame)
             self.logger.add_histogram('loss ent' + tag, loss_ent, self.frame)
             self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame)
