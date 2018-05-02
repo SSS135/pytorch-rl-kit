@@ -184,8 +184,8 @@ class JointSonicVecEnv:
         return np.concatenate([env.reset() for env in self.subproc_envs], axis=0)
 
 
-class SimpleEnvFactory(NamedVecEnv):
-    def make_env(self):
+class SimpleVecEnv(NamedVecEnv):
+    def get_env_fn(self):
         def make(env_name):
             env = gym.make(env_name)
             env = Monitor(env)

@@ -86,13 +86,14 @@ class TensorboardEnvLogger:
             avg_frame = np.mean([r.frame for r in self.new_rewards])
             avg_len = np.mean([r.len for r in self.new_rewards])
             avg_r = np.mean([r.reward for r in self.new_rewards])
-            avg_r_orig = np.mean([r.reward for r in self.new_rewards_orig])
             self.logger.add_scalar('avg episode lengths', avg_len, avg_ep)
             self.logger.add_scalar('avg reward by episode', avg_r, avg_ep)
             self.logger.add_scalar('avg reward by frame', avg_r, avg_frame)
-            self.logger.add_scalar('avg reward by frame orig', avg_r_orig, avg_frame)
+            if len(self.new_rewards_orig) != 0:
+                avg_r_orig = np.mean([r.reward for r in self.new_rewards_orig])
+                self.logger.add_scalar('avg reward by frame orig', avg_r_orig, avg_frame)
+                self.new_rewards_orig.clear()
             self.new_rewards.clear()
-            self.new_rewards_orig.clear()
             self.episodes_file.flush()
 
     def add_scalar(self, *args, **kwargs):

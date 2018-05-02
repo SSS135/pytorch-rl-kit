@@ -5,4 +5,4 @@ from .repeat_env import RepeatEnv
 from .gym_wrapper import GymWrapper
 from .rl_base import RLBase
 from .value_decay import ValueDecay, DecayLR
-from .env_factory import FrameStackAtariEnvFactory, SimpleEnvFactory, SingleFrameAtariVecEnv, SonicVecEnv, JointSonicVecEnv
+from .env_factory import FrameStackAtariEnvFactory, SimpleVecEnv, SingleFrameAtariVecEnv, SonicVecEnv, JointSonicVecEnv

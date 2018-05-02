@@ -28,7 +28,7 @@ from optfn.temporal_group_norm import TemporalGroupNorm
 
 class QRNNActor(Actor):
     def __init__(self, observation_space: gym.Space, action_space: gym.Space, head_factory: Callable,
-                 hidden_size=128, num_layers=3, **kwargs):
+                 qrnn_hidden_size=128, qrnn_layers=3, **kwargs):
         """
         Args:
             observation_space: Env's observation space
@@ -38,9 +38,11 @@ class QRNNActor(Actor):
             activation: Activation function
         """
         super().__init__(observation_space, action_space, **kwargs)
+        self.qrnn_hidden_size = qrnn_hidden_size
+        self.qrnn_layers = qrnn_layers
         obs_len = int(np.product(observation_space.shape))
-        self.qrnn = DenseQRNN(obs_len, hidden_size, num_layers)
-        self.head = head_factory(hidden_size, self.pd)
+        self.qrnn = DenseQRNN(obs_len, qrnn_hidden_size, qrnn_layers)
+        self.head = head_factory(qrnn_hidden_size, self.pd)
         self.reset_weights()
 
     def reset_weights(self):
@@ -64,8 +66,6 @@ class CNN_QRNNActor(CNNActor):
             activation: Activation function
         """
         super().__init__(*args, **kwargs)
-        self.qrnn_hidden_size = qrnn_hidden_size
-        self.qrnn_layers = qrnn_layers
         del self.linear
         assert self.cnn_kind == 'large' # custom (2,066,432 parameters)
         nf = 32
@@ -198,3 +198,62 @@ class Sega_CNN_HQRNNActor(Sega_CNN_QRNNActor):
         next_memory = Variable(input.new(2, input.shape[1], 2))
 
         return head_l1, head_l2, action_l2, state_vec_l1, target_l2, next_memory
+
+
+class MLP_HQRNNActor(QRNNActor):
+    def __init__(self, *args, h_action_size=8, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.h_action_size = h_action_size
+
+        self.h_action_space = gym.spaces.Box(-1, 1, h_action_size)
+        self.h_observation_space = gym.spaces.Box(-1, 1, self.qrnn_hidden_size)
+        self.h_pd = make_pd(self.h_action_space)
+        # self.gate_action_space = gym.spaces.Discrete(2)
+        # self.gate_pd = make_pd(self.gate_action_space)
+
+        layer_norm = self.norm is not None and 'layer' in self.norm
+
+        self.qrnn_l1 = self.qrnn
+        del self.qrnn
+        self.qrnn_l2 = DenseQRNN(self.qrnn_hidden_size, self.qrnn_hidden_size, self.qrnn_layers, layer_norm=layer_norm)
+
+        # self.action_upsample_l2 = nn.Sequential(
+        #     nn.Linear(h_action_size, self.qrnn_hidden_size, bias=not layer_norm),
+        #     *([TemporalLayerNorm1(self.qrnn_hidden_size)] if layer_norm else []),
+        #     # nn.ReLU(),
+        # )
+        self.action_merge_l1 = nn.Sequential(
+            nn.Linear(h_action_size * 2, self.qrnn_hidden_size, bias=not layer_norm),
+            # *([TemporalGroupNorm(1, self.qrnn_hidden_size)] if layer_norm else []),
+            nn.ReLU(),
+        )
+        self.state_vec_extractor_l1 = nn.Sequential(
+            nn.Linear(self.qrnn_hidden_size, h_action_size),
+            # TemporalGroupNorm(1, h_action_size, affine=False),
+        )
+        # self.action_l2_norm = TemporalGroupNorm(1, h_action_size, affine=False)
+        # self.norm_action_l2 = LayerNorm1d(self.qrnn_hidden_size, affine=False)
+        # self.norm_hidden_l1 = LayerNorm1d(self.qrnn_hidden_size, affine=False)
+        # self.head_gate_l2 = ActorCriticHead(self.qrnn_hidden_size, self.gate_pd)
+        self.head_l2 = ActorCriticHead(self.qrnn_hidden_size, self.h_pd)
+        self.reset_weights()
+
+    def forward(self, input, memory, done_flags, action_l2=None):
+        memory_l1, memory_l2 = memory.chunk(2, 0) if memory is not None else (None, None)
+
+        hidden_l1, next_memory_l1 = self.qrnn_l1(input, memory_l1, done_flags)
+        # gate_l2 = self.head_gate_l2(hidden_l1)
+        hidden_l2, next_memory_l2 = self.qrnn_l2(hidden_l1, memory_l2, done_flags)
+
+        head_l2 = self.head_l2(hidden_l2)
+        if action_l2 is None:
+            action_l2 = self.h_pd.sample(head_l2.probs)
+        target_l1 = action_l2.detach()
+
+        preact_l1 = torch.cat([hidden_l1, input, target_l1], -1)
+        preact_l1 = self.action_merge_l1(preact_l1)
+        head_l1 = self.head(preact_l1)
+
+        next_memory = torch.cat([next_memory_l1, next_memory_l2], 0)
+
+        return head_l1, head_l2, action_l2, input, target_l1, next_memory

@@ -175,9 +175,9 @@ class PPO_HQRNN(PPO_QRNN):
                     # get loss
                     loss_l1, kl_l1 = self._get_ppo_loss(probs_l1, po_l1, state_values_l1, vo_l1, ac_l1, adv_l1, ret_l1,
                                                         self.model.pd, tag='')
-                    # loss_l2, kl_l2 = self._get_ppo_loss(probs_l2, po_l2, state_values_l2, vo_l2, ac_l2, adv_l2, ret_l2,
-                    #                                     self.model.h_pd, tag=' l2')
-                    loss = loss_l1.mean() #+ loss_l2.mean()
+                    loss_l2, kl_l2 = self._get_ppo_loss(probs_l2, po_l2, state_values_l2, vo_l2, ac_l2, adv_l2, ret_l2,
+                                                        self.model.h_pd, tag=' l2')
+                    loss = loss_l1.mean() + loss_l2.mean()
 
                     # optimize
                     loss.backward()
@@ -192,7 +192,7 @@ class PPO_HQRNN(PPO_QRNN):
                 self.logger.add_scalar('clip mult', self.clip_mult, self.frame)
                 self.logger.add_scalar('total loss', loss, self.frame)
                 self.logger.add_scalar('kl', kl_l1, self.frame)
-                # self.logger.add_scalar('kl_l2', kl_l2, self.frame)
+                self.logger.add_scalar('kl_l2', kl_l2, self.frame)
 
     def drop_collected_steps(self):
         super().drop_collected_steps()

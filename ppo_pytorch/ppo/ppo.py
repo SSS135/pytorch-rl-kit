@@ -298,9 +298,6 @@ class PPO(RLBase):
                 data.probs_old, data.values_old, data.actions, data.advantages, data.returns)
         batches = max(1, self.num_actors * self.horizon // self.batch_size)
 
-        prev_model_dict = copy.deepcopy(self.model.state_dict())
-        prev_optim_dict = copy.deepcopy(self.optimizer.state_dict())
-
         for ppo_iter in range(self.ppo_iters):
             rand_idx = torch.randperm(len(data[0]))
             for loader_iter in range(batches):
@@ -312,40 +309,15 @@ class PPO(RLBase):
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
                 with torch.enable_grad():
-                    for src, dst in zip(self.model.state_dict().items(), prev_model_dict.items()):
-                        dst.copy_(src)
-                    for src, dst in zip(self.optimizer.state_dict().items(), prev_optim_dict.items()):
-                        dst.copy_(src)
-
                     actor_out = self.model(st)
                     probs_prev = actor_out.probs.cpu()
                     values_prev = actor_out.state_values.cpu()
                     # get loss
                     loss, kl = self._get_ppo_loss(probs_prev, po, values_prev, vo, ac, adv, ret)
+                    loss = loss.mean()
 
                     # optimize
-                    loss.mean().backward()
-                    clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
-
-                    actor_out = self.model(st)
-                    probs_cur = actor_out.probs.cpu()
-                    values_cur = actor_out.state_values.cpu()
-                    sample_weights = self._get_sample_weights(
-                        probs_cur, probs_prev, po, values_cur, values_prev, vo, ac, adv, ret)
-
-                    for dst, src in zip(self.model.state_dict().items(), prev_model_dict.items()):
-                        dst.copy_(src)
-                    for dst, src in zip(self.optimizer.state_dict().items(), prev_optim_dict.items()):
-                        dst.copy_(src)
-
-                    actor_out = self.model(st)
-                    probs_prev = actor_out.probs.cpu()
-                    values_prev = actor_out.state_values.cpu()
-                    # get loss
-                    loss, kl = self._get_ppo_loss(probs_prev, po, values_prev, vo, ac, adv, ret)
-                    (loss * sample_weights).mean().backward()
+                    loss.backward()
                     clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                     self.optimizer.step()
                     self.optimizer.zero_grad()
