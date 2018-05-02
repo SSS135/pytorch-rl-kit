@@ -70,11 +70,11 @@ class PPO_HQRNN(PPO_QRNN):
 
     def get_l1_l2_samples(self):
         next_l1 = torch.stack(self._rnn_data.cur_l1[1:], 0)
-        # cur_l1 = torch.stack(self._rnn_data.cur_l1[:-1], 0)
+        cur_l1 = torch.stack(self._rnn_data.cur_l1[:-1], 0)
         target_l1 = torch.stack(self._rnn_data.target_l1[:-1], 0)
-        r_next_l1 = (target_l1 - next_l1).pow(2).mean(-1).sqrt().neg().exp()
-        # r_cur_l1 = (target_l1 - cur_l1).pow(2).mean(-1).sqrt().neg()
-        rewards_l1 = r_next_l1.cpu().numpy()
+        r_next_l1 = (target_l1 - next_l1).pow(2).mean(-1).sqrt().neg()
+        r_cur_l1 = (target_l1 - cur_l1).pow(2).mean(-1).sqrt().neg()
+        rewards_l1 = (r_next_l1 - r_cur_l1).cpu().numpy()
         probs_l2 = torch.stack(self._rnn_data.probs_l2, 0).cpu().numpy()
         values_l2 = torch.stack(self._rnn_data.values_l2, 0).cpu().numpy()
         actions_l2 = torch.stack(self._rnn_data.action_l2, 0).cpu().numpy()

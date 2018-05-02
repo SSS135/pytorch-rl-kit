@@ -268,6 +268,58 @@ class DiagGaussianPd(ProbabilityDistribution):
         return torch.normal(mean, std)
 
 
+class FixedStdGaussianPd(ProbabilityDistribution):
+    def __init__(self, d, std):
+        self.d = d
+        self.std = std
+
+    @property
+    def prob_vector_len(self):
+        return self.d
+
+    @property
+    def action_vector_len(self):
+        return self.d
+
+    @property
+    def input_vector_len(self):
+        return self.d
+
+    @property
+    def dtype_numpy(self):
+        return np.float32
+
+    def dtype_torch(self, cuda):
+        return torch.cuda.FloatTensor if cuda else torch.FloatTensor
+
+    def neglogp(self, x, prob, reduce=True):
+        mean = prob[..., :self.d]
+        var = self.std * self.std
+        logvar = math.log(var)
+        assert x.shape == mean.shape
+        nll = 0.5 * ((x - mean) ** 2 / var + math.log(2 * math.pi) + logvar)
+        return nll.sum(-1) if reduce else nll
+
+    def kl(self, prob1, prob2, reduce=True):
+        mean1 = prob1[..., :self.d]
+        mean2 = prob2[..., :self.d]
+        logstd1 = math.log(self.std)
+        logstd2 = math.log(self.std)
+        std1 = math.exp(logstd1)
+        std2 = math.exp(logstd2)
+        kl = logstd2 - logstd1 + (square(std1) + square(mean1 - mean2)) / (2.0 * square(std2)) - 0.5
+        return kl.sum(-1) if reduce else kl
+
+    def entropy(self, prob, reduce=True):
+        logvar = prob.new(prob.shape[0]).fill_(math.log(self.std * self.std))
+        ent = 0.5 * (math.log(2 * math.pi * math.e) + logvar)
+        return ent.sum(-1) if reduce else ent
+
+    def sample(self, prob):
+        mean = prob[..., :self.d]
+        return torch.normal(mean, self.std)
+
+
 class MultivecGaussianPd(ProbabilityDistribution):
     def __init__(self, d, num_vec):
         self.d = d

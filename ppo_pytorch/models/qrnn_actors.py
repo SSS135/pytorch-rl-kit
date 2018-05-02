@@ -14,7 +14,7 @@ import torch.nn.functional as F
 
 from .utils import weights_init, make_conv_heatmap, image_to_float
 from ..common.make_grid import make_grid
-from ..common.probability_distributions import make_pd, MultivecGaussianPd
+from ..common.probability_distributions import make_pd, MultivecGaussianPd, FixedStdGaussianPd
 from .actors import Actor, CNNActor
 from optfn.qrnn import QRNN, DenseQRNN
 from optfn.sigmoid_pow import sigmoid_pow
@@ -200,14 +200,15 @@ class Sega_CNN_HQRNNActor(Sega_CNN_QRNNActor):
         return head_l1, head_l2, action_l2, state_vec_l1, target_l2, next_memory
 
 
-class MLP_HQRNNActor(QRNNActor):
-    def __init__(self, *args, h_action_size=8, **kwargs):
+class HQRNNActor(QRNNActor):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        h_action_size = self.observation_space.shape[0]
         self.h_action_size = h_action_size
 
         self.h_action_space = gym.spaces.Box(-1, 1, h_action_size)
         self.h_observation_space = gym.spaces.Box(-1, 1, self.qrnn_hidden_size)
-        self.h_pd = make_pd(self.h_action_space)
+        self.h_pd = FixedStdGaussianPd(h_action_size, 0.2)
         # self.gate_action_space = gym.spaces.Discrete(2)
         # self.gate_pd = make_pd(self.gate_action_space)
 
@@ -223,7 +224,7 @@ class MLP_HQRNNActor(QRNNActor):
         #     # nn.ReLU(),
         # )
         self.action_merge_l1 = nn.Sequential(
-            nn.Linear(h_action_size * 2, self.qrnn_hidden_size, bias=not layer_norm),
+            nn.Linear(self.qrnn_hidden_size + h_action_size * 2, self.qrnn_hidden_size, bias=not layer_norm),
             # *([TemporalGroupNorm(1, self.qrnn_hidden_size)] if layer_norm else []),
             nn.ReLU(),
         )
