@@ -12,11 +12,9 @@ from torch import autograd
 from torch.autograd import Variable
 
 from .utils import weights_init, make_conv_heatmap, image_to_float
-from optfn.layer_norm import LayerNorm1d
 from ..common.make_grid import make_grid
 from ..common.probability_distributions import make_pd
 from optfn.swish import Swish
-from optfn.group_norm import GroupNorm2d
 from optfn.learned_norm import LearnedNorm2d
 
 
@@ -102,7 +100,7 @@ class Actor(nn.Module):
             layer = []
             layer.append(nn.Linear(n_in, n_out))
             if norm == 'layer':
-                layer.append(LayerNorm1d(n_out))
+                layer.append(nn.GroupNorm(1, n_out))
             elif norm == 'batch':
                 layer.append(nn.BatchNorm1d(n_out))
             layer.append(activation())
@@ -281,9 +279,9 @@ class CNNActor(Actor):
             if 'instance' in self.norm and not is_linear:
                 norm_cls = partial(nn.InstanceNorm2d, affine=True)
             if 'group' in self.norm and not is_linear:
-                norm_cls = partial(GroupNorm2d, groups=transf.out_channels // 8, affine=True)
+                norm_cls = partial(nn.GroupNorm, num_groups=transf.out_channels // 8, num_channels=transf.out_channels)
             if 'layer' in self.norm and is_linear:
-                norm_cls = partial(LayerNorm1d, affine=True)
+                norm_cls = partial(nn.GroupNorm, num_groups=1, num_channels=transf.out_channels)
             if 'batch' in self.norm:
                 norm_cls = nn.BatchNorm1d if is_linear else nn.BatchNorm2d
             if 'learned' in self.norm and not is_linear:

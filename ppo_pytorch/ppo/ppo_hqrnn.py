@@ -8,7 +8,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.autograd import Variable
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
@@ -46,12 +45,10 @@ class PPO_HQRNN(PPO_QRNN):
         assert (self.horizon * self.num_actors) % self.batch_size == 0
 
     def _take_step(self, states, dones):
-        mem = Variable(self._rnn_data.memory[-1], volatile=True) if len(self._rnn_data.memory) != 0 else None
+        mem = self._rnn_data.memory[-1] if len(self._rnn_data.memory) != 0 else None
         dones = torch.zeros(self.num_actors) if dones is None else torch.from_numpy(np.asarray(dones, np.float32))
-        dones = Variable(dones.unsqueeze(0))
-        if self.cuda_eval:
-            dones = dones.cuda()
-        states = Variable(states.unsqueeze(0), volatile=True)
+        dones = dones.unsqueeze(0).to(self.device_eval)
+        states = states.unsqueeze(0)
         head_l1, head_l2, action_l2, cur_l1, target_l1, next_mem = self.model(states, mem, dones)
 
         head_l1.probs = head_l1.probs.squeeze(0)
@@ -105,15 +102,14 @@ class PPO_HQRNN(PPO_QRNN):
                 self.logger.add_histogram('probs mean l2', mean, self.frame)
                 self.logger.add_histogram('probs std l2', std, self.frame)
             else:
-                self.logger.add_histogram('probs l2', F.log_softmax(Variable(self.data_l2.probs_old), dim=-1), self.frame)
+                self.logger.add_histogram('probs l2', F.log_softmax(self.data_l2.probs_old, dim=-1), self.frame)
 
         return super()._process_sample(self.sample, self.model.pd, self.reward_discount, self.advantage_discount, self.reward_scale)
 
     def _ppo_update(self, data_l1):
         self.model.train()
         # move model to cuda or cpu
-        if next(self.model.parameters()).is_cuda != self.cuda_train:
-            self.model = self.model.cuda() if self.cuda_train else self.model.cpu()
+        self.model = self.model.to(self.device_train)
 
         data_l1 = self._reorder_data(data_l1)
         data_l2 = self._reorder_data(self.data_l2)
@@ -129,7 +125,7 @@ class PPO_HQRNN(PPO_QRNN):
         self._rnn_data = RNNData(self._rnn_data.memory[-1:], [], [], [], [], [], [])
 
         # (actors * steps, ...)
-        data = (data_l1.states.pin_memory() if self.cuda_train else data_l1.states,
+        data = (data_l1.states.pin_memory() if self.device_train.type == 'cuda' else data_l1.states,
                 data_l1.probs_old, data_l2.probs_old,
                 data_l1.values_old, data_l2.values_old,
                 data_l1.actions, data_l2.actions,
@@ -152,42 +148,42 @@ class PPO_HQRNN(PPO_QRNN):
             for loader_iter, ids in enumerate(actor_index_chunks):
                 # prepare batch data
                 # (actors * steps, ...)
+                ids_cuda = ids.cuda()
                 st, po_l1, po_l2, vo_l1, vo_l2, ac_l1, ac_l2, adv_l1, adv_l2, ret_l1, ret_l2, mem, done = [
-                    Variable(x[ids.cuda() if x.is_cuda else ids].contiguous().view(-1, *x.shape[2:]))
+                    x[ids_cuda if x.is_cuda else ids].contiguous().view(-1, *x.shape[2:])
                     for x in data]
                 # (steps, actors, ...)
                 st, mem, done, ac_l2_inp = [x.data.view(ids.shape[0], -1, *x.shape[1:]).transpose(0, 1)
                                             for x in (st, mem, done, ac_l2)]
                 # (layers, actors, hidden_size)
                 mem = mem[0].transpose(0, 1)
-                if self.cuda_train:
-                    st, mem, done, ac_l2_inp = [x.cuda() for x in (st, mem, done, ac_l2_inp)]
+                st, mem, done, ac_l2_inp = [x.to(self.device_train) for x in (st, mem, done, ac_l2_inp)]
                 # (steps, actors)
                 done = done.contiguous().view(done.shape[:2])
-                st, mem, done, ac_l2_inp = [Variable(x) for x in (st, mem, done, ac_l2_inp)]
 
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
-                actor_out_l1, actor_out_l2, *_ = self.model(st, mem, done, ac_l2_inp)
-                # (actors * steps, probs)
-                probs_l1, probs_l2 = [h.probs.cpu().transpose(0, 1).contiguous().view(-1, h.probs.shape[2])
-                                      for h in (actor_out_l1, actor_out_l2)]
-                # (actors * steps)
-                state_values_l1, state_values_l2 = [h.state_values.cpu().transpose(0, 1).contiguous().view(-1)
-                                                    for h in (actor_out_l1, actor_out_l2)]
+                with torch.enable_grad():
+                    actor_out_l1, actor_out_l2, *_ = self.model(st, mem, done, ac_l2_inp)
+                    # (actors * steps, probs)
+                    probs_l1, probs_l2 = [h.probs.cpu().transpose(0, 1).contiguous().view(-1, h.probs.shape[2])
+                                          for h in (actor_out_l1, actor_out_l2)]
+                    # (actors * steps)
+                    state_values_l1, state_values_l2 = [h.state_values.cpu().transpose(0, 1).contiguous().view(-1)
+                                                        for h in (actor_out_l1, actor_out_l2)]
 
-                # get loss
-                loss_l1, kl_l1 = self._get_ppo_loss(probs_l1, po_l1, state_values_l1, vo_l1, ac_l1, adv_l1, ret_l1,
-                                                    self.model.pd, tag='')
-                # loss_l2, kl_l2 = self._get_ppo_loss(probs_l2, po_l2, state_values_l2, vo_l2, ac_l2, adv_l2, ret_l2,
-                #                                     self.model.h_pd, tag=' l2')
-                loss = loss_l1 #+ loss_l2
+                    # get loss
+                    loss_l1, kl_l1 = self._get_ppo_loss(probs_l1, po_l1, state_values_l1, vo_l1, ac_l1, adv_l1, ret_l1,
+                                                        self.model.pd, tag='')
+                    # loss_l2, kl_l2 = self._get_ppo_loss(probs_l2, po_l2, state_values_l2, vo_l2, ac_l2, adv_l2, ret_l2,
+                    #                                     self.model.h_pd, tag=' l2')
+                    loss = loss_l1.mean() #+ loss_l2.mean()
 
-                # optimize
-                loss.backward()
-                clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-                self.optimizer.step()
-                self.optimizer.zero_grad()
+                    # optimize
+                    loss.backward()
+                    clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
 
                 self.model.set_log(self.logger, False, self.step)
 

@@ -13,7 +13,6 @@ import torch
 import torch.nn.functional as F
 
 from .utils import weights_init, make_conv_heatmap, image_to_float
-from optfn.layer_norm import LayerNorm1d, LayerNorm2d
 from ..common.make_grid import make_grid
 from ..common.probability_distributions import make_pd, MultivecGaussianPd
 from .actors import Actor, CNNActor
@@ -24,7 +23,7 @@ from pretrainedmodels import nasnetamobile
 from optfn.shuffle_conv import ShuffleConv2d
 from optfn.swish import Swish
 from .heads import ActorCriticHead
-from optfn.group_norm import GroupNorm1d
+from optfn.temporal_group_norm import TemporalGroupNorm
 
 
 class QRNNActor(Actor):
@@ -148,14 +147,14 @@ class Sega_CNN_HQRNNActor(Sega_CNN_QRNNActor):
         # )
         self.action_merge_l1 = nn.Sequential(
             nn.Linear(h_action_size * 2, self.qrnn_hidden_size, bias=not layer_norm),
-            *([TemporalLayerNorm1(self.qrnn_hidden_size)] if layer_norm else []),
+            *([TemporalGroupNorm(1, self.qrnn_hidden_size)] if layer_norm else []),
             nn.ReLU(),
         )
         self.state_vec_extractor_l1 = nn.Sequential(
             nn.Linear(self.qrnn_hidden_size, h_action_size),
-            TemporalLayerNorm1(h_action_size, affine=False),
+            TemporalGroupNorm(1, h_action_size, affine=False),
         )
-        self.action_l2_norm = TemporalLayerNorm1(h_action_size, affine=False)
+        self.action_l2_norm = TemporalGroupNorm(1, h_action_size, affine=False)
         # self.norm_action_l2 = LayerNorm1d(self.qrnn_hidden_size, affine=False)
         # self.norm_hidden_l1 = LayerNorm1d(self.qrnn_hidden_size, affine=False)
         # self.head_gate_l2 = ActorCriticHead(self.qrnn_hidden_size, self.gate_pd)
@@ -199,9 +198,3 @@ class Sega_CNN_HQRNNActor(Sega_CNN_QRNNActor):
         next_memory = Variable(input.new(2, input.shape[1], 2))
 
         return head_l1, head_l2, action_l2, state_vec_l1, target_l2, next_memory
-
-
-class TemporalLayerNorm1(LayerNorm1d):
-    def forward(self, input):
-        x = input.view(input.shape[0] * input.shape[1], input.shape[2])
-        return super().forward(x).view_as(input)

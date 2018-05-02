@@ -13,7 +13,6 @@ import torch
 import torch.nn.functional as F
 
 from .utils import weights_init, make_conv_heatmap, image_to_float
-from optfn.layer_norm import LayerNorm1d, LayerNorm2d
 from ..common.make_grid import make_grid
 from ..common.probability_distributions import make_pd
 from .actors import Actor, CNNActor
@@ -42,11 +41,11 @@ class Sega_CNNSeqActor(CNNActor):
         self.seq_conv = nn.Sequential(
             nn.ReplicationPad1d((3, 0)),
             nn.Conv1d(1920, seq_channels, 4),
-            *([LayerNorm1d(seq_channels)] if layer_norm else []),
+            *([nn.GroupNorm(1, seq_channels)] if layer_norm else []),
             nn.ReLU(),
             nn.ReplicationPad1d((3, 0)),
             nn.Conv1d(seq_channels, seq_channels, 4, bias=False),
-            *([LayerNorm1d(seq_channels)] if layer_norm else []),
+            *([nn.GroupNorm(1, seq_channels)] if layer_norm else []),
             nn.ReLU(),
         )
         self.reset_weights()
@@ -99,31 +98,31 @@ class Sega_CNNHSeqActor(CNNActor):
         self.l1_seq_conv = nn.Sequential(
             nn.ReplicationPad1d((3, 0)),
             nn.Conv1d(768, seq_channels, 4, bias=False),
-            LayerNorm1d(seq_channels),
+            nn.GroupNorm(1, seq_channels),
             nn.ReLU(),
             nn.ReplicationPad1d((3, 0)),
             nn.Conv1d(seq_channels, seq_channels, 4, bias=False),
-            LayerNorm1d(seq_channels),
+            nn.GroupNorm(1, seq_channels),
             nn.ReLU(),
         )
         self.l2_seq_conv = nn.Sequential(
             nn.ReplicationPad1d((3, 0)),
             nn.Conv1d(seq_channels, seq_channels, 4, bias=False),
-            LayerNorm1d(seq_channels),
+            nn.GroupNorm(1, seq_channels),
             nn.ReLU(),
             nn.ReplicationPad1d((3, 0)),
             nn.Conv1d(seq_channels, seq_channels, 4, bias=False),
-            LayerNorm1d(seq_channels),
+            nn.GroupNorm(1, seq_channels),
             nn.ReLU(),
         )
         self.l2_action_upsample = nn.Sequential(
             nn.Linear(h_action_size, seq_channels, bias=False),
-            LayerNorm1d(seq_channels),
+            nn.GroupNorm(1, seq_channels),
             nn.ReLU(),
         )
         self.l1_merge = nn.Sequential(
             nn.Linear(seq_channels * 2, seq_channels, bias=False),
-            LayerNorm1d(seq_channels),
+            nn.GroupNorm(1, seq_channels),
             nn.ReLU(),
         )
 
