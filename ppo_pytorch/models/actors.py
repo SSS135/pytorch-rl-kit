@@ -71,6 +71,9 @@ class Actor(nn.Module):
 
     def reset_weights(self):
         self.apply(partial(weights_init, init_alg=self.weight_init, gain=self.weight_init_gain))
+        for m in self.modules():
+            if m is not self and hasattr(m, 'reset_weights'):
+                m.reset_weights()
 
     @staticmethod
     def create_mlp(in_size: int, out_size: Optional[int], hidden_sizes: List[int],

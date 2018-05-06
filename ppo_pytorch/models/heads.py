@@ -54,6 +54,7 @@ class ActionValuesHead(HeadBase):
         assert isinstance(pd, CategoricalPd)
         self.dueling = dueling
         self.linear = nn.Linear(in_features, self.pd.prob_vector_len + 1)
+        self.reset_weights()
 
     def reset_weights(self):
         normalized_columns_initializer(self.linear.weight.data, 1.0)
@@ -76,19 +77,22 @@ class ActorCriticHead(HeadBase):
     Actor-critic head. Used in PPO / A3C.
     """
 
-    def __init__(self, in_features, pd: ProbabilityDistribution):
+    def __init__(self, in_features, pd: ProbabilityDistribution, prob_init_bias=0):
         """
         Args:
             in_features: Input feature vector width.
             pd: Action probability distribution.
         """
         super().__init__(in_features, pd)
+        self.prob_init_bias = prob_init_bias
         self.linear = nn.Linear(in_features, self.pd.prob_vector_len + 1)
+        self.reset_weights()
 
     def reset_weights(self):
         normalized_columns_initializer(self.linear.weight.data[0:1], 1.0)
-        normalized_columns_initializer(self.linear.weight.data[1:], 0.01)
-        self.linear.bias.data.fill_(0)
+        normalized_columns_initializer(self.linear.weight.data[1:], self.pd.init_column_norm)
+        self.linear.bias.data.fill_(self.prob_init_bias)
+        self.linear.bias.data[0] = 0
 
     def forward(self, x):
         x = self.linear(x)

@@ -21,10 +21,10 @@ from ..models import Sega_CNNSeqActor
 from ..models.heads import HeadOutput
 from .ppo import PPO, TrainingData
 from collections import namedtuple
-from .ppo_qrnn import RNNData, PPO_QRNN
+from .ppo_hqrnn import RNNData, PPO_HQRNN
 
 
-class PPO_Seq(PPO_QRNN):
+class PPO_HSeq(PPO_HQRNN):
     def __init__(self, *args, eval_seq_len=4, model_factory=Sega_CNNSeqActor, **kwargs):
         super().__init__(*args, model_factory=model_factory, **kwargs)
         self.eval_seq_len = eval_seq_len

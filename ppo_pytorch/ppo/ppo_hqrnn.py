@@ -72,8 +72,10 @@ class PPO_HQRNN(PPO_QRNN):
         next_l1 = torch.stack(self._rnn_data.cur_l1[1:], 0)
         cur_l1 = torch.stack(self._rnn_data.cur_l1[:-1], 0)
         target_l1 = torch.stack(self._rnn_data.target_l1[:-1], 0)
-        r_next_l1 = (target_l1 - next_l1).pow(2).mean(-1).sqrt().neg()
-        r_cur_l1 = (target_l1 - cur_l1).pow(2).mean(-1).sqrt().neg()
+        # r_next_l1 = (target_l1 - next_l1).pow(2).mean(-1).sqrt().neg()
+        # r_cur_l1 = (target_l1 - cur_l1).pow(2).mean(-1).sqrt().neg()
+        r_next_l1 = F.cosine_similarity(target_l1, next_l1, dim=-1)
+        r_cur_l1 = F.cosine_similarity(target_l1, cur_l1, dim=-1)
         rewards_l1 = (r_next_l1 - r_cur_l1).cpu().numpy()
         probs_l2 = torch.stack(self._rnn_data.probs_l2, 0).cpu().numpy()
         values_l2 = torch.stack(self._rnn_data.values_l2, 0).cpu().numpy()
@@ -116,11 +118,14 @@ class PPO_HQRNN(PPO_QRNN):
         self.data_l2 = None
 
         memory = torch.stack(self._rnn_data.memory[:-2], 0)  # (steps, layers, actors, hidden_size)
-        memory = memory.permute(2, 0, 1, 3).contiguous()  # (actors, steps, layers, hidden_size)
-        memory = memory.view(-1, *memory.shape[2:]) # (actors * steps, layers, hidden_size)
+        memory = memory.permute(2, 0, 1, 3)  # (actors, steps, layers, hidden_size)
+        memory = memory.reshape(-1, *memory.shape[2:]) # (actors * steps, layers, hidden_size)
 
         dones = self._rnn_data.dones[:-1] # (steps, actors)
-        dones = torch.stack(dones, 0).transpose(0, 1).contiguous().view(-1) # (actors * steps)
+        dones = torch.stack(dones, 0).transpose(0, 1).reshape(-1) # (actors * steps)
+
+        next_l1 = torch.stack(self._rnn_data.cur_l1[1:], 0).cpu() # (steps, layers, action_size)
+        next_l1 = next_l1.transpose(0, 1).reshape(-1, next_l1.shape[-1]) # (layers * steps, action_size)
 
         self._rnn_data = RNNData(self._rnn_data.memory[-1:], [], [], [], [], [], [])
 
@@ -131,7 +136,7 @@ class PPO_HQRNN(PPO_QRNN):
                 data_l1.actions, data_l2.actions,
                 data_l1.advantages, data_l2.advantages,
                 data_l1.returns, data_l2.returns,
-                memory, dones)
+                memory, dones, next_l1)
         # (actors, steps, ...)
         num_actors = self.num_actors
         if self.horizon > self.batch_size:
@@ -141,7 +146,7 @@ class PPO_HQRNN(PPO_QRNN):
         else:
             batches = max(1, num_actors * self.horizon // self.batch_size)
 
-        data = [x.view(num_actors, -1, *x.shape[1:]) for x in data]
+        data = [x.reshape(num_actors, -1, *x.shape[1:]) for x in data]
 
         for ppo_iter in range(self.ppo_iters):
             actor_index_chunks = torch.randperm(num_actors).chunk(batches)
@@ -149,8 +154,8 @@ class PPO_HQRNN(PPO_QRNN):
                 # prepare batch data
                 # (actors * steps, ...)
                 ids_cuda = ids.cuda()
-                st, po_l1, po_l2, vo_l1, vo_l2, ac_l1, ac_l2, adv_l1, adv_l2, ret_l1, ret_l2, mem, done = [
-                    x[ids_cuda if x.is_cuda else ids].contiguous().view(-1, *x.shape[2:])
+                st, po_l1, po_l2, vo_l1, vo_l2, ac_l1, ac_l2, adv_l1, adv_l2, ret_l1, ret_l2, mem, done, next_l1 = [
+                    x[ids_cuda if x.is_cuda else ids].reshape(-1, *x.shape[2:])
                     for x in data]
                 # (steps, actors, ...)
                 st, mem, done, ac_l2_inp = [x.data.view(ids.shape[0], -1, *x.shape[1:]).transpose(0, 1)
@@ -159,18 +164,21 @@ class PPO_HQRNN(PPO_QRNN):
                 mem = mem[0].transpose(0, 1)
                 st, mem, done, ac_l2_inp = [x.to(self.device_train) for x in (st, mem, done, ac_l2_inp)]
                 # (steps, actors)
-                done = done.contiguous().view(done.shape[:2])
+                done = done.reshape(done.shape[:2])
 
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
                 with torch.enable_grad():
                     actor_out_l1, actor_out_l2, *_ = self.model(st, mem, done, ac_l2_inp)
                     # (actors * steps, probs)
-                    probs_l1, probs_l2 = [h.probs.cpu().transpose(0, 1).contiguous().view(-1, h.probs.shape[2])
+                    probs_l1, probs_l2 = [h.probs.cpu().transpose(0, 1).reshape(-1, h.probs.shape[2])
                                           for h in (actor_out_l1, actor_out_l2)]
                     # (actors * steps)
-                    state_values_l1, state_values_l2 = [h.state_values.cpu().transpose(0, 1).contiguous().view(-1)
+                    state_values_l1, state_values_l2 = [h.state_values.cpu().transpose(0, 1).reshape(-1)
                                                         for h in (actor_out_l1, actor_out_l2)]
+
+                    if hasattr(self.model.h_pd, 'states'):
+                        self.model.h_pd.states = next_l1
 
                     # get loss
                     loss_l1, kl_l1 = self._get_ppo_loss(probs_l1, po_l1, state_values_l1, vo_l1, ac_l1, adv_l1, ret_l1,
