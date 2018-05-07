@@ -72,10 +72,10 @@ class PPO_HQRNN(PPO_QRNN):
         next_l1 = torch.stack(self._rnn_data.cur_l1[1:], 0)
         cur_l1 = torch.stack(self._rnn_data.cur_l1[:-1], 0)
         target_l1 = torch.stack(self._rnn_data.target_l1[:-1], 0)
-        # r_next_l1 = (target_l1 - next_l1).pow(2).mean(-1).sqrt().neg()
-        # r_cur_l1 = (target_l1 - cur_l1).pow(2).mean(-1).sqrt().neg()
-        r_next_l1 = F.cosine_similarity(target_l1, next_l1, dim=-1)
-        r_cur_l1 = F.cosine_similarity(target_l1, cur_l1, dim=-1)
+        r_next_l1 = (target_l1 - next_l1).pow(2).mean(-1).sqrt().neg()
+        r_cur_l1 = (target_l1 - cur_l1).pow(2).mean(-1).sqrt().neg()
+        # r_next_l1 = F.cosine_similarity(target_l1, next_l1, dim=-1)
+        # r_cur_l1 = F.cosine_similarity(target_l1, cur_l1, dim=-1)
         rewards_l1 = (r_next_l1 - r_cur_l1).cpu().numpy()
         probs_l2 = torch.stack(self._rnn_data.probs_l2, 0).cpu().numpy()
         values_l2 = torch.stack(self._rnn_data.values_l2, 0).cpu().numpy()
@@ -189,7 +189,8 @@ class PPO_HQRNN(PPO_QRNN):
 
                     # optimize
                     loss.backward()
-                    clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                    if self.grad_clip_norm is not None:
+                        clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                     self.optimizer.step()
                     self.optimizer.zero_grad()
 

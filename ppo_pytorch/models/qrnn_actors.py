@@ -201,7 +201,7 @@ class HQRNNActor(QRNNActor):
         super().__init__(*args, **kwargs)
         self.h_action_size = h_action_size
 
-        self.h_pd = MultivecGaussianPd(h_action_size, 16)
+        self.h_pd = FixedStdGaussianPd(h_action_size, 0.3)
         self.gate_pd = BernoulliPd(1)
 
         layer_norm = self.norm is not None and 'layer' in self.norm
@@ -218,15 +218,15 @@ class HQRNNActor(QRNNActor):
         self.action_merge_l1 = nn.Sequential(
             nn.Linear(h_action_size * 2, self.qrnn_hidden_size, bias=not layer_norm),
             # *([TemporalGroupNorm(1, self.qrnn_hidden_size)] if layer_norm else []),
-            nn.ELU(),
+            nn.ReLU(),
         )
         self.state_vec_extractor_l1 = nn.Sequential(
             nn.Linear(self.qrnn_hidden_size, h_action_size),
             # TemporalGroupNorm(1, h_action_size, affine=False),
         )
         # self.action_l2_norm = TemporalGroupNorm(1, h_action_size, affine=False)
-        # self.norm_cur_l1 = TemporalGroupNorm(1, self.qrnn_hidden_size, affine=False)
-        # self.norm_target_l1 = TemporalGroupNorm(1, self.qrnn_hidden_size, affine=False)
+        self.norm_cur_l1 = TemporalGroupNorm(1, self.qrnn_hidden_size, affine=False)
+        self.norm_target_l1 = TemporalGroupNorm(1, self.qrnn_hidden_size, affine=False)
         # self.norm_hidden_l1 = LayerNorm1d(self.qrnn_hidden_size, affine=False)
         self.head_l2 = ActorCriticHead(self.qrnn_hidden_size, self.h_pd)
         self.head_gate_l2 = ActorCriticHead(self.qrnn_hidden_size, self.gate_pd, math.log(0.2))
@@ -246,9 +246,8 @@ class HQRNNActor(QRNNActor):
         head_l2 = self.head_l2(hidden_l2)
         if action_l2 is None:
             action_l2 = self.h_pd.sample(head_l2.probs)
-        target_l1 = cur_l1 + action_l2
-        target_l1 = (target_l1 / target_l1.norm(2, dim=-1, keepdim=True)).detach()
-        cur_l1 = cur_l1 / cur_l1.norm(2, dim=-1, keepdim=True)
+        target_l1 = self.norm_target_l1(cur_l1 + action_l2).detach()
+        cur_l1 = self.norm_cur_l1(cur_l1)
 
         preact_l1 = torch.cat([cur_l1, target_l1], -1)
         preact_l1 = self.action_merge_l1(preact_l1)

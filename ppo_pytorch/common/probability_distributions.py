@@ -93,10 +93,6 @@ class ProbabilityDistribution:
         """Action's Pytorch input type"""
         raise NotImplementedError
 
-    def neglogp(self, a, prob):
-        """Negative log probability"""
-        raise NotImplementedError
-
     def kl(self, prob0, prob1):
         """KL-Divergence"""
         raise NotImplementedError
@@ -106,7 +102,11 @@ class ProbabilityDistribution:
 
     def logp(self, a, prob):
         """Log probability"""
-        return - self.neglogp(a, prob)
+        return -self.neglogp(a, prob)
+
+    def neglogp(self, a, prob):
+        """Negative log probability"""
+        return -self.logp(a, prob)
 
     def sample(self, prob):
         """Sample action from probabilities"""
@@ -197,20 +197,20 @@ class BernoulliPd(ProbabilityDistribution):
     def dtype_torch(self, cuda):
         return torch.cuda.LongTensor if cuda else torch.LongTensor
 
-    def neglogp(self, a, logits, reduce=True):
+    def neglogp(self, a, logits):
         nlp = F.binary_cross_entropy_with_logits(logits, a, reduce=False).sum(-1)
-        return nlp.mean() if reduce else nlp
+        return nlp
 
-    def kl(self, prob0, prob1, reduce=True):
+    def kl(self, prob0, prob1):
         ps = sigmoid(prob0)
         kl = F.binary_cross_entropy_with_logits(prob1, ps, reduce=False).sum(-1) - \
              F.binary_cross_entropy_with_logits(prob0, ps, reduce=False).sum(-1)
-        return kl.mean() if reduce else kl
+        return kl
 
-    def entropy(self, logits, reduce=True):
+    def entropy(self, logits):
         probs = logits.sigmoid()
         ent = F.binary_cross_entropy_with_logits(logits, probs, reduce=False)
-        return ent.mean() if reduce else ent
+        return ent
 
     def sample(self, prob):
         with torch.no_grad():
@@ -240,29 +240,29 @@ class DiagGaussianPd(ProbabilityDistribution):
     def dtype_torch(self, cuda):
         return torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
-    def neglogp(self, x, prob, reduce=True):
+    def neglogp(self, x, prob):
         mean = prob[..., :self.d]
         logstd = prob[..., self.d:]
         std = torch.exp(logstd)
-        nll = 0.5 * ((x - mean) / std).pow(2).mean(-1) + \
+        nll = 0.5 * ((x - mean) / std).pow(2) + \
               0.5 * math.log(2.0 * math.pi) * self.d + \
-              logstd.mean(-1)
-        return nll.mean() if reduce else nll
+              logstd
+        return nll
 
-    def kl(self, prob1, prob2, reduce=True):
+    def kl(self, prob1, prob2):
         mean1 = prob1[..., :self.d]
         mean2 = prob2[..., :self.d]
         logstd1 = prob1[..., self.d:]
         logstd2 = prob2[..., self.d:]
         std1 = torch.exp(logstd1)
         std2 = torch.exp(logstd2)
-        kl = (logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5).sum(-1)
-        return kl.mean() if reduce else kl
+        kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
+        return kl
 
-    def entropy(self, prob, reduce=True):
+    def entropy(self, prob):
         logstd = prob[:, self.d:]
-        ent = (logstd + .5 * math.log(2.0 * math.pi * math.e)).mean(-1)
-        return ent.mean() if reduce else ent
+        ent = logstd + .5 * math.log(2.0 * math.pi * math.e)
+        return ent
 
     def sample(self, prob):
         mean = prob[..., :self.d]
@@ -295,15 +295,15 @@ class FixedStdGaussianPd(ProbabilityDistribution):
     def dtype_torch(self, cuda):
         return torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
-    def neglogp(self, x, prob, reduce=True):
+    def neglogp(self, x, prob):
         mean = prob[..., :self.d]
         var = self.std * self.std
         logvar = math.log(var)
         assert x.shape == mean.shape
         nll = 0.5 * ((x - mean) ** 2 / var + math.log(2 * math.pi) + logvar)
-        return nll.mean() if reduce else nll.mean(-1)
+        return nll
 
-    def kl(self, prob1, prob2, reduce=True):
+    def kl(self, prob1, prob2):
         mean1 = prob1[..., :self.d]
         mean2 = prob2[..., :self.d]
         logstd1 = math.log(self.std)
@@ -311,12 +311,12 @@ class FixedStdGaussianPd(ProbabilityDistribution):
         std1 = math.exp(logstd1)
         std2 = math.exp(logstd2)
         kl = logstd2 - logstd1 + (square(std1) + square(mean1 - mean2)) / (2.0 * square(std2)) - 0.5
-        return kl.mean() if reduce else kl.mean(-1)
+        return kl
 
-    def entropy(self, prob, reduce=True):
+    def entropy(self, prob):
         logvar = prob.new(prob.shape[-1]).fill_(math.log(self.std * self.std))
         ent = 0.5 * (math.log(2 * math.pi * math.e) + logvar)
-        return ent.mean() if reduce else ent.mean(-1)
+        return ent
 
     def sample(self, prob):
         mean = prob[..., :self.d]
@@ -348,21 +348,18 @@ class MultivecGaussianPd(ProbabilityDistribution):
     def dtype_torch(self, cuda):
         return torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
-    def pdf(self, x, prob, reduce=True):
+    def pdf(self, x, prob):
         vecs = prob.contiguous().view(*prob.shape[:-1], self.d, self.num_vec)
         var = vecs.var(-1).add(self.eps)
         mean = vecs.mean(-1)
         pdf = (2 * math.pi * var).rsqrt() + torch.exp(-(x - mean) ** 2 / (2 * var))
-        return pdf.mean() if reduce else pdf.mean(-1)
+        return pdf
 
-    def logp(self, x, prob, reduce=True):
-        logp = self.pdf(x, prob, False).log()
-        return logp.mean() if reduce else logp
+    def logp(self, x, prob):
+        logp = self.pdf(x, prob).log()
+        return logp
 
-    def neglogp(self, x, prob, reduce=True):
-        return -self.logp(x, prob, reduce)
-
-    def kl(self, prob1, prob2, reduce=True):
+    def kl(self, prob1, prob2):
         vecs1 = prob1.contiguous().view(*prob1.shape[:-1], self.d, self.num_vec)
         vecs2 = prob2.contiguous().view(*prob2.shape[:-1], self.d, self.num_vec)
         var1 = vecs1.var(-1).add(self.eps)
@@ -374,13 +371,13 @@ class MultivecGaussianPd(ProbabilityDistribution):
         logstd1 = std1.log()
         logstd2 = std2.log()
         kl = logstd2 - logstd1 + (square(std1) + square(mean1 - mean2)) / (2.0 * square(std2)) - 0.5
-        return kl.mean() if reduce else kl.mean(-1)
+        return kl
 
-    def entropy(self, prob, reduce=True):
+    def entropy(self, prob):
         vecs = prob.contiguous().view(*prob.shape[:-1], self.d, self.num_vec)
         var = vecs.var(-1).add(self.eps)
         ent = 0.5 * (2 * math.pi * math.e * var).log()
-        return ent.mean() if reduce else ent.mean(-1)
+        return ent
 
     def sample(self, prob):
         vecs = prob.contiguous().view(*prob.shape[:-1], self.d, self.num_vec)
@@ -417,18 +414,16 @@ class StaticTransactionPd(ProbabilityDistribution):
     def dtype_torch(self, cuda):
         return torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
-    def neglogp(self, x, prob, reduce=True):
+    def logp(self, x, prob):
         assert self.states is not None
-        ncs = -F.cosine_similarity(prob, self.states, dim=-1)
-        return ncs.mean() if reduce else ncs
+        p = F.cosine_similarity(prob, self.states, -1)
+        return p
 
-    def kl(self, prob1, prob2, reduce=True):
-        kwargs = dict(device=prob1.device, dtype=prob1.dtype)
-        return torch.tensor(0, **kwargs) if reduce else torch.zeros(prob1.shape, **kwargs)
+    def kl(self, prob1, prob2):
+        return torch.zeros(prob1.shape[:-1], device=prob1.device, dtype=prob1.dtype)
 
-    def entropy(self, prob, reduce=True):
-        kwargs = dict(device=prob.device, dtype=prob.dtype)
-        return torch.tensor(0, **kwargs) if reduce else torch.zeros(prob.shape, **kwargs)
+    def entropy(self, prob):
+        return torch.zeros(prob.shape[:-1], device=prob.device, dtype=prob.dtype)
 
     def sample(self, prob):
         return prob

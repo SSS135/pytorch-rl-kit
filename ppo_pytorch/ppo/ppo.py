@@ -22,6 +22,7 @@ from ..models import MLPActorCritic
 from ..common.param_groups_getter import get_param_groups
 from pathlib import Path
 import math
+from optfn.grad_running_norm import GradRunningNorm
 
 
 def lerp(start, end, weight):
@@ -146,6 +147,7 @@ class PPO(RLBase):
         self.clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
         self.entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
         self.last_model_save_frame = 0
+        self.grad_norms = dict()
 
     @property
     def learning_rate(self):
@@ -318,7 +320,8 @@ class PPO(RLBase):
 
                     # optimize
                     loss.backward()
-                    clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                    if self.grad_clip_norm is not None:
+                        clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                     self.optimizer.step()
                     self.optimizer.zero_grad()
 
@@ -384,6 +387,12 @@ class PPO(RLBase):
         if pd is None:
             pd = self.model.pd
 
+        if tag not in self.grad_norms:
+            self.grad_norms[tag] = (GradRunningNorm(), GradRunningNorm(self.value_loss_scale))
+        prob_norm, value_norm = self.grad_norms[tag]
+        probs = prob_norm(probs)
+        values = value_norm(values)
+
         # # prepare data
         # actions = actions.detach()
         # values, values_old, actions, advantages, returns = \
@@ -398,6 +407,9 @@ class PPO(RLBase):
         logp = pd.logp(actions, probs)
         logp_old = pd.logp(actions, probs_old).detach()
         ratio = logp - logp_old
+
+        if ratio.dim() == 2:
+            advantages = advantages.unsqueeze(-1)
 
         # policy loss
         unclipped_policy_loss = ratio * advantages
@@ -418,10 +430,15 @@ class PPO(RLBase):
 
         # entropy bonus for better exploration
         entropy = pd.entropy(probs)
+
+        if ratio.dim() == 2:
+            loss_clip = loss_clip.sum(-1)
+            entropy = entropy.sum(-1)
+
         loss_ent = -self.entropy_bonus * entropy
 
         # sum all losses
-        total_loss = loss_clip + loss_value + loss_ent
+        total_loss = loss_clip.mean() + loss_value.mean() + loss_ent.mean()
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_clip.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
 
