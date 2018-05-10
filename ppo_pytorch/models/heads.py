@@ -89,7 +89,7 @@ class ActorCriticHead(HeadBase):
         self.reset_weights()
 
     def reset_weights(self):
-        normalized_columns_initializer(self.linear.weight.data[0:1], 1.0)
+        normalized_columns_initializer(self.linear.weight.data[0:1], 0.01)
         normalized_columns_initializer(self.linear.weight.data[1:], self.pd.init_column_norm)
         self.linear.bias.data.fill_(self.prob_init_bias)
         self.linear.bias.data[0] = 0

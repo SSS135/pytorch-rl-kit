@@ -120,6 +120,10 @@ class ProbabilityDistribution:
     def init_column_norm(self):
         return 0.01
 
+    @property
+    def clip_mult(self):
+        return 1
+
 
 class CategoricalPd(ProbabilityDistribution):
     def __init__(self, n):
@@ -416,6 +420,12 @@ class StaticTransactionPd(ProbabilityDistribution):
 
     def logp(self, x, prob):
         assert self.states is not None
+
+        # def logit(x):
+        #     return torch.log(x / (1 - x))
+        #
+        # p = logit(F.cosine_similarity(prob, self.states, -1) * 0.5 + 0.5)
+        # p = -(prob - self.states).abs().add(1e-7).log()
         p = F.cosine_similarity(prob, self.states, -1)
         return p
 
@@ -427,6 +437,67 @@ class StaticTransactionPd(ProbabilityDistribution):
 
     def sample(self, prob):
         return prob
+
+    @property
+    def init_column_norm(self):
+        return math.sqrt(self.d)
+
+
+class DiagGaussianTransactionPd(ProbabilityDistribution):
+    def __init__(self, d):
+        self.d = d
+        self.cur = None
+        self.next = None
+        self.randn = None
+
+    @property
+    def prob_vector_len(self):
+        return self.d * 2
+
+    @property
+    def action_vector_len(self):
+        return self.d
+
+    @property
+    def input_vector_len(self):
+        return self.d
+
+    @property
+    def dtype_numpy(self):
+        return np.float32
+
+    def dtype_torch(self, cuda):
+        return torch.cuda.FloatTensor if cuda else torch.FloatTensor
+
+    def logp(self, a, prob):
+        assert self.cur is not None and self.next is not None and self.randn is not None
+        mean = prob[..., :self.d]
+        std = prob[..., self.d:].exp()
+        target = mean + std * self.randn + self.cur
+        real = self.next
+        target = F.layer_norm(target, target.shape[-1:])
+        real = F.layer_norm(real, real.shape[-1:])
+        p = (target - real).pow(2).mean(-1).sqrt().neg()
+        return p
+
+    def kl(self, prob1, prob2):
+        return torch.zeros(prob1.shape[:-1], device=prob1.device, dtype=prob1.dtype)
+
+    def entropy(self, prob):
+        mean = prob[..., :self.d]
+        logstd = prob[..., self.d:]
+        return logstd.sum(-1) * 0.01 + mean.abs().sum(-1) * 0.01
+
+    def sample(self, prob, randn=None):
+        mean = prob[..., :self.d]
+        std = prob[..., self.d:].exp()
+        if randn is None:
+            randn = torch.randn_like(std)
+        return mean + std * randn, randn
+
+    # @property
+    # def clip_mult(self):
+    #     return 0.1
 
 
 def test_probtypes():

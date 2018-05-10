@@ -14,7 +14,8 @@ import torch.nn.functional as F
 
 from .utils import weights_init, make_conv_heatmap, image_to_float
 from ..common.make_grid import make_grid
-from ..common.probability_distributions import make_pd, MultivecGaussianPd, FixedStdGaussianPd, BernoulliPd, DiagGaussianPd, StaticTransactionPd
+from ..common.probability_distributions import make_pd, MultivecGaussianPd, FixedStdGaussianPd, \
+    BernoulliPd, DiagGaussianPd, StaticTransactionPd, DiagGaussianTransactionPd
 from .actors import Actor, CNNActor
 from optfn.qrnn import QRNN, DenseQRNN
 from optfn.sigmoid_pow import sigmoid_pow
@@ -23,7 +24,7 @@ from pretrainedmodels import nasnetamobile
 from optfn.shuffle_conv import ShuffleConv2d
 from optfn.swish import Swish
 from .heads import ActorCriticHead
-from optfn.temporal_group_norm import TemporalGroupNorm
+from optfn.temporal_group_norm import TemporalGroupNorm, TemporalLayerNorm
 
 
 class QRNNActor(Actor):
@@ -197,11 +198,11 @@ class Sega_CNN_HQRNNActor(Sega_CNN_QRNNActor):
 
 
 class HQRNNActor(QRNNActor):
-    def __init__(self, *args, h_action_size=32, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.h_action_size = h_action_size
+    def __init__(self, *args, qrnn_hidden_size=128, qrnn_layers=2, **kwargs):
+        super().__init__(*args, qrnn_hidden_size=qrnn_hidden_size, qrnn_layers=qrnn_layers, **kwargs)
+        self.h_action_size = self.qrnn_hidden_size
 
-        self.h_pd = FixedStdGaussianPd(h_action_size, 0.3)
+        self.h_pd = DiagGaussianTransactionPd(self.h_action_size)
         self.gate_pd = BernoulliPd(1)
 
         layer_norm = self.norm is not None and 'layer' in self.norm
@@ -216,44 +217,47 @@ class HQRNNActor(QRNNActor):
         #     # nn.ReLU(),
         # )
         self.action_merge_l1 = nn.Sequential(
-            nn.Linear(h_action_size * 2, self.qrnn_hidden_size, bias=not layer_norm),
+            nn.Linear(self.h_action_size * 2, self.qrnn_hidden_size, bias=not layer_norm),
             # *([TemporalGroupNorm(1, self.qrnn_hidden_size)] if layer_norm else []),
             nn.ReLU(),
         )
-        self.state_vec_extractor_l1 = nn.Sequential(
-            nn.Linear(self.qrnn_hidden_size, h_action_size),
-            # TemporalGroupNorm(1, h_action_size, affine=False),
-        )
+        # self.state_vec_extractor_l1 = nn.Sequential(
+        #     nn.Linear(self.qrnn_hidden_size, h_action_size),
+        #     # TemporalGroupNorm(1, h_action_size, affine=False),
+        # )
         # self.action_l2_norm = TemporalGroupNorm(1, h_action_size, affine=False)
-        self.norm_cur_l1 = TemporalGroupNorm(1, self.qrnn_hidden_size, affine=False)
-        self.norm_target_l1 = TemporalGroupNorm(1, self.qrnn_hidden_size, affine=False)
+        # self.norm_cur_l1 = TemporalLayerNorm(h_action_size, elementwise_affine=False)
+        # self.norm_target_l1 = TemporalLayerNorm(h_action_size, elementwise_affine=False)
         # self.norm_hidden_l1 = LayerNorm1d(self.qrnn_hidden_size, affine=False)
         self.head_l2 = ActorCriticHead(self.qrnn_hidden_size, self.h_pd)
         self.head_gate_l2 = ActorCriticHead(self.qrnn_hidden_size, self.gate_pd, math.log(0.2))
         self.reset_weights()
 
-    def forward(self, input, memory, done_flags, action_l2=None):
+    def forward(self, input, memory, done_flags, randn_l2=None):
         memory_l1, memory_l2 = memory.chunk(2, 0) if memory is not None else (None, None)
 
         hidden_l1, next_memory_l1 = self.qrnn_l1(input, memory_l1, done_flags)
+        cur_l1 = hidden_l1 #= F.layer_norm(hidden_l1, hidden_l1.shape[-1:])
         # head_gate_l2 = self.head_gate_l2(hidden_l1)
         # if action_gate_l2 is None:
         #     # (actors, batch, 1)
         #     action_gate_l2 = self.gate_pd.sample(head_gate_l2.probs)
         hidden_l2, next_memory_l2 = self.qrnn_l2(hidden_l1, memory_l2, done_flags)
-        cur_l1 = self.state_vec_extractor_l1(hidden_l1)
+        # hidden_l2 = F.layer_norm(hidden_l2, hidden_l2.shape[-1:])
+        # cur_l1 = self.state_vec_extractor_l1(hidden_l1)
+        # cur_l1 = hidden_l1
 
         head_l2 = self.head_l2(hidden_l2)
-        if action_l2 is None:
-            action_l2 = self.h_pd.sample(head_l2.probs)
-        target_l1 = self.norm_target_l1(cur_l1 + action_l2).detach()
-        cur_l1 = self.norm_cur_l1(cur_l1)
+        action_l2, randn_l2 = self.h_pd.sample(head_l2.probs, randn_l2)
+        target_l1 = (cur_l1 + action_l2).detach()
+        cur_l1_norm = F.layer_norm(cur_l1, cur_l1.shape[-1:])
+        target_l1_norm = F.layer_norm(target_l1, target_l1.shape[-1:])
 
-        preact_l1 = torch.cat([cur_l1, target_l1], -1)
+        preact_l1 = torch.cat([cur_l1_norm, target_l1_norm], -1)
         preact_l1 = self.action_merge_l1(preact_l1)
         head_l1 = self.head(preact_l1)
 
         next_memory = torch.cat([next_memory_l1, next_memory_l2], 0)
         # head_l1.state_values = head_l1.state_values * 0
 
-        return head_l1, head_l2, action_l2, cur_l1, target_l1, next_memory
+        return head_l1, head_l2, action_l2, randn_l2, cur_l1, target_l1, next_memory

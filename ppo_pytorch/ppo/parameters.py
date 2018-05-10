@@ -38,6 +38,35 @@ def create_mlp_kwargs(learning_decay_frames=5e5, **kwargs):
     return defaults
 
 
+def create_hqrnn_kwargs(**kwargs):
+    """
+    Get hyperparameters for simple envs like CartPole or Acrobot
+    Args:
+        **kwargs: Any arguments accepted by `PPO`
+
+    Returns: Parameters to initialize PPO
+    """
+
+    defaults = dict(
+        num_actors=16,
+        optimizer_factory=partial(optim.Adam, lr=1e-4),
+        policy_clip=0.05,
+        value_clip=0.1,
+        ppo_iters=6,
+        horizon=128,
+        batch_size=256,
+        model_factory=MLPActorCritic,
+        image_observation=False,
+        cuda_eval=True,
+        cuda_train=True,
+        lr_scheduler_factory=None,
+        clip_decay_factory=None,
+        entropy_decay_factory=None,
+    )
+    defaults.update(kwargs)
+    return defaults
+
+
 def create_atari_kwargs(learning_decay_frames=10e6, **kwargs):
     """
     Get hyperparameters for Atari

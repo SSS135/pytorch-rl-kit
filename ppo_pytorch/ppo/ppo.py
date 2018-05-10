@@ -23,6 +23,7 @@ from ..common.param_groups_getter import get_param_groups
 from pathlib import Path
 import math
 from optfn.grad_running_norm import GradRunningNorm
+from optfn.opt_clip import opt_clip
 
 
 def lerp(start, end, weight):
@@ -286,8 +287,8 @@ class PPO(RLBase):
         # calculate returns and advantages
         np_returns = calc_returns(norm_rewards, values, dones, reward_discount)
         np_advantages = calc_advantages(norm_rewards, values, dones, reward_discount, advantage_discount)
-        # np_advantages = (np_advantages - np_advantages.mean()) / max(np_advantages.std(), 1e-5)
-        np_advantages = np_advantages / np.sqrt((np_advantages ** 2).mean())
+        np_advantages = (np_advantages - np_advantages.mean()) / max(np_advantages.std(), 0.1)
+        # np_advantages = np_advantages / np.sqrt((np_advantages ** 2).mean())
 
         return norm_rewards, np_returns, np_advantages
 
@@ -347,37 +348,6 @@ class PPO(RLBase):
         x = torch.from_numpy(x)
         return x
 
-    def _get_sample_weights(self, probs_cur, probs_prev, probs_policy,
-                      values_cur, values_prev, values_policy,
-                      actions, advantages, returns, pd=None, tag=''):
-        if pd is None:
-            pd = self.model.pd
-
-        # clipping factors
-        value_clip = self.value_clip * self.clip_mult
-        policy_clip = self.policy_clip * self.clip_mult
-
-        # action probability ratio
-        # log probabilities used for better numerical stability
-        logp_cur = pd.logp(actions, probs_cur)
-        logp_prev = pd.logp(actions, probs_prev)
-        logp_policy = pd.logp(actions, probs_policy).detach()
-        logp_target = logp_policy + advantages.sign() * policy_clip
-
-        def inv_lerp(a, b, x):
-            return (x - a) / (b - a)
-
-        def calc_overshot(cur, prev, target, clip):
-            return torch.min((cur - prev).abs(), (cur - target).abs()) / clip
-
-        logp_overshot = calc_overshot(logp_cur, logp_prev, logp_target, policy_clip)
-
-        values_target = values_policy + (returns - values_policy).clamp(-value_clip, value_clip)
-        values_overshot = calc_overshot(values_cur, values_prev, values_target, value_clip)
-
-        sample_weights = 1.0 / torch.max(values_overshot.abs(), logp_overshot.abs()).clamp(min=1)
-        return sample_weights.detach()
-
     def _get_ppo_loss(self, probs, probs_old, values, values_old, actions, advantages, returns, pd=None, tag=''):
         """
         Single iteration of PPO algorithm.
@@ -387,11 +357,11 @@ class PPO(RLBase):
         if pd is None:
             pd = self.model.pd
 
-        if tag not in self.grad_norms:
-            self.grad_norms[tag] = (GradRunningNorm(), GradRunningNorm(self.value_loss_scale))
-        prob_norm, value_norm = self.grad_norms[tag]
-        probs = prob_norm(probs)
-        values = value_norm(values)
+        # if tag not in self.grad_norms:
+        #     self.grad_norms[tag] = (GradRunningNorm(), GradRunningNorm(self.value_loss_scale))
+        # prob_norm, value_norm = self.grad_norms[tag]
+        # probs = prob_norm(probs)
+        # values = value_norm(values)
 
         # # prepare data
         # actions = actions.detach()
@@ -400,7 +370,10 @@ class PPO(RLBase):
 
         # clipping factors
         value_clip = self.value_clip * self.clip_mult
-        policy_clip = self.policy_clip * self.clip_mult
+        policy_clip = self.policy_clip * self.clip_mult * pd.clip_mult
+
+        probs = opt_clip(probs, probs_old, policy_clip)
+        values = opt_clip(values, values_old, value_clip)
 
         # action probability ratio
         # log probabilities used for better numerical stability
@@ -408,32 +381,33 @@ class PPO(RLBase):
         logp_old = pd.logp(actions, probs_old).detach()
         ratio = logp - logp_old
 
-        if ratio.dim() == 2:
-            advantages = advantages.unsqueeze(-1)
+        # if logp.dim() == 2:
+        #     advantages = advantages.unsqueeze(-1)
 
-        # policy loss
-        unclipped_policy_loss = ratio * advantages
-        if self.constraint == 'clip' or self.constraint == 'clip_mod':
-            # clip policy loss
-            clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
-            clipped_policy_loss = clipped_ratio * advantages
-            loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
-        else:
-            # do not clip loss
-            loss_clip = -unclipped_policy_loss
-
-        # value loss
-        v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
-        vf_clip_loss = F.smooth_l1_loss(v_pred_clipped, returns, reduce=False)
-        vf_nonclip_loss = F.smooth_l1_loss(values, returns, reduce=False)
-        loss_value = self.value_loss_scale * 0.5 * torch.max(vf_nonclip_loss, vf_clip_loss)
+        # if self.constraint == 'clip' or self.constraint == 'clip_mod':
+        #     # policy loss
+        #     unclipped_policy_loss = ratio * advantages
+        #     # clip policy loss
+        #     clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
+        #     clipped_policy_loss = clipped_ratio * advantages
+        #     loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
+        #
+        #     # value loss
+        #     v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
+        #     vf_clip_loss = F.smooth_l1_loss(v_pred_clipped, returns, reduce=False)
+        #     vf_nonclip_loss = F.smooth_l1_loss(values, returns, reduce=False)
+        #     loss_value = self.value_loss_scale * 0.5 * torch.max(vf_nonclip_loss, vf_clip_loss)
+        # else:
+        #     # do not clip loss
+        loss_clip = -logp * advantages
+        loss_value = F.smooth_l1_loss(values, returns, reduce=False)
 
         # entropy bonus for better exploration
         entropy = pd.entropy(probs)
 
-        if ratio.dim() == 2:
-            loss_clip = loss_clip.sum(-1)
-            entropy = entropy.sum(-1)
+        # if logp.dim() == 2:
+        #     loss_clip = loss_clip.sum(-1)
+        #     entropy = entropy.sum(-1)
 
         loss_ent = -self.entropy_bonus * entropy
 

@@ -24,7 +24,7 @@ from collections import namedtuple
 from .ppo_qrnn import PPO_QRNN
 
 
-RNNData = namedtuple('RNNData', 'memory, dones, action_l2, cur_l1, target_l1, probs_l2, values_l2')
+RNNData = namedtuple('RNNData', 'memory, dones, action_l2, randn_l2, cur_l1, target_l1, probs_l2, values_l2')
 
 
 class PPO_HQRNN(PPO_QRNN):
@@ -36,7 +36,7 @@ class PPO_HQRNN(PPO_QRNN):
                  real_reward_l1_frac=0.0,
                  **kwargs):
         super().__init__(observation_space, action_space, model_factory=model_factory, *args, **kwargs)
-        self._rnn_data = RNNData([], [], [], [], [], [], [])
+        self._rnn_data = RNNData([], [], [], [], [], [], [], [])
         self.data_l2 = None
         self.reward_discount_l2 = reward_discount_l2
         self.advantage_discount_l2 = advantage_discount_l2
@@ -49,7 +49,7 @@ class PPO_HQRNN(PPO_QRNN):
         dones = torch.zeros(self.num_actors) if dones is None else torch.from_numpy(np.asarray(dones, np.float32))
         dones = dones.unsqueeze(0).to(self.device_eval)
         states = states.unsqueeze(0)
-        head_l1, head_l2, action_l2, cur_l1, target_l1, next_mem = self.model(states, mem, dones)
+        head_l1, head_l2, action_l2, randn_l2, cur_l1, target_l1, next_mem = self.model(states, mem, dones)
 
         head_l1.probs = head_l1.probs.squeeze(0)
         head_l1.state_values = head_l1.state_values.squeeze(0)
@@ -61,8 +61,9 @@ class PPO_HQRNN(PPO_QRNN):
         self._rnn_data.memory.append(next_mem.data)
         self._rnn_data.dones.append(dones.data[0])
         self._rnn_data.action_l2.append(action_l2.data[0])
-        self._rnn_data.cur_l1.append(cur_l1.data[0])
-        self._rnn_data.target_l1.append(target_l1.data[0])
+        self._rnn_data.randn_l2.append(randn_l2.data[0].cpu())
+        self._rnn_data.cur_l1.append(cur_l1.data[0].cpu())
+        self._rnn_data.target_l1.append(target_l1.data[0].cpu())
         self._rnn_data.probs_l2.append(head_l2.probs.data)
         self._rnn_data.values_l2.append(head_l2.state_values.data)
 
@@ -72,10 +73,13 @@ class PPO_HQRNN(PPO_QRNN):
         next_l1 = torch.stack(self._rnn_data.cur_l1[1:], 0)
         cur_l1 = torch.stack(self._rnn_data.cur_l1[:-1], 0)
         target_l1 = torch.stack(self._rnn_data.target_l1[:-1], 0)
-        r_next_l1 = (target_l1 - next_l1).pow(2).mean(-1).sqrt().neg()
-        r_cur_l1 = (target_l1 - cur_l1).pow(2).mean(-1).sqrt().neg()
-        # r_next_l1 = F.cosine_similarity(target_l1, next_l1, dim=-1)
-        # r_cur_l1 = F.cosine_similarity(target_l1, cur_l1, dim=-1)
+        cur_l1_norm = F.layer_norm(cur_l1, cur_l1.shape[-1:])
+        next_l1_norm = F.layer_norm(next_l1, next_l1.shape[-1:])
+        target_l1_norm = F.layer_norm(target_l1, target_l1.shape[-1:])
+        r_next_l1 = (target_l1_norm - next_l1_norm).pow(2).mean(-1).sqrt().neg()
+        r_cur_l1 = (target_l1_norm - cur_l1_norm).pow(2).mean(-1).sqrt().neg()
+        # r_next_l1 = F.cosine_similarity(target_l1_norm, next_l1_norm, dim=-1)
+        # r_cur_l1 = F.cosine_similarity(target_l1_norm, cur_l1_norm, dim=-1)
         rewards_l1 = (r_next_l1 - r_cur_l1).cpu().numpy()
         probs_l2 = torch.stack(self._rnn_data.probs_l2, 0).cpu().numpy()
         values_l2 = torch.stack(self._rnn_data.values_l2, 0).cpu().numpy()
@@ -124,10 +128,15 @@ class PPO_HQRNN(PPO_QRNN):
         dones = self._rnn_data.dones[:-1] # (steps, actors)
         dones = torch.stack(dones, 0).transpose(0, 1).reshape(-1) # (actors * steps)
 
-        next_l1 = torch.stack(self._rnn_data.cur_l1[1:], 0).cpu() # (steps, layers, action_size)
-        next_l1 = next_l1.transpose(0, 1).reshape(-1, next_l1.shape[-1]) # (layers * steps, action_size)
+        next_l1 = torch.stack(self._rnn_data.cur_l1[1:], 0) # (steps, actors, action_size)
+        next_l1 = next_l1.transpose(0, 1).reshape(-1, next_l1.shape[-1]) # (actors * steps, action_size)
+        cur_l1 = torch.stack(self._rnn_data.cur_l1[:-1], 0) # (steps, actors, action_size)
+        cur_l1 = cur_l1.transpose(0, 1).reshape(-1, cur_l1.shape[-1]) # (actors * steps, action_size)
 
-        self._rnn_data = RNNData(self._rnn_data.memory[-1:], [], [], [], [], [], [])
+        randn_l2 = torch.stack(self._rnn_data.randn_l2[:-1], 0) # (steps, actors, action_size)
+        randn_l2 = randn_l2.transpose(0, 1).reshape(-1, randn_l2.shape[-1]) # (actors * steps, action_size)
+
+        self._rnn_data = RNNData(self._rnn_data.memory[-1:], [], [], [], [], [], [], [])
 
         # (actors * steps, ...)
         data = (data_l1.states.pin_memory() if self.device_train.type == 'cuda' else data_l1.states,
@@ -136,7 +145,7 @@ class PPO_HQRNN(PPO_QRNN):
                 data_l1.actions, data_l2.actions,
                 data_l1.advantages, data_l2.advantages,
                 data_l1.returns, data_l2.returns,
-                memory, dones, next_l1)
+                memory, dones, cur_l1, next_l1, randn_l2)
         # (actors, steps, ...)
         num_actors = self.num_actors
         if self.horizon > self.batch_size:
@@ -154,22 +163,22 @@ class PPO_HQRNN(PPO_QRNN):
                 # prepare batch data
                 # (actors * steps, ...)
                 ids_cuda = ids.cuda()
-                st, po_l1, po_l2, vo_l1, vo_l2, ac_l1, ac_l2, adv_l1, adv_l2, ret_l1, ret_l2, mem, done, next_l1 = [
+                st, po_l1, po_l2, vo_l1, vo_l2, ac_l1, ac_l2, adv_l1, adv_l2, ret_l1, ret_l2, mem, done, cu_l1, ne_l1, r_l2 = [
                     x[ids_cuda if x.is_cuda else ids].reshape(-1, *x.shape[2:])
                     for x in data]
                 # (steps, actors, ...)
-                st, mem, done, ac_l2_inp = [x.data.view(ids.shape[0], -1, *x.shape[1:]).transpose(0, 1)
-                                            for x in (st, mem, done, ac_l2)]
+                st, mem, done, r_l2_inp = [x.data.view(ids.shape[0], -1, *x.shape[1:]).transpose(0, 1)
+                                            for x in (st, mem, done, r_l2)]
                 # (layers, actors, hidden_size)
                 mem = mem[0].transpose(0, 1)
-                st, mem, done, ac_l2_inp = [x.to(self.device_train) for x in (st, mem, done, ac_l2_inp)]
+                st, mem, done, r_l2_inp = [x.to(self.device_train) for x in (st, mem, done, r_l2_inp)]
                 # (steps, actors)
                 done = done.reshape(done.shape[:2])
 
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
                 with torch.enable_grad():
-                    actor_out_l1, actor_out_l2, *_ = self.model(st, mem, done, ac_l2_inp)
+                    actor_out_l1, actor_out_l2, *_ = self.model(st, mem, done, r_l2_inp)
                     # (actors * steps, probs)
                     probs_l1, probs_l2 = [h.probs.cpu().transpose(0, 1).reshape(-1, h.probs.shape[2])
                                           for h in (actor_out_l1, actor_out_l2)]
@@ -177,8 +186,11 @@ class PPO_HQRNN(PPO_QRNN):
                     state_values_l1, state_values_l2 = [h.state_values.cpu().transpose(0, 1).reshape(-1)
                                                         for h in (actor_out_l1, actor_out_l2)]
 
-                    if hasattr(self.model.h_pd, 'states'):
-                        self.model.h_pd.states = next_l1
+                    if hasattr(self.model.h_pd, 'cur'):
+                        self.model.h_pd.cur = cu_l1
+                        self.model.h_pd.next = ne_l1
+                    if hasattr(self.model.h_pd, 'randn'):
+                        self.model.h_pd.randn = r_l2
 
                     # get loss
                     loss_l1, kl_l1 = self._get_ppo_loss(probs_l1, po_l1, state_values_l1, vo_l1, ac_l1, adv_l1, ret_l1,
@@ -205,5 +217,5 @@ class PPO_HQRNN(PPO_QRNN):
 
     def drop_collected_steps(self):
         super().drop_collected_steps()
-        self._rnn_data = RNNData([], [], [], [], [], [], [])
+        self._rnn_data = RNNData([], [], [], [], [], [], [], [])
 
