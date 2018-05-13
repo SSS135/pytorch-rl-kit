@@ -260,22 +260,22 @@ class PPO(RLBase):
 
         # convert list to numpy array
         # (seq, num_actors, ...)
-        rewards = np.asarray(sample.rewards)
-        values_old = np.asarray(sample.values)
-        dones = np.asarray(sample.dones)
+        rewards = torch.tensor(sample.rewards, dtype=torch.float)
+        values_old = torch.tensor(sample.values, dtype=torch.float)
+        dones = torch.tensor(sample.dones, dtype=torch.float)
 
-        norm_rewards, np_returns, np_advantages = self._process_rewards(
+        rewards, returns, advantages = self._process_rewards(
             rewards, values_old, dones, reward_discount, advantage_discount, reward_scale)
 
         # convert data to Tensors
         probs_old = self._from_numpy(sample.probs[:-1], dtype=np.float32)
         actions = self._from_numpy(sample.actions[:-1], dtype=pd.dtype_numpy)
         values_old = self._from_numpy(sample.values[:-1], dtype=np.float32).reshape(-1)
-        returns = self._from_numpy(np_returns, np.float32).reshape(-1)
-        advantages = self._from_numpy(np_advantages, np.float32).reshape(-1)
-        dones = self._from_numpy(dones, np.float32).reshape(-1)
-        rewards = self._from_numpy(norm_rewards, np.float32).reshape(-1)
+        dones = dones.reshape(-1)
         states = torch.cat(sample.states[:-1], dim=0) if sample.states is not None else None
+        returns = returns.reshape(-1)
+        advantages = advantages.reshape(-1)
+        rewards = rewards.reshape(-1)
 
         probs_old, actions = [v.reshape(-1, v.shape[-1]) for v in (probs_old, actions)]
 
@@ -285,12 +285,11 @@ class PPO(RLBase):
         norm_rewards = reward_scale * rewards
 
         # calculate returns and advantages
-        np_returns = calc_returns(norm_rewards, values, dones, reward_discount)
-        np_advantages = calc_advantages(norm_rewards, values, dones, reward_discount, advantage_discount)
-        np_advantages = (np_advantages - np_advantages.mean()) / max(np_advantages.std(), 0.1)
-        # np_advantages = np_advantages / np.sqrt((np_advantages ** 2).mean())
+        returns = calc_returns(norm_rewards, values, dones, reward_discount)
+        advantages = calc_advantages(norm_rewards, values, dones, reward_discount, advantage_discount)
+        advantages = (advantages - advantages.mean()) / max(advantages.std(), 0.01)
 
-        return norm_rewards, np_returns, np_advantages
+        return norm_rewards, returns, advantages
 
     def _ppo_update(self, data):
         self.model.train()
@@ -302,19 +301,17 @@ class PPO(RLBase):
         batches = max(1, self.num_actors * self.horizon // self.batch_size)
 
         for ppo_iter in range(self.ppo_iters):
-            rand_idx = torch.randperm(len(data[0]))
+            rand_idx = torch.randperm(len(data[0])).to(self.device_train)
             for loader_iter in range(batches):
                 # prepare batch data
                 batch_idx = rand_idx[loader_iter * self.batch_size: (loader_iter + 1) * self.batch_size]
-                batch_idx_cuda = batch_idx.cuda()
-                st, po, vo, ac, adv, ret = [x[batch_idx_cuda if x.is_cuda else batch_idx] for x in data]
-                st = st.to(self.device_train)
+                st, po, vo, ac, adv, ret = [x[batch_idx].to(self.device_train) for x in data]
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
                 with torch.enable_grad():
                     actor_out = self.model(st)
-                    probs_prev = actor_out.probs.cpu()
-                    values_prev = actor_out.state_values.cpu()
+                    probs_prev = actor_out.probs
+                    values_prev = actor_out.state_values
                     # get loss
                     loss, kl = self._get_ppo_loss(probs_prev, po, values_prev, vo, ac, adv, ret)
                     loss = loss.mean()

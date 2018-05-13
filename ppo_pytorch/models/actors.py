@@ -89,21 +89,23 @@ class Actor(nn.Module):
                 None - no normalization
                 'layer' - layer normalization
                 'batch' - batch normalization
-                'weight' - weight normalization
+                'group' - group normalization
 
         Returns: `nn.Sequential` of layers. Each layer is also `nn.Sequential` containing (linear, [norm], activation).
             If `out_size` is not None, last layer is just linear transformation, without norm or activation.
 
         """
-        assert norm in (None, 'layer', 'batch', 'weight')
+        assert norm in (None, 'layer', 'batch', 'group')
         seq = []
         for i in range(len(hidden_sizes)):
             n_in = in_size if i == 0 else hidden_sizes[i - 1]
             n_out = hidden_sizes[i]
             layer = []
             layer.append(nn.Linear(n_in, n_out))
+            if norm == 'group':
+                layer.append(nn.GroupNorm(16, n_out))
             if norm == 'layer':
-                layer.append(nn.GroupNorm(1, n_out))
+                layer.append(nn.LayerNorm(n_out))
             elif norm == 'batch':
                 layer.append(nn.BatchNorm1d(n_out))
             layer.append(activation())

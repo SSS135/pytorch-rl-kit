@@ -61,9 +61,9 @@ class PPO_HQRNN(PPO_QRNN):
         self._rnn_data.memory.append(next_mem.data)
         self._rnn_data.dones.append(dones.data[0])
         self._rnn_data.action_l2.append(action_l2.data[0])
-        self._rnn_data.randn_l2.append(randn_l2.data[0].cpu())
-        self._rnn_data.cur_l1.append(cur_l1.data[0].cpu())
-        self._rnn_data.target_l1.append(target_l1.data[0].cpu())
+        self._rnn_data.randn_l2.append(randn_l2.data[0])
+        self._rnn_data.cur_l1.append(cur_l1.data[0])
+        self._rnn_data.target_l1.append(target_l1.data[0])
         self._rnn_data.probs_l2.append(head_l2.probs.data)
         self._rnn_data.values_l2.append(head_l2.state_values.data)
 
@@ -87,8 +87,7 @@ class PPO_HQRNN(PPO_QRNN):
 
         sample_l1 = self.sample
         sample_l2 = Sample(None, sample_l1.rewards, self.sample.dones, probs_l2, values_l2, actions_l2)
-        real_reward_l1 = self.reward_scale_l2 * self.real_reward_l1_frac * np.asarray(sample_l1.rewards)
-        sample_l1 = sample_l1._replace(rewards=rewards_l1 + real_reward_l1)
+        sample_l1 = sample_l1._replace(rewards=rewards_l1)
 
         return sample_l1, sample_l2
 
@@ -138,12 +137,16 @@ class PPO_HQRNN(PPO_QRNN):
 
         self._rnn_data = RNNData(self._rnn_data.memory[-1:], [], [], [], [], [], [], [])
 
+        rewards, returns, advantages = self._process_rewards(
+            data_l2.rewards, data_l1values_old, dones, reward_discount, advantage_discount, reward_scale)
+
+        advantages_l1 /= (1 + self.real_reward_l1_frac)
         # (actors * steps, ...)
         data = (data_l1.states.pin_memory() if self.device_train.type == 'cuda' else data_l1.states,
                 data_l1.probs_old, data_l2.probs_old,
                 data_l1.values_old, data_l2.values_old,
                 data_l1.actions, data_l2.actions,
-                data_l1.advantages, data_l2.advantages,
+                advantages_l1, data_l2.advantages,
                 data_l1.returns, data_l2.returns,
                 memory, dones, cur_l1, next_l1, randn_l2)
         # (actors, steps, ...)
@@ -155,23 +158,21 @@ class PPO_HQRNN(PPO_QRNN):
         else:
             batches = max(1, num_actors * self.horizon // self.batch_size)
 
-        data = [x.reshape(num_actors, -1, *x.shape[1:]) for x in data]
+        data = [x.reshape(num_actors, -1, *x.shape[1:]).to(self.device_train) for x in data]
 
         for ppo_iter in range(self.ppo_iters):
-            actor_index_chunks = torch.randperm(num_actors).chunk(batches)
+            actor_index_chunks = torch.randperm(num_actors).to(self.device_train).chunk(batches)
             for loader_iter, ids in enumerate(actor_index_chunks):
                 # prepare batch data
                 # (actors * steps, ...)
-                ids_cuda = ids.cuda()
                 st, po_l1, po_l2, vo_l1, vo_l2, ac_l1, ac_l2, adv_l1, adv_l2, ret_l1, ret_l2, mem, done, cu_l1, ne_l1, r_l2 = [
-                    x[ids_cuda if x.is_cuda else ids].reshape(-1, *x.shape[2:])
+                    x[ids].reshape(-1, *x.shape[2:])
                     for x in data]
                 # (steps, actors, ...)
                 st, mem, done, r_l2_inp = [x.data.view(ids.shape[0], -1, *x.shape[1:]).transpose(0, 1)
-                                            for x in (st, mem, done, r_l2)]
+                                           for x in (st, mem, done, r_l2)]
                 # (layers, actors, hidden_size)
                 mem = mem[0].transpose(0, 1)
-                st, mem, done, r_l2_inp = [x.to(self.device_train) for x in (st, mem, done, r_l2_inp)]
                 # (steps, actors)
                 done = done.reshape(done.shape[:2])
 
@@ -180,10 +181,10 @@ class PPO_HQRNN(PPO_QRNN):
                 with torch.enable_grad():
                     actor_out_l1, actor_out_l2, *_ = self.model(st, mem, done, r_l2_inp)
                     # (actors * steps, probs)
-                    probs_l1, probs_l2 = [h.probs.cpu().transpose(0, 1).reshape(-1, h.probs.shape[2])
+                    probs_l1, probs_l2 = [h.probs.transpose(0, 1).reshape(-1, h.probs.shape[2])
                                           for h in (actor_out_l1, actor_out_l2)]
                     # (actors * steps)
-                    state_values_l1, state_values_l2 = [h.state_values.cpu().transpose(0, 1).reshape(-1)
+                    state_values_l1, state_values_l2 = [h.state_values.transpose(0, 1).reshape(-1)
                                                         for h in (actor_out_l1, actor_out_l2)]
 
                     if hasattr(self.model.h_pd, 'cur'):

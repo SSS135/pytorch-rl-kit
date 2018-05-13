@@ -41,9 +41,9 @@ class PPO_QRNN(PPO):
                 return None
             # input: (seq * num_actors, ...)
             # (seq, num_actors, ...)
-            x = input.view(-1, self.num_actors, *input.shape[1:])
+            x = input.reshape(-1, self.num_actors, *input.shape[1:])
             # (num_actors * seq, ...)
-            return x.transpose(0, 1).contiguous().view_as(input)
+            return x.transpose(0, 1).reshape(input.shape)
 
         data = data._asdict()
         data = [reorder(v) for v in data.values()]
@@ -74,11 +74,11 @@ class PPO_QRNN(PPO):
         data = self._reorder_data(data)
 
         memory = torch.stack(self._rnn_data.memory[:-2], 0)  # (steps, layers, actors, hidden_size)
-        memory = memory.permute(2, 0, 1, 3).contiguous()  # (actors, steps, layers, hidden_size)
-        memory = memory.view(-1, *memory.shape[2:]) # (actors * steps, layers, hidden_size)
+        memory = memory.permute(2, 0, 1, 3)  # (actors, steps, layers, hidden_size)
+        memory = memory.reshape(-1, *memory.shape[2:]) # (actors * steps, layers, hidden_size)
 
         dones = self._rnn_data.dones[:-1] # (steps, actors)
-        dones = torch.stack(dones, 0).transpose(0, 1).contiguous().view(-1) # (actors * steps)
+        dones = torch.stack(dones, 0).transpose(0, 1).reshape(-1) # (actors * steps)
 
         self._rnn_data = RNNData(self._rnn_data.memory[-1:], [])
 
@@ -99,26 +99,24 @@ class PPO_QRNN(PPO):
         else:
             batches = max(1, num_actors * self.horizon // self.batch_size)
 
-        data = [x.view(num_actors, -1, *x.shape[1:]) for x in data]
+        data = [x.reshape(num_actors, -1, *x.shape[1:]) for x in data]
 
         prev_model_dict = copy.deepcopy(self.model.state_dict())
 
         for ppo_iter in range(self.ppo_iters):
-            actor_index_chunks = torch.randperm(num_actors).chunk(batches)
+            actor_index_chunks = torch.randperm(num_actors).to(self.device_train).chunk(batches)
             for loader_iter, ids in enumerate(actor_index_chunks):
                 # prepare batch data
                 # (actors * steps, ...)
-                ids_cuda = ids.cuda()
                 st, po, vo, ac, adv, ret, mem, done = [
-                    Variable(x[ids_cuda if x.is_cuda else ids].contiguous().view(-1, *x.shape[2:]))
+                    Variable(x[ids].to(self.device_train).reshape(-1, *x.shape[2:]))
                     for x in data]
                 # (steps, actors, ...)
-                st, mem, done = [x.view(ids.shape[0], -1, *x.shape[1:]).transpose(0, 1) for x in (st, mem, done)]
+                st, mem, done = [x.reshape(ids.shape[0], -1, *x.shape[1:]).transpose(0, 1) for x in (st, mem, done)]
                 # (layers, actors, hidden_size)
                 mem = mem[0].transpose(0, 1)
-                st, mem, done = [x.to(self.device_train) for x in (st, mem, done)]
                 # (steps, actors)
-                done = done.contiguous().view(done.shape[:2])
+                done = done.reshape(done.shape[:2])
 
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
@@ -126,9 +124,9 @@ class PPO_QRNN(PPO):
                 with torch.enable_grad():
                     actor_out, _ = self.model(st, mem, done)
                     # (actors * steps, probs)
-                    probs = actor_out.probs.cpu().transpose(0, 1).contiguous().view(-1, actor_out.probs.shape[2])
+                    probs = actor_out.probs.transpose(0, 1).reshape(-1, actor_out.probs.shape[2])
                     # (actors * steps)
-                    state_values = actor_out.state_values.cpu().transpose(0, 1).contiguous().view(-1)
+                    state_values = actor_out.state_values.transpose(0, 1).reshape(-1)
                     # get loss
                     loss, kl = self._get_ppo_loss(probs, po, state_values, vo, ac, adv, ret)
                     loss = loss.mean()
@@ -138,51 +136,6 @@ class PPO_QRNN(PPO):
                     clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                     self.optimizer.step()
                     self.optimizer.zero_grad()
-
-                    # for src, dst in zip(self.model.state_dict().values(), prev_model_dict.values()):
-                    #     dst.copy_(src)
-                    #
-                    # actor_out, _ = self.model(st, mem, done)
-                    # # (actors * steps, probs)
-                    # probs_prev = actor_out.probs.cpu().transpose(0, 1).contiguous().view(-1, actor_out.probs.shape[2])
-                    # # (actors * steps)
-                    # values_prev = actor_out.state_values.cpu().transpose(0, 1).contiguous().view(-1)
-                    # # get loss
-                    # loss, kl = self._get_ppo_loss(probs_prev, po, values_prev, vo, ac, adv, ret, tag=None)
-                    # loss = loss.mean()
-                    #
-                    # # optimize
-                    # loss.backward()
-                    # clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-                    # self.optimizer.step()
-                    # self.optimizer.zero_grad()
-                    #
-                    # actor_out, _ = self.model(st, mem, done)
-                    # # (actors * steps, probs)
-                    # probs_cur = actor_out.probs.cpu().transpose(0, 1).contiguous().view(-1, actor_out.probs.shape[2])
-                    # # (actors * steps)
-                    # values_cur = actor_out.state_values.cpu().transpose(0, 1).contiguous().view(-1)
-                    # sample_weights = self._get_sample_weights(
-                    #     probs_cur, probs_prev, po, values_cur, values_prev, vo, ac, adv, ret)
-                    #
-                    # for dst, src in zip(self.model.state_dict().values(), prev_model_dict.values()):
-                    #     dst.copy_(src)
-                    # prev_optim_dict = copy.deepcopy(self.optimizer.state_dict())
-                    #
-                    # actor_out, _ = self.model(st, mem, done)
-                    # # (actors * steps, probs)
-                    # probs_prev = actor_out.probs.cpu().transpose(0, 1).contiguous().view(-1, actor_out.probs.shape[2])
-                    # # (actors * steps)
-                    # values_prev = actor_out.state_values.cpu().transpose(0, 1).contiguous().view(-1)
-                    # # get loss
-                    # loss, kl = self._get_ppo_loss(probs_prev, po, values_prev, vo, ac, adv, ret)
-                    # loss = (loss * sample_weights).mean()
-                    # loss.backward()
-                    # clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-                    # self.optimizer.step()
-                    # self.optimizer.zero_grad()
-                    #
-                    # self.optimizer.load_state_dict(prev_optim_dict)
 
                 self.model.set_log(self.logger, False, self.step)
 

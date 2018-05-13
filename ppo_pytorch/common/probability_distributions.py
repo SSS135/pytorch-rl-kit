@@ -484,9 +484,9 @@ class DiagGaussianTransactionPd(ProbabilityDistribution):
         return torch.zeros(prob1.shape[:-1], device=prob1.device, dtype=prob1.dtype)
 
     def entropy(self, prob):
-        mean = prob[..., :self.d]
+        #mean = prob[..., :self.d]
         logstd = prob[..., self.d:]
-        return logstd.sum(-1) * 0.01 + mean.abs().sum(-1) * 0.01
+        return logstd.sum(-1) * 0.01 #+ mean.abs().sum(-1) * 0.01
 
     def sample(self, prob, randn=None):
         mean = prob[..., :self.d]

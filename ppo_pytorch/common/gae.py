@@ -1,4 +1,4 @@
-import numpy as np
+import torch
 
 
 def calc_advantages(rewards, values, dones, reward_discount, advantage_discount):
@@ -16,7 +16,7 @@ def calc_advantages(rewards, values, dones, reward_discount, advantage_discount)
     assert len(rewards) == len(values) - 1
 
     gae = 0
-    gaes = np.zeros(rewards.shape)
+    gaes = torch.zeros_like(rewards)
     for t in reversed(range(len(rewards))):
         nonterminal = 1 - dones[t]
         td_residual = rewards[t] + reward_discount * nonterminal * values[t + 1] - values[t]
@@ -40,7 +40,7 @@ def calc_returns(rewards, values, dones, reward_discount):
     assert len(rewards) == len(values) - 1
 
     R = values[-1]
-    returns = np.zeros(rewards.shape)
+    returns = torch.zeros_like(rewards)
     for t in reversed(range(len(rewards))):
         nonterminal = 1 - dones[t]
         R = rewards[t] + nonterminal * reward_discount * R
