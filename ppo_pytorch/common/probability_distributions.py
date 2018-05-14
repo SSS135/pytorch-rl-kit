@@ -229,10 +229,7 @@ class DiagGaussianPd(ProbabilityDistribution):
 
     @property
     def dtype(self):
-        return np.float32
-
-    def dtype_torch(self, cuda):
-        return torch.cuda.FloatTensor if cuda else torch.FloatTensor
+        return torch.float
 
     def neglogp(self, x, prob):
         mean = prob[..., :self.d]
@@ -241,7 +238,7 @@ class DiagGaussianPd(ProbabilityDistribution):
         nll = 0.5 * ((x - mean) / std).pow(2) + \
               0.5 * math.log(2.0 * math.pi) * self.d + \
               logstd
-        return nll
+        return nll.sum(-1)
 
     def kl(self, prob1, prob2):
         mean1 = prob1[..., :self.d]
@@ -251,12 +248,12 @@ class DiagGaussianPd(ProbabilityDistribution):
         std1 = torch.exp(logstd1)
         std2 = torch.exp(logstd2)
         kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
-        return kl
+        return kl.sum(-1)
 
     def entropy(self, prob):
-        logstd = prob[:, self.d:]
+        logstd = prob[..., self.d:]
         ent = logstd + .5 * math.log(2.0 * math.pi * math.e)
-        return ent
+        return ent.sum(-1)
 
     def sample(self, prob):
         mean = prob[..., :self.d]

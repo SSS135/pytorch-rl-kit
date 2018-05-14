@@ -16,6 +16,7 @@ from ..common.make_grid import make_grid
 from ..common.probability_distributions import make_pd
 from optfn.swish import Swish
 from optfn.learned_norm import LearnedNorm2d
+from torch.nn.utils import weight_norm
 
 
 class GroupTranspose(nn.Module):
@@ -95,7 +96,7 @@ class Actor(nn.Module):
             If `out_size` is not None, last layer is just linear transformation, without norm or activation.
 
         """
-        assert norm in (None, 'layer', 'batch', 'group')
+        assert norm in (None, 'layer', 'batch', 'group', 'weight')
         seq = []
         for i in range(len(hidden_sizes)):
             n_in = in_size if i == 0 else hidden_sizes[i - 1]
@@ -103,11 +104,13 @@ class Actor(nn.Module):
             layer = []
             layer.append(nn.Linear(n_in, n_out))
             if norm == 'group':
-                layer.append(nn.GroupNorm(16, n_out))
-            if norm == 'layer':
+                layer.append(nn.GroupNorm(n_out // 16, n_out))
+            elif norm == 'layer':
                 layer.append(nn.LayerNorm(n_out))
             elif norm == 'batch':
-                layer.append(nn.BatchNorm1d(n_out))
+                layer.append(nn.BatchNorm1d(n_out, momentum=0.01))
+            elif norm == 'weight':
+                layer[-1] = weight_norm(layer[-1])
             layer.append(activation())
             seq.append(nn.Sequential(*layer))
         if out_size is not None:

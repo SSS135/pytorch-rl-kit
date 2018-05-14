@@ -23,7 +23,7 @@ from ..common.param_groups_getter import get_param_groups
 from pathlib import Path
 import math
 from optfn.grad_running_norm import GradRunningNorm
-from optfn.opt_clip import opt_clip, clipped_loss
+from optfn.opt_clip import opt_clip
 
 
 def lerp(start, end, weight):
@@ -62,7 +62,7 @@ class PPO(RLBase):
                  batch_size=64,
                  model_factory=MLPActorCritic,
                  optimizer_factory=partial(optim.Adam, lr=3e-4),
-                 value_loss_scale=0.5,
+                 value_loss_scale=1.0,
                  entropy_bonus=0.01,
                  constraint='clip',
                  policy_clip=0.1,
@@ -148,6 +148,7 @@ class PPO(RLBase):
         self.clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
         self.entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
         self.last_model_save_frame = 0
+        self.grad_norms = dict()
 
     @property
     def learning_rate(self):
@@ -161,9 +162,7 @@ class PPO(RLBase):
         # move network to cuda or cpu
         torch.set_grad_enabled(False)
 
-        self.model = self.model.to(self.device_eval)
-
-        # self.model.eval()
+        self.model = self.model.to(self.device_eval).eval()
 
         # convert observations to tensors
         if self.image_observation:
@@ -291,9 +290,8 @@ class PPO(RLBase):
         return norm_rewards, returns, advantages
 
     def _ppo_update(self, data):
-        self.model.train()
         # move model to cuda or cpu
-        self.model = self.model.to(self.device_train)
+        self.model = self.model.to(self.device_train).train()
 
         data = (data.states.pin_memory() if self.device_train.type == 'cuda' else data.states,
                 data.probs_old, data.values_old, data.actions, data.advantages, data.returns)
@@ -339,47 +337,85 @@ class PPO(RLBase):
         if pd is None:
             pd = self.model.pd
 
+        # if tag not in self.grad_norms:
+        #     self.grad_norms[tag] = (GradRunningNorm(), GradRunningNorm(self.value_loss_scale))
+        # prob_norm, value_norm = self.grad_norms[tag]
+        # probs = prob_norm(probs)
+        # values = value_norm(values)
+
+        # # prepare data
+        # actions = actions.detach()
+        # values, values_old, actions, advantages, returns = \
+        #     [x.squeeze() for x in (values, values_old, actions, advantages, returns)]
+
         # clipping factors
         value_clip = self.value_clip * self.clip_mult
         policy_clip = self.policy_clip * self.clip_mult * pd.clip_mult
 
-        def get_policy_loss(probs):
-            prob = -pd.logp(actions, probs) * advantages.sign()
-            entropy = -self.entropy_bonus * pd.entropy(probs)
-            return prob + entropy
+        # probs_old.requires_grad = True
+        logp_old = pd.logp(actions, probs_old)
+        #
+        # probs_old_loss = -logp_old * advantages.sign() - self.entropy_bonus * pd.entropy(probs_old)
+        # probs_old_grad = torch.autograd.grad(probs_old_loss.sum(), probs_old)[0]
 
-        loss_policy = clipped_loss(probs, probs_old, policy_clip, get_policy_loss)
-
+        probs = opt_clip(probs, probs_old, policy_clip)
         values = opt_clip(values, values_old, value_clip)
 
         # action probability ratio
         # log probabilities used for better numerical stability
         logp = pd.logp(actions, probs)
-        logp_old = pd.logp(actions, probs_old)
         ratio = logp - logp_old.detach()
 
-        loss_value = F.smooth_l1_loss(values, returns, reduce=False)
+        # if logp.dim() == 2:
+        #     advantages = advantages.unsqueeze(-1)
+
+        if self.constraint == 'clip' or self.constraint == 'clip_mod':
+            # policy loss
+            unclipped_policy_loss = ratio * advantages
+            # clip policy loss
+            clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
+            clipped_policy_loss = clipped_ratio * advantages
+            loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
+
+            # value loss
+            v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
+            vf_clip_loss = F.smooth_l1_loss(v_pred_clipped, returns, reduce=False)
+            vf_nonclip_loss = F.smooth_l1_loss(values, returns, reduce=False)
+            loss_value = self.value_loss_scale * 0.5 * torch.max(vf_nonclip_loss, vf_clip_loss)
+        else:
+            # do not clip loss
+            loss_clip = -logp * advantages
+            loss_value = F.smooth_l1_loss(values, returns, reduce=False)
 
         # entropy bonus for better exploration
         entropy = pd.entropy(probs)
 
+        # if logp.dim() == 2:
+        #     loss_clip = loss_clip.sum(-1)
+        #     entropy = entropy.sum(-1)
+
+        loss_ent = -self.entropy_bonus * entropy
+
         # sum all losses
-        total_loss = loss_policy.mean() + loss_value.mean()
+        total_loss = loss_clip.mean() + loss_value.mean() + loss_ent.mean()
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
-            (loss_policy.mean().item(), loss_value.mean().item())
+            (loss_clip.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
 
         kl = pd.kl(probs_old, probs).mean()
 
         if self.model.do_log and tag is not None:
             self.logger.add_histogram('loss value' + tag, loss_value, self.frame)
+            self.logger.add_histogram('loss ent' + tag, loss_ent, self.frame)
             self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame)
+            self.logger.add_scalar('loss entropy' + tag, loss_ent.mean(), self.frame)
             self.logger.add_scalar('loss value' + tag, loss_value.mean(), self.frame)
             self.logger.add_histogram('ratio' + tag, ratio, self.frame)
             self.logger.add_scalar('ratio mean' + tag, ratio.mean(), self.frame)
             self.logger.add_scalar('ratio abs mean' + tag, (ratio - 1).abs().mean(), self.frame)
             self.logger.add_scalar('ratio abs max' + tag, (ratio - 1).abs().max(), self.frame)
-            self.logger.add_histogram('loss clip' + tag, loss_policy, self.frame)
-            self.logger.add_scalar('loss clip' + tag, loss_policy.mean(), self.frame)
+            if self.constraint == 'clip' or self.constraint == 'clip_mod':
+                self.logger.add_histogram('loss clip' + tag, loss_clip, self.frame)
+                self.logger.add_scalar('loss clip' + tag, loss_clip.mean(), self.frame)
 
         return total_loss, kl
 

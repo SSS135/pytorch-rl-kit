@@ -41,9 +41,9 @@ class PPO_QRNN(PPO):
                 return None
             # input: (seq * num_actors, ...)
             # (seq, num_actors, ...)
-            x = input.reshape(-1, self.num_actors, *input.shape[1:])
+            x = input.contiguous().view(-1, self.num_actors, *input.shape[1:])
             # (num_actors * seq, ...)
-            return x.transpose(0, 1).reshape(input.shape)
+            return x.transpose(0, 1).contiguous().view(input.shape)
 
         data = data._asdict()
         data = [reorder(v) for v in data.values()]
@@ -75,10 +75,10 @@ class PPO_QRNN(PPO):
 
         memory = torch.stack(self._rnn_data.memory[:-2], 0)  # (steps, layers, actors, hidden_size)
         memory = memory.permute(2, 0, 1, 3)  # (actors, steps, layers, hidden_size)
-        memory = memory.reshape(-1, *memory.shape[2:]) # (actors * steps, layers, hidden_size)
+        memory = memory.contiguous().view(-1, *memory.shape[2:]) # (actors * steps, layers, hidden_size)
 
         dones = self._rnn_data.dones[:-1] # (steps, actors)
-        dones = torch.stack(dones, 0).transpose(0, 1).reshape(-1) # (actors * steps)
+        dones = torch.stack(dones, 0).transpose(0, 1).contiguous().view(-1) # (actors * steps)
 
         self._rnn_data = RNNData(self._rnn_data.memory[-1:], [])
 
@@ -99,7 +99,7 @@ class PPO_QRNN(PPO):
         else:
             batches = max(1, num_actors * self.horizon // self.batch_size)
 
-        data = [x.reshape(num_actors, -1, *x.shape[1:]) for x in data]
+        data = [x.contiguous().view(num_actors, -1, *x.shape[1:]) for x in data]
 
         prev_model_dict = copy.deepcopy(self.model.state_dict())
 
@@ -109,14 +109,14 @@ class PPO_QRNN(PPO):
                 # prepare batch data
                 # (actors * steps, ...)
                 st, po, vo, ac, adv, ret, mem, done = [
-                    Variable(x[ids].to(self.device_train).reshape(-1, *x.shape[2:]))
+                    x[ids].to(self.device_train).view(-1, *x.shape[2:])
                     for x in data]
                 # (steps, actors, ...)
-                st, mem, done = [x.reshape(ids.shape[0], -1, *x.shape[1:]).transpose(0, 1) for x in (st, mem, done)]
+                st, mem, done = [x.contiguous().view(ids.shape[0], -1, *x.shape[1:]).transpose(0, 1) for x in (st, mem, done)]
                 # (layers, actors, hidden_size)
                 mem = mem[0].transpose(0, 1)
                 # (steps, actors)
-                done = done.reshape(done.shape[:2])
+                done = done.contiguous().view(done.shape[:2])
 
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
@@ -124,9 +124,9 @@ class PPO_QRNN(PPO):
                 with torch.enable_grad():
                     actor_out, _ = self.model(st, mem, done)
                     # (actors * steps, probs)
-                    probs = actor_out.probs.transpose(0, 1).reshape(-1, actor_out.probs.shape[2])
+                    probs = actor_out.probs.transpose(0, 1).contiguous().view(-1, actor_out.probs.shape[2])
                     # (actors * steps)
-                    state_values = actor_out.state_values.transpose(0, 1).reshape(-1)
+                    state_values = actor_out.state_values.transpose(0, 1).contiguous().view(-1)
                     # get loss
                     loss, kl = self._get_ppo_loss(probs, po, state_values, vo, ac, adv, ret)
                     loss = loss.mean()
