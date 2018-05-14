@@ -148,7 +148,7 @@ class CategoricalPd(ProbabilityDistribution):
     def kl(self, prob0, prob1):
         logp0 = log_softmax(prob0)
         logp1 = log_softmax(prob1)
-        return (logp0.exp() * (logp0 - logp1)).sum(dim=1)
+        return (logp0.exp() * (logp0 - logp1)).sum(dim=-1)
 
     def entropy(self, prob):
         a = prob - prob.max(dim=-1, keepdim=True)[0]

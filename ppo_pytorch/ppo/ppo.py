@@ -67,6 +67,8 @@ class PPO(RLBase):
                  constraint='clip',
                  policy_clip=0.1,
                  value_clip=0.1,
+                 kl_target=0.01,
+                 kl_scale=0.1,
                  cuda_eval=False,
                  cuda_train=False,
                  grad_clip_norm=2,
@@ -133,8 +135,10 @@ class PPO(RLBase):
         self.model_save_interval = model_save_interval
         self.save_intermediate_models = save_intermediate_models
         self.model_save_tag = model_save_tag
+        self.kl_target = kl_target
+        self.kl_scale = kl_scale
 
-        assert constraint in (None, 'clip', 'clip_mod')
+        assert constraint in (None, 'clip', 'kl')
         assert not image_observation or \
                isinstance(observation_space, gym.spaces.Box) and len(observation_space.shape) == 3
 
@@ -358,8 +362,9 @@ class PPO(RLBase):
         # probs_old_loss = -logp_old * advantages.sign() - self.entropy_bonus * pd.entropy(probs_old)
         # probs_old_grad = torch.autograd.grad(probs_old_loss.sum(), probs_old)[0]
 
-        probs = opt_clip(probs, probs_old, policy_clip)
-        values = opt_clip(values, values_old, value_clip)
+        if 'opt' in self.constraint:
+            probs = opt_clip(probs, probs_old, policy_clip)
+            values = opt_clip(values, values_old, value_clip)
 
         # action probability ratio
         # log probabilities used for better numerical stability
@@ -369,23 +374,22 @@ class PPO(RLBase):
         # if logp.dim() == 2:
         #     advantages = advantages.unsqueeze(-1)
 
-        if self.constraint == 'clip' or self.constraint == 'clip_mod':
+        if 'clip' in self.constraint:
             # policy loss
             unclipped_policy_loss = ratio * advantages
             # clip policy loss
             clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
             clipped_policy_loss = clipped_ratio * advantages
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
-
-            # value loss
-            v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
-            vf_clip_loss = F.smooth_l1_loss(v_pred_clipped, returns, reduce=False)
-            vf_nonclip_loss = F.smooth_l1_loss(values, returns, reduce=False)
-            loss_value = self.value_loss_scale * 0.5 * torch.max(vf_nonclip_loss, vf_clip_loss)
         else:
             # do not clip loss
             loss_clip = -logp * advantages
-            loss_value = F.smooth_l1_loss(values, returns, reduce=False)
+
+        # value loss
+        v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
+        vf_clip_loss = F.smooth_l1_loss(v_pred_clipped, returns, reduce=False)
+        vf_nonclip_loss = F.smooth_l1_loss(values, returns, reduce=False)
+        loss_value = self.value_loss_scale * 0.5 * torch.max(vf_nonclip_loss, vf_clip_loss)
 
         # entropy bonus for better exploration
         entropy = pd.entropy(probs)
@@ -396,12 +400,17 @@ class PPO(RLBase):
 
         loss_ent = -self.entropy_bonus * entropy
 
+        kl = pd.kl(probs_old, probs)
+        if 'kl' in self.constraint:
+            kl_targets = self.kl_target * advantages.abs()
+            loss_kl = (kl - kl_targets).div(self.kl_target).mul(self.kl_scale).pow(2)
+        else:
+            loss_kl = kl.new(1).zero_()
+
         # sum all losses
-        total_loss = loss_clip.mean() + loss_value.mean() + loss_ent.mean()
+        total_loss = loss_clip.mean() + loss_value.mean() + loss_ent.mean() + loss_kl.mean()
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_clip.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
-
-        kl = pd.kl(probs_old, probs).mean()
 
         if self.model.do_log and tag is not None:
             self.logger.add_histogram('loss value' + tag, loss_value, self.frame)
@@ -417,7 +426,7 @@ class PPO(RLBase):
                 self.logger.add_histogram('loss clip' + tag, loss_clip, self.frame)
                 self.logger.add_scalar('loss clip' + tag, loss_clip.mean(), self.frame)
 
-        return total_loss, kl
+        return total_loss, kl.mean()
 
     def _log_set(self):
         self.logger.add_text('PPO', pprint.pformat(self._init_args))

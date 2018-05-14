@@ -205,11 +205,9 @@ class HQRNNActor(QRNNActor):
         self.h_pd = DiagGaussianTransactionPd(self.h_action_size)
         self.gate_pd = BernoulliPd(1)
 
-        layer_norm = self.norm is not None and 'layer' in self.norm
-
         self.qrnn_l1 = self.qrnn
         del self.qrnn
-        self.qrnn_l2 = DenseQRNN(self.qrnn_hidden_size, self.qrnn_hidden_size, self.qrnn_layers, layer_norm=layer_norm)
+        self.qrnn_l2 = DenseQRNN(self.qrnn_hidden_size, self.qrnn_hidden_size, self.qrnn_layers, norm=self.norm)
 
         # self.action_upsample_l2 = nn.Sequential(
         #     nn.Linear(h_action_size, self.qrnn_hidden_size, bias=not layer_norm),
@@ -217,7 +215,7 @@ class HQRNNActor(QRNNActor):
         #     # nn.ReLU(),
         # )
         self.action_merge_l1 = nn.Sequential(
-            nn.Linear(self.h_action_size * 2, self.qrnn_hidden_size, bias=not layer_norm),
+            nn.Linear(self.h_action_size * 2, self.qrnn_hidden_size),
             # *([TemporalGroupNorm(1, self.qrnn_hidden_size)] if layer_norm else []),
             nn.ReLU(),
         )
