@@ -85,12 +85,8 @@ class ProbabilityDistribution:
         raise NotImplementedError
 
     @property
-    def dtype_numpy(self):
-        """Action's numpy input type"""
-        raise NotImplementedError
-
-    def dtype_torch(self, cuda):
-        """Action's Pytorch input type"""
+    def dtype(self):
+        """Action data type"""
         raise NotImplementedError
 
     def kl(self, prob0, prob1):
@@ -142,11 +138,8 @@ class CategoricalPd(ProbabilityDistribution):
         return self.n
 
     @property
-    def dtype_numpy(self):
-        return np.int64
-
-    def dtype_torch(self, cuda):
-        return torch.cuda.LongTensor if cuda else torch.LongTensor
+    def dtype(self):
+        return torch.int64
 
     def neglogp(self, a, prob):
         logp = log_softmax(prob)
@@ -195,11 +188,8 @@ class BernoulliPd(ProbabilityDistribution):
         return self.n
 
     @property
-    def dtype_numpy(self):
-        return np.int64
-
-    def dtype_torch(self, cuda):
-        return torch.cuda.LongTensor if cuda else torch.LongTensor
+    def dtype(self):
+        return torch.int64
 
     def neglogp(self, a, logits):
         nlp = F.binary_cross_entropy_with_logits(logits, a, reduce=False).sum(-1)
@@ -238,7 +228,7 @@ class DiagGaussianPd(ProbabilityDistribution):
         return self.d
 
     @property
-    def dtype_numpy(self):
+    def dtype(self):
         return np.float32
 
     def dtype_torch(self, cuda):
@@ -293,11 +283,8 @@ class FixedStdGaussianPd(ProbabilityDistribution):
         return self.d
 
     @property
-    def dtype_numpy(self):
-        return np.float32
-
-    def dtype_torch(self, cuda):
-        return torch.cuda.FloatTensor if cuda else torch.FloatTensor
+    def dtype(self):
+        return torch.float
 
     def neglogp(self, x, prob):
         mean = prob[..., :self.d]
@@ -346,11 +333,8 @@ class MultivecGaussianPd(ProbabilityDistribution):
         return self.d
 
     @property
-    def dtype_numpy(self):
-        return np.float32
-
-    def dtype_torch(self, cuda):
-        return torch.cuda.FloatTensor if cuda else torch.FloatTensor
+    def dtype(self):
+        return torch.float
 
     def pdf(self, x, prob):
         vecs = prob.contiguous().view(*prob.shape[:-1], self.d, self.num_vec)
@@ -412,11 +396,8 @@ class StaticTransactionPd(ProbabilityDistribution):
         return self.d
 
     @property
-    def dtype_numpy(self):
-        return np.float32
-
-    def dtype_torch(self, cuda):
-        return torch.cuda.FloatTensor if cuda else torch.FloatTensor
+    def dtype(self):
+        return torch.float
 
     def logp(self, x, prob):
         assert self.states is not None
@@ -463,11 +444,8 @@ class DiagGaussianTransactionPd(ProbabilityDistribution):
         return self.d
 
     @property
-    def dtype_numpy(self):
-        return np.float32
-
-    def dtype_torch(self, cuda):
-        return torch.cuda.FloatTensor if cuda else torch.FloatTensor
+    def dtype(self):
+        return torch.float
 
     def logp(self, a, prob):
         assert self.cur is not None and self.next is not None and self.randn is not None

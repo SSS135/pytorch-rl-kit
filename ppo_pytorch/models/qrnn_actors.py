@@ -42,8 +42,8 @@ class QRNNActor(Actor):
         self.qrnn_hidden_size = qrnn_hidden_size
         self.qrnn_layers = qrnn_layers
         obs_len = int(np.product(observation_space.shape))
-        self.qrnn = DenseQRNN(obs_len, qrnn_hidden_size, qrnn_layers, norm=self.norm)
-        self.head = head_factory(qrnn_hidden_size, self.pd)
+        self.qrnn = DenseQRNN(obs_len, qrnn_hidden_size, qrnn_layers, dense_output=True, norm=self.norm)
+        self.head = head_factory(qrnn_hidden_size * qrnn_layers + obs_len, self.pd)
         self.reset_weights()
 
     def forward(self, input, memory, done_flags):
