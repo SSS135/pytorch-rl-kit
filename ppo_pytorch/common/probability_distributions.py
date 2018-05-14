@@ -456,12 +456,12 @@ class DiagGaussianTransactionPd(ProbabilityDistribution):
         return p
 
     def kl(self, prob1, prob2):
-        return torch.zeros(prob1.shape[:-1], device=prob1.device, dtype=prob1.dtype)
+        return (prob1 - prob2).pow(2).mean(-1).sqrt().mul(prob1.shape[-1] / 10)
 
     def entropy(self, prob):
-        #mean = prob[..., :self.d]
         logstd = prob[..., self.d:]
-        return logstd.sum(-1) * 0.01 #+ mean.abs().sum(-1) * 0.01
+        ent = logstd + .5 * math.log(2.0 * math.pi * math.e)
+        return ent.sum(-1)
 
     def sample(self, prob, randn=None):
         mean = prob[..., :self.d]
