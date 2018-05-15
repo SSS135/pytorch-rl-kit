@@ -68,7 +68,7 @@ class PPO(RLBase):
                  policy_clip=0.1,
                  value_clip=0.1,
                  kl_target=0.003,
-                 kl_scale=0.003,
+                 kl_scale=0.01,
                  cuda_eval=False,
                  cuda_train=False,
                  grad_clip_norm=2,
@@ -128,7 +128,7 @@ class PPO(RLBase):
         self.grad_clip_norm = grad_clip_norm
         self.value_loss_scale = value_loss_scale
         self.model_factory = model_factory
-        self.constraint = constraint
+        self.constraint = (constraint,) if isinstance(constraint, str) else constraint
         self.reward_scale = reward_scale
         self.image_observation = image_observation
         self.model_save_folder = model_save_folder
@@ -138,7 +138,7 @@ class PPO(RLBase):
         self.kl_target = kl_target
         self.kl_scale = kl_scale
 
-        assert constraint in (None, 'clip', 'kl')
+        assert len(set(self.constraint) - {'clip', 'kl', 'opt'}) == 0
         assert not image_observation or \
                isinstance(observation_space, gym.spaces.Box) and len(observation_space.shape) == 3
 
@@ -401,11 +401,10 @@ class PPO(RLBase):
         loss_ent = -self.entropy_bonus * entropy
 
         kl = pd.kl(probs_old, probs)
-        kl_mean = kl / pd.input_vector_len
         if 'kl' in self.constraint:
-            # kl_targets = self.kl_target * advantages.abs()
-            loss_kl = (kl_mean - self.kl_target).div(self.kl_target).pow(2).mul(self.kl_scale)
-            loss_kl[kl_mean < self.kl_target] = 0
+            kl_targets = self.kl_target * advantages.abs()
+            loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(self.kl_scale)
+            loss_kl[kl < self.kl_target] = 0
         else:
             loss_kl = kl.new(1).zero_()
 
@@ -418,18 +417,18 @@ class PPO(RLBase):
             with torch.no_grad():
                 self.logger.add_histogram('loss value' + tag, loss_value, self.frame)
                 self.logger.add_histogram('loss ent' + tag, loss_ent, self.frame)
-                self.logger.add_scalar('entropy' + tag, entropy.mean() / pd.input_vector_len, self.frame)
+                self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame)
                 self.logger.add_scalar('loss entropy' + tag, loss_ent.mean(), self.frame)
                 self.logger.add_scalar('loss value' + tag, loss_value.mean(), self.frame)
                 self.logger.add_histogram('ratio' + tag, ratio, self.frame)
                 self.logger.add_scalar('ratio mean' + tag, ratio.mean(), self.frame)
-                self.logger.add_scalar('ratio abs mean' + tag, (ratio - 1).abs().mean(), self.frame)
-                self.logger.add_scalar('ratio abs max' + tag, (ratio - 1).abs().max(), self.frame)
-                if self.constraint == 'clip' or self.constraint == 'clip_mod':
+                self.logger.add_scalar('ratio abs mean' + tag, ratio.abs().mean(), self.frame)
+                self.logger.add_scalar('ratio abs max' + tag, ratio.abs().max(), self.frame)
+                if 'clip' in self.constraint:
                     self.logger.add_histogram('loss clip' + tag, loss_clip, self.frame)
                     self.logger.add_scalar('loss clip' + tag, loss_clip.mean(), self.frame)
 
-        return total_loss, kl_mean.mean()
+        return total_loss, kl.mean()
 
     def _log_set(self):
         self.logger.add_text('PPO', pprint.pformat(self._init_args))
