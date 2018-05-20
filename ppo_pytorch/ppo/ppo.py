@@ -289,7 +289,7 @@ class PPO(RLBase):
         # calculate returns and advantages
         returns = calc_returns(norm_rewards, values, dones, reward_discount)
         advantages = calc_advantages(norm_rewards, values, dones, reward_discount, advantage_discount)
-        advantages = (advantages - advantages.mean()) / max(advantages.std(), 0.01)
+        advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-5)
 
         return norm_rewards, returns, advantages
 
@@ -347,20 +347,9 @@ class PPO(RLBase):
         # probs = prob_norm(probs)
         # values = value_norm(values)
 
-        # # prepare data
-        # actions = actions.detach()
-        # values, values_old, actions, advantages, returns = \
-        #     [x.squeeze() for x in (values, values_old, actions, advantages, returns)]
-
         # clipping factors
         value_clip = self.value_clip * self.clip_mult
         policy_clip = self.policy_clip * self.clip_mult * pd.clip_mult
-
-        # probs_old.requires_grad = True
-        logp_old = pd.logp(actions, probs_old)
-        #
-        # probs_old_loss = -logp_old * advantages.sign() - self.entropy_bonus * pd.entropy(probs_old)
-        # probs_old_grad = torch.autograd.grad(probs_old_loss.sum(), probs_old)[0]
 
         if 'opt' in self.constraint:
             probs = opt_clip(probs, probs_old, policy_clip)
@@ -368,6 +357,7 @@ class PPO(RLBase):
 
         # action probability ratio
         # log probabilities used for better numerical stability
+        logp_old = pd.logp(actions, probs_old)
         logp = pd.logp(actions, probs)
         ratio = logp - logp_old.detach()
 
@@ -375,21 +365,19 @@ class PPO(RLBase):
         #     advantages = advantages.unsqueeze(-1)
 
         if 'clip' in self.constraint:
-            # policy loss
             unclipped_policy_loss = ratio * advantages
-            # clip policy loss
             clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
             clipped_policy_loss = clipped_ratio * advantages
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
         else:
-            # do not clip loss
+            # unclipped loss
             loss_clip = -logp * advantages
 
         # value loss
         v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
         vf_clip_loss = F.smooth_l1_loss(v_pred_clipped, returns, reduce=False)
         vf_nonclip_loss = F.smooth_l1_loss(values, returns, reduce=False)
-        loss_value = self.value_loss_scale * 0.5 * torch.max(vf_nonclip_loss, vf_clip_loss)
+        loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)
 
         # entropy bonus for better exploration
         entropy = pd.entropy(probs)

@@ -63,6 +63,8 @@ class CNN_QRNNActor(CNNActor):
             activation: Activation function
         """
         super().__init__(*args, **kwargs)
+        self.qrnn_hidden_size = qrnn_hidden_size
+        self.qrnn_layers = qrnn_layers
         del self.linear
         assert self.cnn_kind == 'large' # custom (2,066,432 parameters)
         nf = 32
@@ -108,8 +110,7 @@ class Sega_CNN_QRNNActor(CNN_QRNNActor):
             self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 0, bias=self.norm is None)),
             # self.make_layer(nn.Conv2d(nf * 4, nf * 8, 3, 1, 0, bias=self.norm is None)),
         ])
-        layer_norm = self.norm is not None and 'layer' in self.norm
-        self.qrnn = DenseQRNN(1920, self.qrnn_hidden_size, self.qrnn_layers, layer_norm=layer_norm)
+        self.qrnn = DenseQRNN(1920, self.qrnn_hidden_size, self.qrnn_layers, norm=self.norm)
         self.reset_weights()
 
 

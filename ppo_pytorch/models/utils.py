@@ -35,7 +35,7 @@ def weights_init(m, init_alg=init.xavier_uniform_, gain=1):
     if norm and hasattr(m, 'weight') and m.weight is not None:
         m.weight.data.normal_(1, 0.01)
         # if layer_2d:
-        m.bias.data.normal_(-1, 0.01)
+        # m.bias.data.normal_(-1, 0.01)
 
 
 def normalized_columns_initializer(weights, norm=1.0):

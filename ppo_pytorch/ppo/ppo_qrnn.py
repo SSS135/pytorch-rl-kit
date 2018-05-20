@@ -101,8 +101,6 @@ class PPO_QRNN(PPO):
 
         data = [x.contiguous().view(num_actors, -1, *x.shape[1:]) for x in data]
 
-        prev_model_dict = copy.deepcopy(self.model.state_dict())
-
         for ppo_iter in range(self.ppo_iters):
             actor_index_chunks = torch.randperm(num_actors).to(self.device_train).chunk(batches)
             for loader_iter, ids in enumerate(actor_index_chunks):

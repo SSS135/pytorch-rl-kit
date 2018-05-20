@@ -347,12 +347,11 @@ class Sega_CNNActor(CNNActor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         nf = 32
+        in_c = self.observation_space.shape[0]
         self.convs = nn.ModuleList([
-            self.make_layer(nn.Conv2d(self.observation_space.shape[0], nf, 4, 2, 0), allow_norm=False),
-            nn.MaxPool2d(3, 2),
-            self.make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0, bias=self.norm is None)),
-            self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1, bias=self.norm is None)),
-            self.make_layer(nn.Conv2d(nf * 4, nf * 4, 4, 2, 1, bias=self.norm is None)),
+            self.make_layer(nn.Conv2d(in_c,   nf,     8, 4, 0, bias=self.norm is None)),
+            self.make_layer(nn.Conv2d(nf,     nf * 2, 6, 3, 0, bias=self.norm is None)),
+            self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 0, bias=self.norm is None)),
         ])
-        self.linear = self.make_layer(nn.Linear(1536, 512))
+        self.linear = self.make_layer(nn.Linear(1920, 512))
         self.reset_weights()
