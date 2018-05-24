@@ -390,8 +390,8 @@ class PPO(RLBase):
 
         kl = pd.kl(probs_old, probs)
         if 'kl' in self.constraint:
-            # kl_targets = self.kl_target * advantages.abs()
-            loss_kl = self.kl_scale * F.smooth_l1_loss(kl / self.kl_target, advantages.abs(), reduce=False)
+            kl_targets = self.kl_target * advantages.abs()
+            loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(self.kl_scale)
             loss_kl[kl < self.kl_target] = 0
         else:
             loss_kl = kl.new(1).zero_()
