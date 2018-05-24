@@ -8,7 +8,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.autograd import Variable
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
@@ -26,20 +25,20 @@ from optfn.grad_running_norm import GradRunningNorm
 from optfn.opt_clip import opt_clip
 
 
-def lerp(start, end, weight):
-    """
-    Same as torch.lerp, but tensors allowed at `weight`
-    """
-    return start + (end - start) * weight
+# def lerp(start, end, weight):
+#     """
+#     Same as torch.lerp, but tensors allowed at `weight`
+#     """
+#     return start + (end - start) * weight
 
 
-def clamp(x, min, max):
-    """
-    Same as torch.clamp, but tensors allowed at `min` and `max`
-    """
-    x = torch.max(x, min) if isinstance(min, Variable) else x.clamp(min=min)
-    x = torch.min(x, max) if isinstance(max, Variable) else x.clamp(max=max)
-    return x
+# def clamp(x, min, max):
+#     """
+#     Same as torch.clamp, but tensors allowed at `min` and `max`
+#     """
+#     x = torch.max(x, min) if isinstance(min, Variable) else x.clamp(min=min)
+#     x = torch.min(x, max) if isinstance(max, Variable) else x.clamp(max=max)
+#     return x
 
 
 # used to store env step data for training
@@ -231,7 +230,7 @@ class PPO(RLBase):
                 self.logger.add_histogram('probs mean', mean, self.frame)
                 self.logger.add_histogram('probs std', std, self.frame)
             else:
-                self.logger.add_histogram('probs', F.log_softmax(Variable(data.probs_old), dim=-1), self.frame)
+                self.logger.add_histogram('probs', F.log_softmax(data.probs_old, dim=-1), self.frame)
             for name, param in self.model.named_parameters():
                 self.logger.add_histogram(name, param, self.frame)
 
@@ -289,7 +288,8 @@ class PPO(RLBase):
         # calculate returns and advantages
         returns = calc_returns(norm_rewards, values, dones, reward_discount)
         advantages = calc_advantages(norm_rewards, values, dones, reward_discount, advantage_discount)
-        advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-5)
+        # advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-5)
+        advantages = advantages / advantages.pow(2).mean().sqrt()
 
         return norm_rewards, returns, advantages
 
@@ -390,8 +390,8 @@ class PPO(RLBase):
 
         kl = pd.kl(probs_old, probs)
         if 'kl' in self.constraint:
-            kl_targets = self.kl_target * advantages.abs()
-            loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(self.kl_scale)
+            # kl_targets = self.kl_target * advantages.abs()
+            loss_kl = self.kl_scale * F.smooth_l1_loss(kl / self.kl_target, advantages.abs(), reduce=False)
             loss_kl[kl < self.kl_target] = 0
         else:
             loss_kl = kl.new(1).zero_()

@@ -99,25 +99,26 @@ def create_atari_kwargs(learning_decay_frames=10e6, **kwargs):
     return defaults
 
 
-def create_sega_kwargs(learning_decay_frames=10e6, **kwargs):
+def create_sega_kwargs(**kwargs):
     """
-    Get hyperparameters for Atari
+    Get hyperparameters for SEGA
     Args:
         **kwargs: Any arguments accepted by `PPO`
 
     Returns: Parameters to initialize PPO
     """
     defaults = dict(
-        num_actors=8,
-        optimizer_factory=partial(optim.Adam, lr=2.5e-4, eps=1e-5),
-        policy_clip=0.1,
-        value_clip=0.1,
-        ppo_iters=3,
-        grad_clip_norm=3,
-        horizon=128,
-        batch_size=32 * 8,
-        reward_scale=0.0025,
+        num_actors=48,
         entropy_bonus=0.001,
+        horizon=256,
+        batch_size=1024,
+        ppo_iters=4,
+        policy_clip=0.2,
+        grad_clip_norm=2,
+        value_loss_scale=0.25,
+        optimizer_factory=partial(optim.Adam, lr=5e-5),
+        value_clip=0.1,
+        reward_scale=0.0025,
         model_factory=None,
         image_observation=True,
         cuda_eval=True,

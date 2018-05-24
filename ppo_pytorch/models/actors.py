@@ -17,6 +17,7 @@ from ..common.probability_distributions import make_pd
 from optfn.swish import Swish
 from optfn.learned_norm import LearnedNorm2d
 from torch.nn.utils import weight_norm
+from optfn.spectral_norm import spectral_norm
 
 
 class GroupTranspose(nn.Module):
@@ -45,7 +46,7 @@ class Actor(nn.Module):
     """
 
     def __init__(self, observation_space: gym.Space, action_space: gym.Space, norm: str = None,
-                 weight_init=init.orthogonal_, weight_init_gain=math.sqrt(2)):
+                 weight_init=init.xavier_uniform_, weight_init_gain=math.sqrt(2)):
         super().__init__()
         self.observation_space = observation_space
         self.action_space = action_space
@@ -294,6 +295,10 @@ class CNNActor(Actor):
                 norm_cls = nn.BatchNorm1d if is_linear else nn.BatchNorm2d
             if 'learned' in self.norm and not is_linear:
                 norm_cls = partial(LearnedNorm2d, groups=transf.out_channels // 8)
+            if 'spectral' in self.norm:
+                parts[-1] = spectral_norm(parts[-1])
+            if 'weight' in self.norm:
+                parts[-1] = weight_norm(parts[-1])
             if norm_cls is not None and not is_linear:
                 parts.append(norm_cls(features))
 

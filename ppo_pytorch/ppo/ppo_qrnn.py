@@ -131,7 +131,8 @@ class PPO_QRNN(PPO):
 
                     # optimize
                     loss.backward()
-                    clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                    if self.grad_clip_norm is not None:
+                        clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                     self.optimizer.step()
                     self.optimizer.zero_grad()
 
