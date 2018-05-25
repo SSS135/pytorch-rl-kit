@@ -23,6 +23,7 @@ from pathlib import Path
 import math
 from optfn.grad_running_norm import GradRunningNorm
 from optfn.opt_clip import opt_clip
+import torch.autograd
 
 
 # def lerp(start, end, weight):
@@ -390,9 +391,26 @@ class PPO(RLBase):
 
         kl = pd.kl(probs_old, probs)
         if 'kl' in self.constraint:
+            # prob_target_iters = 40
+            # probs_target = probs_old.clone()
+            # probs_target.requires_grad = True
+            # for i in range(prob_target_iters):
+            #     logp_target = pd.logp(actions, probs_target)
+            #     entropy_target = pd.entropy(probs_target)
+            #     pg_loss_target = -logp_target * advantages - self.entropy_bonus * entropy_target
+            #     overfit = pd.kl(probs_old, probs_target) / advantages.abs().mul(self.kl_target).clamp(min=1e-3)
+            #     pg_loss_target *= (1 - overfit.clamp(max=1)).detach()
+            #     prob_grad = torch.autograd.grad(pg_loss_target.sum(), probs_target)[0]
+            #     probs_target.data -= 250 * self.kl_target / prob_target_iters * prob_grad
+            # probs_target.requires_grad = False
+            #
+            # loss_kl = self.kl_scale * pd.kl(probs_target, probs)
+            # loss_ent = entropy.new(1).zero_()
+            # loss_clip = loss_clip.new(1).zero_()
+
             kl_targets = self.kl_target * advantages.abs()
-            loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(self.kl_scale)
-            loss_kl[kl < self.kl_target] = 0
+            loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(self.kl_scale * self.kl_target)
+            loss_kl[kl < kl_targets] = 0
         else:
             loss_kl = kl.new(1).zero_()
 
@@ -415,6 +433,11 @@ class PPO(RLBase):
                 if 'clip' in self.constraint:
                     self.logger.add_histogram('loss clip' + tag, loss_clip, self.frame)
                     self.logger.add_scalar('loss clip' + tag, loss_clip.mean(), self.frame)
+                # if 'kl' in self.constraint:
+                #     kl_target = pd.kl(probs_old, probs_target).sort(dim=0)[0]
+                #     self.logger.add_scalar('kl target 10' + tag, kl_target[int(kl_target.shape[0] * 0.1)], self.frame)
+                #     self.logger.add_scalar('kl target 90' + tag, kl_target[int(kl_target.shape[0] * 0.9)], self.frame)
+                #     self.logger.add_scalar('kl target mean' + tag, kl_target.mean(), self.frame)
 
         return total_loss, kl.mean()
 
