@@ -428,16 +428,18 @@ class StaticTransactionPd(ProbabilityDistribution):
 
     def entropy(self, mean):
         ent = -mean ** 2
+        ent = ent * 0
         return ent.mean(-1)
 
     def sample(self, mean, randn=None):
         if randn is None:
             randn = torch.randn_like(mean)
-        return mean, randn
+        sample = mean / mean.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
+        return sample, randn
 
-    @property
-    def init_column_norm(self):
-        return math.sqrt(self.d)
+    # @property
+    # def init_column_norm(self):
+    #     return math.sqrt(self.d)
 
 
 class DiagGaussianTransactionPd(ProbabilityDistribution):
@@ -465,9 +467,11 @@ class DiagGaussianTransactionPd(ProbabilityDistribution):
 
     def logp(self, a, prob):
         assert self.cur is not None and self.next is not None and self.randn is not None
-        mean = prob[..., :self.d]
-        std = prob[..., self.d:].exp()
-        target = mean + std * self.randn
+        target, _ = self.sample(prob, self.randn)
+        # mean = prob[..., :self.d]
+        # std = prob[..., self.d:].exp()
+        # target = mean + std * self.randn
+        # target = target / target.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
         real = self.next - self.cur
         p = F.cosine_similarity(real, target, dim=-1)
         # target = F.layer_norm(target, target.shape[-1:])
@@ -487,7 +491,7 @@ class DiagGaussianTransactionPd(ProbabilityDistribution):
     def entropy(self, prob):
         logstd = prob[..., self.d:]
         mean = prob[..., :self.d]
-        ent = logstd - mean ** 2 #+ .5 * math.log(2.0 * math.pi * math.e)
+        ent = logstd #- mean.abs() #+ .5 * math.log(2.0 * math.pi * math.e)
         return ent.mean(-1)
 
     def sample(self, prob, randn=None):
@@ -495,7 +499,9 @@ class DiagGaussianTransactionPd(ProbabilityDistribution):
         std = prob[..., self.d:].exp()
         if randn is None:
             randn = torch.randn_like(std)
-        return mean + std * randn, randn
+        sample = mean + std * randn
+        sample = sample / sample.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
+        return sample, randn
 
     # @property
     # def mean_div(self):

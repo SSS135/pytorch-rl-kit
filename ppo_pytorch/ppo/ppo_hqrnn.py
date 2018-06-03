@@ -117,7 +117,8 @@ class PPO_HQRNN(PPO_QRNN):
             else:
                 self.logger.add_histogram('probs l2', F.log_softmax(self.data_l2.probs_old, dim=-1), self.frame)
 
-        return super()._process_sample(self.sample, self.model.pd, self.reward_discount, self.advantage_discount, self.reward_scale)
+        return super()._process_sample(self.sample, self.model.pd, self.reward_discount, self.advantage_discount,
+                                       self.reward_scale, mean_norm=False)
 
     def _ppo_update(self, data_l1):
         self.model.train()
@@ -186,6 +187,7 @@ class PPO_HQRNN(PPO_QRNN):
 
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
+
                 with torch.enable_grad():
                     actor_out_l1, actor_out_l2, *_ = self.model(st, mem, done, r_l2_inp)
                     # (actors * steps, probs)
@@ -208,12 +210,12 @@ class PPO_HQRNN(PPO_QRNN):
                                                         self.model.h_pd, tag=' l2')
                     loss = loss_l1.mean() + loss_l2.mean()
 
-                    # optimize
-                    loss.backward()
-                    if self.grad_clip_norm is not None:
-                        clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
+                # optimize
+                loss.backward()
+                if self.grad_clip_norm is not None:
+                    clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                self.optimizer.step()
+                self.optimizer.zero_grad()
 
                 self.model.set_log(self.logger, False, self.step)
 

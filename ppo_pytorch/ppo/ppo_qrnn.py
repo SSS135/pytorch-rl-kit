@@ -129,12 +129,12 @@ class PPO_QRNN(PPO):
                     loss, kl = self._get_ppo_loss(probs, po, state_values, vo, ac, adv, ret)
                     loss = loss.mean()
 
-                    # optimize
-                    loss.backward()
-                    if self.grad_clip_norm is not None:
-                        clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
+                # optimize
+                loss.backward()
+                if self.grad_clip_norm is not None:
+                    clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                self.optimizer.step()
+                self.optimizer.zero_grad()
 
                 self.model.set_log(self.logger, False, self.step)
 

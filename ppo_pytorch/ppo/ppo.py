@@ -253,7 +253,8 @@ class PPO(RLBase):
     def create_new_sample():
         return Sample([], [], [], [], [], [])
 
-    def _process_sample(self, sample, pd=None, reward_discount=None, advantage_discount=None, reward_scale=None):
+    def _process_sample(self, sample, pd=None, reward_discount=None, advantage_discount=None,
+                        reward_scale=None, mean_norm=False):
         if pd is None:
             pd = self.model.pd
         if reward_discount is None:
@@ -270,7 +271,7 @@ class PPO(RLBase):
         dones = torch.tensor(sample.dones, dtype=torch.float)
 
         rewards, returns, advantages = self._process_rewards(
-            rewards, values_old, dones, reward_discount, advantage_discount, reward_scale)
+            rewards, values_old, dones, reward_discount, advantage_discount, reward_scale, mean_norm=mean_norm)
 
         # convert data to Tensors
         probs_old = torch.tensor(sample.probs[:-1], dtype=torch.float)
@@ -286,15 +287,17 @@ class PPO(RLBase):
 
         return TrainingData(states, probs_old, values_old, actions, advantages, returns, dones, rewards)
 
-    def _process_rewards(self, rewards, values, dones, reward_discount, advantage_discount, reward_scale):
+    def _process_rewards(self, rewards, values, dones, reward_discount, advantage_discount, reward_scale, mean_norm):
         norm_rewards = reward_scale * rewards
 
         # calculate returns and advantages
         returns = calc_returns(norm_rewards, values, dones, reward_discount)
         advantages = calc_advantages(norm_rewards, values, dones, reward_discount, advantage_discount)
-        # advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-3)
+        if mean_norm:
+            advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-3)
+        else:
+            advantages = advantages / advantages.pow(2).mean().sqrt()
         # advantages = advantages.sign() * advantages.abs() ** 0.5
-        advantages = advantages / advantages.pow(2).mean().sqrt()
 
         return norm_rewards, returns, advantages
 
@@ -314,6 +317,7 @@ class PPO(RLBase):
                 st, po, vo, ac, adv, ret = [x[batch_idx].to(self.device_train) for x in data]
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
+
                 with torch.enable_grad():
                     actor_out = self.model(st)
                     probs_prev = actor_out.probs
@@ -322,12 +326,12 @@ class PPO(RLBase):
                     loss, kl = self._get_ppo_loss(probs_prev, po, values_prev, vo, ac, adv, ret)
                     loss = loss.mean()
 
-                    # optimize
-                    loss.backward()
-                    if self.grad_clip_norm is not None:
-                        clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
+                # optimize
+                loss.backward()
+                if self.grad_clip_norm is not None:
+                    clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                self.optimizer.step()
+                self.optimizer.zero_grad()
 
                 self.model.set_log(self.logger, False, self.step)
 
