@@ -18,6 +18,7 @@ from optfn.swish import Swish
 from optfn.learned_norm import LearnedNorm2d
 from torch.nn.utils import weight_norm
 from optfn.spectral_norm import spectral_norm
+from optfn.weight_rescale import weight_rescale
 
 
 class GroupTranspose(nn.Module):
@@ -53,6 +54,7 @@ class Actor(nn.Module):
         self.weight_init_gain = weight_init_gain
         self.weight_init = weight_init
         self.norm = norm
+        self.hidden_code_size = None
 
         self.do_log = False
         self.logger = None
@@ -97,7 +99,7 @@ class Actor(nn.Module):
             If `out_size` is not None, last layer is just linear transformation, without norm or activation.
 
         """
-        assert norm in (None, 'layer', 'batch', 'group', 'weight')
+        assert norm in (None, 'layer', 'batch', 'group')
         seq = []
         for i in range(len(hidden_sizes)):
             n_in = in_size if i == 0 else hidden_sizes[i - 1]
@@ -110,8 +112,6 @@ class Actor(nn.Module):
                 layer.append(nn.LayerNorm(n_out))
             elif norm == 'batch':
                 layer.append(nn.BatchNorm1d(n_out, momentum=0.01))
-            elif norm == 'weight':
-                layer[-1] = weight_norm(layer[-1])
             layer.append(activation())
             seq.append(nn.Sequential(*layer))
         if out_size is not None:
@@ -179,6 +179,7 @@ class MLPActor(Actor):
 
         obs_len = int(np.product(observation_space.shape))
 
+        self.hidden_code_size = obs_len
         self.linear = self.create_mlp(obs_len, None, hidden_sizes, activation, self.norm)
         self.head = head_factory(hidden_sizes[-1], self.pd)
         self.reset_weights()
@@ -193,9 +194,8 @@ class MLPActor(Actor):
             x = layer(x)
             if self.do_log:
                 self.logger.add_histogram(f'layer {i} output', x, self._step)
-        hidden = x
         head = self.head(x)
-        head.hidden_code = hidden
+        head.hidden_code = input
         return head
 
 
@@ -233,10 +233,10 @@ class CNNActor(Actor):
         elif cnn_kind == 'large': # custom (2,066,432 parameters)
             nf = 32
             self.convs = nn.ModuleList([
-                self.make_layer(nn.Conv2d(observation_space.shape[0], nf, 4, 2, 0)),
-                self.make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0)),
-                self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1)),
-                self.make_layer(nn.Conv2d(nf * 4, nf * 8, 4, 2, 1)),
+                self.make_layer(nn.Conv2d(observation_space.shape[0], nf, 4, 2, 0, bias=self.norm is None)),
+                self.make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0, bias=self.norm is None)),
+                self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1, bias=self.norm is None)),
+                self.make_layer(nn.Conv2d(nf * 4, nf * 8, 4, 2, 1, bias=self.norm is None)),
                 nn.Dropout2d(dropout),
             ])
             self.linear = self.make_layer(nn.Linear(nf * 8 * 4 * 4, 512))
@@ -286,21 +286,17 @@ class CNNActor(Actor):
         norm_cls = None
         if self.norm is not None and allow_norm:
             if 'instance' in self.norm and not is_linear:
-                norm_cls = partial(nn.InstanceNorm2d, affine=True)
-            if 'group' in self.norm and not is_linear:
-                norm_cls = partial(nn.GroupNorm, num_groups=transf.out_channels // 8, num_channels=transf.out_channels)
-            if 'layer' in self.norm and is_linear:
-                norm_cls = partial(nn.GroupNorm, num_groups=1, num_channels=transf.out_channels)
+                norm_cls = nn.InstanceNorm2d(num_features=features, affine=True)
+            if 'group' in self.norm:
+                norm_cls = nn.GroupNorm(num_groups=features // 8, num_channels=features)
+            if 'layer' in self.norm:
+                norm_cls = nn.GroupNorm(num_groups=1, num_channels=features)
             if 'batch' in self.norm:
-                norm_cls = nn.BatchNorm1d if is_linear else nn.BatchNorm2d
+                norm_cls = nn.BatchNorm1d(features) if is_linear else nn.BatchNorm2d(features)
             if 'learned' in self.norm and not is_linear:
-                norm_cls = partial(LearnedNorm2d, groups=transf.out_channels // 8)
-            if 'spectral' in self.norm:
-                parts[-1] = spectral_norm(parts[-1])
-            if 'weight' in self.norm:
-                parts[-1] = weight_norm(parts[-1])
-            if norm_cls is not None and not is_linear:
-                parts.append(norm_cls(features))
+                norm_cls = LearnedNorm2d(features, groups=features // 8)
+            if norm_cls is not None:
+                parts.append(norm_cls)
 
         parts.append(self.linear_activation() if is_linear else self.cnn_activation())
 

@@ -2,6 +2,7 @@ import torch
 import torch.nn.init as init
 from torch.autograd import Variable
 import torch.nn.functional as F
+from torch.nn.utils import weight_norm
 
 
 def make_conv_heatmap(x, scale=0.5):
@@ -36,6 +37,18 @@ def weights_init(m, init_alg=init.xavier_uniform_, gain=1):
         m.weight.data.normal_(1, 0.01)
         # if layer_2d:
         # m.bias.data.normal_(-1, 0.01)
+
+
+def apply_weight_norm(m, norm=weight_norm):
+    """
+    Initialization function for `Actor`. Xavier init is used by default.
+    """
+    classname = m.__class__.__name__
+    conv = classname.find('Conv') != -1
+    linear = classname.find('Linear') != -1
+    if conv or linear:
+        print(m)
+        norm(m)
 
 
 def normalized_columns_initializer(weights, norm=1.0):

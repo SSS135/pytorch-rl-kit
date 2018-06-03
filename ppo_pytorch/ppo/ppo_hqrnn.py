@@ -70,24 +70,32 @@ class PPO_HQRNN(PPO_QRNN):
         return head_l1
 
     def get_l1_l2_samples(self):
-        next_l1 = torch.stack(self._rnn_data.cur_l1[1:], 0)
-        cur_l1 = torch.stack(self._rnn_data.cur_l1[:-1], 0)
-        target_l1 = torch.stack(self._rnn_data.target_l1[:-1], 0)
-        cur_l1_norm = F.layer_norm(cur_l1, cur_l1.shape[-1:])
-        next_l1_norm = F.layer_norm(next_l1, next_l1.shape[-1:])
-        target_l1_norm = F.layer_norm(target_l1, target_l1.shape[-1:])
-        r_next_l1 = (target_l1_norm - next_l1_norm).pow(2).mean(-1).sqrt().neg()
-        r_cur_l1 = (target_l1_norm - cur_l1_norm).pow(2).mean(-1).sqrt().neg()
-        # r_next_l1 = F.cosine_similarity(target_l1_norm, next_l1_norm, dim=-1)
-        # r_cur_l1 = F.cosine_similarity(target_l1_norm, cur_l1_norm, dim=-1)
-        rewards_l1 = (r_next_l1 - r_cur_l1).cpu().numpy()
+        target = torch.stack(self._rnn_data.action_l2[:-1], 0)
+        real = torch.stack(self._rnn_data.cur_l1[1:], 0) - torch.stack(self._rnn_data.cur_l1[:-1], 0)
+        rewards_l1 = F.cosine_similarity(real, target, dim=-1)
+
+        # next_l1 = torch.stack(self._rnn_data.cur_l1[1:], 0)
+        # cur_l1 = torch.stack(self._rnn_data.cur_l1[:-1], 0)
+        # target_l1 = torch.stack(self._rnn_data.target_l1[:-1], 0)
+        # r_next_l1 = (target_l1 - next_l1).pow(2).mean(-1).sqrt().neg()
+        # r_cur_l1 = (target_l1 - cur_l1).pow(2).mean(-1).sqrt().neg()
+        # rewards_l1 = r_next_l1 - r_cur_l1
+
+        # cur_l1_norm = F.layer_norm(cur_l1, cur_l1.shape[-1:])
+        # next_l1_norm = F.layer_norm(next_l1, next_l1.shape[-1:])
+        # target_l1_norm = F.layer_norm(target_l1, target_l1.shape[-1:])
+        # r_next_l1 = (target_l1_norm - next_l1_norm).pow(2).mean(-1).sqrt().neg()
+        # r_cur_l1 = (target_l1_norm - cur_l1_norm).pow(2).mean(-1).sqrt().neg()
+        # # r_next_l1 = F.cosine_similarity(target_l1_norm, next_l1_norm, dim=-1)
+        # # r_cur_l1 = F.cosine_similarity(target_l1_norm, cur_l1_norm, dim=-1)
+        # rewards_l1 = (r_next_l1 - r_cur_l1).cpu().numpy()
         probs_l2 = torch.stack(self._rnn_data.probs_l2, 0).cpu().numpy()
         values_l2 = torch.stack(self._rnn_data.values_l2, 0).cpu().numpy()
         actions_l2 = torch.stack(self._rnn_data.action_l2, 0).cpu().numpy()
 
         sample_l1 = self.sample
         sample_l2 = Sample(None, sample_l1.rewards, self.sample.dones, probs_l2, values_l2, actions_l2)
-        sample_l1 = sample_l1._replace(rewards=rewards_l1)
+        sample_l1 = sample_l1._replace(rewards=rewards_l1.cpu().numpy())
 
         return sample_l1, sample_l2
 

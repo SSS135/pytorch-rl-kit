@@ -97,43 +97,41 @@ class SingleFrameAtariVecEnv(NamedVecEnv):
 
 
 class SonicVecEnv(NamedVecEnv):
-    def __init__(self, game, state, scale=True, frame_stack=False, downscale=2, grayscale=True):
+    def __init__(self, game, state, scale=True, frame_stack=False, grayscale=True):
         self.scale = scale
         self.state = state
         self.frame_stack = frame_stack
-        self.downscale = downscale
         self.grayscale = grayscale
         super().__init__(game)
 
     def get_env_fn(self):
-        def make(game, state, scale, frame_stack, downscale, grayscale):
+        def make(game, state, scale, frame_stack, grayscale):
             from retro_contest.local import make
             env = make(game, state)
             env = Monitor(env)
             env = SonicDiscretizer(env)
             env = AllowBacktracking(env)
             env = Monitor(env)
-            env = SimplifyFrame(env, downscale, grayscale)
+            env = SimplifyFrame(env, 84, grayscale)
             env = ChannelTranspose(env)
             if scale:
                 env = ScaledFloatFrame(env)
             if frame_stack:
                 env = FrameStack(env, 4)
             return env
-        return partial(make, self.env_name, self.state, self.scale, self.frame_stack, self.downscale, self.grayscale)
+        return partial(make, self.env_name, self.state, self.scale, self.frame_stack, self.grayscale)
 
 
 class JointSonicVecEnv:
     sonic_names = ('SonicTheHedgehog-Genesis', 'SonicTheHedgehog2-Genesis', 'SonicAndKnuckles3-Genesis')
 
-    def __init__(self, states='train', scale=True, frame_stack=False, downscale=2, grayscale=True):
+    def __init__(self, states='train', scale=True, frame_stack=False, grayscale=True):
         if states == 'train':
             states = [sonic_1_train_levels, sonic_2_train_levels, sonic_3_train_levels]
         assert len(states) == 3
         self.states = states
         self.scale = scale
         self.frame_stack = frame_stack
-        self.downscale = downscale
         self.grayscale = grayscale
         self.env_name = 'Sonic123'
         self.pool = Pool(3)
@@ -146,7 +144,7 @@ class JointSonicVecEnv:
         env.close()
 
     def get_env_fn(self, game, states):
-        def make(game, states, scale, frame_stack, downscale, grayscale):
+        def make(game, states, scale, frame_stack, grayscale):
             from retro_contest.local import make
             env = make(game, states[0])
             env = Monitor(env)
@@ -154,14 +152,14 @@ class JointSonicVecEnv:
             env = AllowBacktracking(env)
             env = Monitor(env)
             env = ChangeStateAtRestart(env, states)
-            env = SimplifyFrame(env, downscale, grayscale)
+            env = SimplifyFrame(env, 84, grayscale)
             env = ChannelTranspose(env)
             if scale:
                 env = ScaledFloatFrame(env)
             if frame_stack:
                 env = FrameStack(env, 4)
             return env
-        return partial(make, game, states, self.scale, self.frame_stack, self.downscale, self.grayscale)
+        return partial(make, game, states, self.scale, self.frame_stack, self.grayscale)
 
     def set_num_envs(self, num_envs):
         assert num_envs % 3 == 0
@@ -204,20 +202,19 @@ class ChannelTranspose(gym.ObservationWrapper):
 
 
 class SimplifyFrame(gym.ObservationWrapper):
-    def __init__(self, env, downscale=2, grayscale=True):
+    def __init__(self, env, size=84, grayscale=True):
         super().__init__(env)
-        self.downscale = downscale
+        self.size = size
         self.grayscale = grayscale
         ob = env.observation_space.shape
         assert len(ob) == 3 and ob[2] == 3
-        assert ob[0] % downscale == 0 and ob[1] % downscale == 0
-        out_ob = ob[0] // downscale, ob[1] // downscale, 1 if grayscale else 3
+        out_ob = size, size, (1 if grayscale else 3)
         self.observation_space = spaces.Box(low=0, high=255, shape=out_ob)
 
     def _observation(self, frame):
         if self.grayscale:
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        if self.downscale != 1:
-            resize_shape = self.observation_space.shape[1], self.observation_space.shape[0]
-            frame = cv2.resize(frame, resize_shape, interpolation=cv2.INTER_AREA)
+        # if self.downscale != 1:
+        resize_shape = self.observation_space.shape[1], self.observation_space.shape[0]
+        frame = cv2.resize(frame, resize_shape, interpolation=cv2.INTER_AREA)
         return np.expand_dims(frame, -1) if self.grayscale else frame

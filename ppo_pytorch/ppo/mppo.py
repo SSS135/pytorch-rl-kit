@@ -26,18 +26,14 @@ import torch.nn as nn
 
 
 class EnvGenerator(nn.Module):
-    def __init__(self, state_size, action_pd, hidden_size=256, action_embedding_size=64):
+    def __init__(self, state_size, action_pd, hidden_size=128):
         super().__init__()
         self.state_size = state_size
         self.action_pd = action_pd
         self.hidden_size = hidden_size
-        self.action_embedding_size = action_embedding_size
-        self.action_embedding = nn.Sequential(
-            nn.Linear(action_pd.input_vector_len, action_embedding_size),
-            nn.ReLU(True),
-        )
+        self.action_embedding = nn.Linear(action_pd.input_vector_len, hidden_size)
+        self.state_embedding = nn.Linear(state_size, hidden_size)
         self.model = nn.Sequential(
-            nn.Linear(state_size + action_embedding_size, hidden_size),
             nn.ReLU(True),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(True),
@@ -47,8 +43,8 @@ class EnvGenerator(nn.Module):
     def forward(self, cur_states, actions):
         action_inputs = self.action_pd.to_inputs(actions)
         action_emb = self.action_embedding(action_inputs)
-        model_input = torch.cat([cur_states, action_emb], -1)
-        out = self.model(model_input)
+        state_emb = self.state_embedding(cur_states)
+        out = self.model(action_emb + state_emb)
         next_states, forget_gate, input_gate = out[..., :-2].chunk(3, dim=-1)
         forget_gate, input_gate = forget_gate.sigmoid(), input_gate.sigmoid()
         next_states = forget_gate * cur_states + input_gate * next_states
@@ -63,22 +59,47 @@ class ReplayBuffer:
         self.index = 0
 
     def push(self, states, actions, rewards, dones):
-        pass
+        raise NotImplementedError
 
-    def sample(self, rollout_count, rollout_steps):
-        pass
+    def sample(self, rollouts, horizon):
+        raise NotImplementedError
 
     def __len__(self):
         return min(self.index, self.capacity)
 
 
 class MPPO(PPO):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args,
+                 replay_buffer_size=100_000,
+                 world_optim_factory=partial(optim.Adam, lr=5e-4),
+                 world_train_rollouts=16,
+                 world_train_horizon=16,
+                 world_train_iters=16,
+                 **kwargs):
         super().__init__(*args, **kwargs)
+        self.replay_buffer_size = replay_buffer_size
+        self.world_optim_factory = world_optim_factory
+        self.world_train_rollouts = world_train_rollouts
+        self.world_train_horizon = world_train_horizon
+        self.world_train_iters = world_train_iters
 
-    def _step(self, prev_states, rewards, dones, cur_states) -> np.ndarray:
-        return super()._step(prev_states, rewards, dones, cur_states)
+        self.replay_buffer = ReplayBuffer(replay_buffer_size)
+        self.world_model = EnvGenerator(self.model.hidden_code_size, self.model.pd)
+        self.world_optim = world_optim_factory(self.world_model.parameters())
+        self.prev_actions = None
 
     def _train(self):
+        self._update_replay_buffer()
+        self._train_world()
         return super()._train()
+
+    def _update_replay_buffer(self):
+        # H x B x *
+        self.replay_buffer.push(self.sample.states[:-1], self.sample.actions[:-1],
+                                self.sample.rewards, self.sample.dones)
+
+    def _train_world(self):
+        # H x B x *
+        states, actions, rewards, dones = self.replay_buffer.sample(
+            self.world_train_rollouts * self.world_train_iters, self.world_train_horizon)
 

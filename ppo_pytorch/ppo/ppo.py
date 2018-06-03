@@ -24,6 +24,8 @@ import math
 from optfn.grad_running_norm import GradRunningNorm
 from optfn.opt_clip import opt_clip
 import torch.autograd
+from ..models.utils import apply_weight_norm
+from optfn.weight_rescale import weight_rescale
 
 
 # def lerp(start, end, weight):
@@ -67,8 +69,8 @@ class PPO(RLBase):
                  constraint='clip',
                  policy_clip=0.1,
                  value_clip=0.1,
-                 kl_target=0.003,
-                 kl_scale=0.01,
+                 kl_target=0.01,
+                 kl_scale=1,
                  cuda_eval=False,
                  cuda_train=False,
                  grad_clip_norm=2,
@@ -145,6 +147,7 @@ class PPO(RLBase):
         self.sample = self.create_new_sample()
 
         self.model = model_factory(observation_space, action_space)
+        # self.model.apply(partial(apply_weight_norm, norm=weight_rescale))
         if model_init_path is not None:
             self.model.load_state_dict(torch.load(model_init_path))
         self.optimizer = optimizer_factory(get_param_groups(self.model))
@@ -289,7 +292,8 @@ class PPO(RLBase):
         # calculate returns and advantages
         returns = calc_returns(norm_rewards, values, dones, reward_discount)
         advantages = calc_advantages(norm_rewards, values, dones, reward_discount, advantage_discount)
-        # advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-5)
+        # advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-3)
+        # advantages = advantages.sign() * advantages.abs() ** 0.5
         advantages = advantages / advantages.pow(2).mean().sqrt()
 
         return norm_rewards, returns, advantages
@@ -350,7 +354,7 @@ class PPO(RLBase):
 
         # clipping factors
         value_clip = self.value_clip * self.clip_mult
-        policy_clip = self.policy_clip * self.clip_mult * pd.clip_mult
+        policy_clip = self.policy_clip * self.clip_mult
 
         if 'opt' in self.constraint:
             probs = opt_clip(probs, probs_old, policy_clip)
@@ -361,9 +365,6 @@ class PPO(RLBase):
         logp_old = pd.logp(actions, probs_old)
         logp = pd.logp(actions, probs)
         ratio = logp - logp_old.detach()
-
-        # if logp.dim() == 2:
-        #     advantages = advantages.unsqueeze(-1)
 
         if 'clip' in self.constraint:
             unclipped_policy_loss = ratio * advantages
@@ -383,39 +384,19 @@ class PPO(RLBase):
         # entropy bonus for better exploration
         entropy = pd.entropy(probs)
 
-        # if logp.dim() == 2:
-        #     loss_clip = loss_clip.sum(-1)
-        #     entropy = entropy.sum(-1)
-
         loss_ent = -self.entropy_bonus * entropy
 
         kl = pd.kl(probs_old, probs)
         if 'kl' in self.constraint:
-            # prob_target_iters = 40
-            # probs_target = probs_old.clone()
-            # probs_target.requires_grad = True
-            # for i in range(prob_target_iters):
-            #     logp_target = pd.logp(actions, probs_target)
-            #     entropy_target = pd.entropy(probs_target)
-            #     pg_loss_target = -logp_target * advantages - self.entropy_bonus * entropy_target
-            #     overfit = pd.kl(probs_old, probs_target) / advantages.abs().mul(self.kl_target).clamp(min=1e-3)
-            #     pg_loss_target *= (1 - overfit.clamp(max=1)).detach()
-            #     prob_grad = torch.autograd.grad(pg_loss_target.sum(), probs_target)[0]
-            #     probs_target.data -= 250 * self.kl_target / prob_target_iters * prob_grad
-            # probs_target.requires_grad = False
-            #
-            # loss_kl = self.kl_scale * pd.kl(probs_target, probs)
-            # loss_ent = entropy.new(1).zero_()
-            # loss_clip = loss_clip.new(1).zero_()
-
             kl_targets = self.kl_target * advantages.abs()
             loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(self.kl_scale * self.kl_target)
-            loss_kl[kl < kl_targets] = 0
+            loss_kl[kl < self.kl_target] = 0
+            loss_clip[kl > self.kl_target] = 0
         else:
             loss_kl = kl.new(1).zero_()
 
         # sum all losses
-        total_loss = loss_clip.mean() + loss_value.mean() + loss_ent.mean() + loss_kl.mean()
+        total_loss = loss_clip.mean() + loss_value.mean() + loss_kl.mean() + loss_ent.mean()
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_clip.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
 
@@ -433,11 +414,6 @@ class PPO(RLBase):
                 if 'clip' in self.constraint:
                     self.logger.add_histogram('loss clip' + tag, loss_clip, self.frame)
                     self.logger.add_scalar('loss clip' + tag, loss_clip.mean(), self.frame)
-                # if 'kl' in self.constraint:
-                #     kl_target = pd.kl(probs_old, probs_target).sort(dim=0)[0]
-                #     self.logger.add_scalar('kl target 10' + tag, kl_target[int(kl_target.shape[0] * 0.1)], self.frame)
-                #     self.logger.add_scalar('kl target 90' + tag, kl_target[int(kl_target.shape[0] * 0.9)], self.frame)
-                #     self.logger.add_scalar('kl target mean' + tag, kl_target.mean(), self.frame)
 
         return total_loss, kl.mean()
 
