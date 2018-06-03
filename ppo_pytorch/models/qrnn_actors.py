@@ -203,10 +203,10 @@ class HQRNNActor(QRNNActor):
 
         obs_len = int(np.product(self.observation_space.shape))
 
-        self.h_pd = StaticTransactionPd(self.h_action_size)
+        self.h_pd = DiagGaussianTransactionPd(self.h_action_size)
         self.gate_pd = BernoulliPd(1)
 
-        self.qrnn_l1 = DenseQRNN(obs_len, self.qrnn_hidden_size, self.qrnn_layers, norm=self.norm)
+        self.qrnn_l1 = DenseQRNN(self.h_action_size * 2, self.qrnn_hidden_size, self.qrnn_layers, norm=self.norm)
         del self.qrnn
         self.qrnn_l2 = DenseQRNN(self.h_action_size, self.qrnn_hidden_size, self.qrnn_layers, norm=self.norm)
 
@@ -236,11 +236,6 @@ class HQRNNActor(QRNNActor):
             # TemporalGroupNorm(8, self.qrnn_hidden_size),
             # nn.ReLU(),
         )
-        self.mat_out_l1 = nn.Sequential(
-            nn.Linear(self.qrnn_hidden_size, self.h_action_size * self.pd.prob_vector_len),
-            nn.ReLU(),
-        )
-        self.action_transf_l1 = nn.Linear(self.h_action_size, self.h_action_size, bias=False)
         # self.state_vec_extractor_l1 = nn.Sequential(
         #     nn.Linear(self.qrnn_hidden_size, h_action_size),
         #     # TemporalGroupNorm(1, h_action_size, affine=False),
@@ -257,7 +252,7 @@ class HQRNNActor(QRNNActor):
         memory_l1, memory_l2 = memory.chunk(2, 0) if memory is not None else (None, None)
 
         input_emb_l2 = self.input_emb_l2(input)
-        # input_emb_l2 = input_emb_l2 / input_emb_l2.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
+        input_emb_l2 = input_emb_l2 / input_emb_l2.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
         # cur_l1 = hidden_l1 = input #= F.layer_norm(hidden_l1, hidden_l1.shape[-1:])
         # head_gate_l2 = self.head_gate_l2(hidden_l1)
         # if action_gate_l2 is None:
@@ -276,26 +271,15 @@ class HQRNNActor(QRNNActor):
         # cur_l1_norm = F.layer_norm(cur_l1, cur_l1.shape[-1:])
         # target_l1_norm = F.layer_norm(target_l1, target_l1.shape[-1:])
 
-        # input_emb_l1 = self.input_emb_l1(input)
-        # input_emb_l1 = input_emb_l1 / input_emb_l1.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
-        # input_l1 = torch.cat([input_emb_l1, action_l2], -1)
-        hidden_l1, next_memory_l1 = self.qrnn_l1(input, memory_l1, done_flags)
+        input_emb_l1 = self.input_emb_l1(input)
+        input_emb_l1 = input_emb_l1 / input_emb_l1.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
+        input_l1 = torch.cat([input_emb_l1, action_l2], -1)
+        hidden_l1, next_memory_l1 = self.qrnn_l1(input_l1, memory_l1, done_flags)
         # preact_l1 = torch.cat([hidden_l1, self.target_emb(target_l1)], -1)
         # preact_l1 = self.action_merge_l1(preact_l1)
         head_l1 = self.head(hidden_l1)
 
-        mat_l1 = self.mat_out_l1(hidden_l1)
-        mat_l1 = mat_l1 / mat_l1.pow(2).mean(-1, keepdim=True).sqrt() * math.sqrt(2.0 / (self.pd.prob_vector_len + self.h_action_size))
-        mat_l1 = mat_l1.view(-1, self.pd.prob_vector_len, self.h_action_size)
-        action_transf_l1 = self.action_transf_l1(action_l2).view(-1, self.h_action_size, 1)
-        out_l1 = (mat_l1 @ action_transf_l1).squeeze(-1)
-        # values_l1 = out_l1[..., :1]
-        # probs_l1 = out_l1[..., 1:]
-
-        head_l1.probs = out_l1.view_as(head_l1.probs)
-        # head_l1.state_values = values_l1.view_as(head_l1.state_values)
-        head_l1.state_values = head_l1.state_values * 0
-
         next_memory = torch.cat([next_memory_l1, next_memory_l2], 0)
+        head_l1.state_values = head_l1.state_values * 0
 
         return head_l1, head_l2, action_l2, randn_l2, input_emb_l2, target_l1, next_memory

@@ -437,9 +437,9 @@ class StaticTransactionPd(ProbabilityDistribution):
         sample = mean / mean.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
         return sample, randn
 
-    # @property
-    # def init_column_norm(self):
-    #     return math.sqrt(self.d)
+    @property
+    def init_column_norm(self):
+        return math.sqrt(self.d)
 
 
 class DiagGaussianTransactionPd(ProbabilityDistribution):
