@@ -260,14 +260,16 @@ class DiagGaussianPd(ProbabilityDistribution):
 
     def entropy(self, prob):
         logstd = prob[..., self.d:]
-        ent = logstd + .5 * math.log(2.0 * math.pi * math.e)
+        ent = logstd #+ .5 * math.log(2.0 * math.pi * math.e)
         return ent.mean(-1)
 
-    def sample(self, prob):
+    def sample(self, prob, randn=None):
         mean = prob[..., :self.d]
         logstd = prob[..., self.d:]
         std = torch.exp(logstd)
-        return torch.normal(mean, std)
+        if randn is None:
+            randn = torch.randn_like(mean)
+        return mean + std * randn, randn
 
     @property
     def mean_div(self):

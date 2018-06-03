@@ -203,7 +203,7 @@ class HQRNNActor(QRNNActor):
 
         obs_len = int(np.product(self.observation_space.shape))
 
-        self.h_pd = DiagGaussianTransactionPd(self.h_action_size)
+        self.h_pd = DiagGaussianPd(self.h_action_size)
         self.gate_pd = BernoulliPd(1)
 
         self.qrnn_l1 = DenseQRNN(self.h_action_size * 2, self.qrnn_hidden_size, self.qrnn_layers, norm=self.norm)
