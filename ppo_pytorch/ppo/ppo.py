@@ -387,20 +387,28 @@ class PPO(RLBase):
 
         # entropy bonus for better exploration
         entropy = pd.entropy(probs)
+        # entropy_old = pd.entropy(probs_old)
 
         loss_ent = -self.entropy_bonus * entropy
+        # loss_ent[(entropy > entropy_old + self.entropy_bonus).detach()] = 0
 
         kl = pd.kl(probs_old, probs)
         if 'kl' in self.constraint:
             kl_targets = self.kl_target * advantages.abs()
             loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(self.kl_scale * self.kl_target)
-            loss_kl[kl < self.kl_target] = 0
-            loss_clip[kl > self.kl_target] = 0
+            small_kl = (kl < self.kl_target).detach()
+            large_kl = (kl > self.kl_target).detach()
+            loss_kl[small_kl] = 0
+            loss_ent[large_kl] = 0
+            loss_clip[large_kl] = 0
         else:
             loss_kl = kl.new(1).zero_()
 
+        assert loss_clip.shape == loss_value.shape and \
+               loss_value.shape == loss_kl.shape and \
+               loss_kl.shape == loss_ent.shape
         # sum all losses
-        total_loss = loss_clip.mean() + loss_value.mean() + loss_kl.mean() + loss_ent.mean()
+        total_loss = loss_clip + loss_value + loss_kl + loss_ent
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_clip.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
 

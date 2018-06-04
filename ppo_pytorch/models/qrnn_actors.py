@@ -216,7 +216,7 @@ class HQRNNActor(QRNNActor):
         #     # nn.ReLU(),
         # )
         self.input_emb_l2 = nn.Sequential(
-            nn.Linear(obs_len, self.h_action_size, bias=False),
+            nn.Linear(obs_len, self.h_action_size),
             # TemporalLayerNorm(self.h_action_size),
             # nn.ReLU(),
         )
@@ -252,7 +252,7 @@ class HQRNNActor(QRNNActor):
         memory_l1, memory_l2 = memory.chunk(2, 0) if memory is not None else (None, None)
 
         input_emb_l2 = self.input_emb_l2(input)
-        input_emb_l2 = input_emb_l2 / input_emb_l2.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
+        # input_emb_l2 = input_emb_l2 / input_emb_l2.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
         # cur_l1 = hidden_l1 = input #= F.layer_norm(hidden_l1, hidden_l1.shape[-1:])
         # head_gate_l2 = self.head_gate_l2(hidden_l1)
         # if action_gate_l2 is None:
@@ -272,7 +272,7 @@ class HQRNNActor(QRNNActor):
         # target_l1_norm = F.layer_norm(target_l1, target_l1.shape[-1:])
 
         input_emb_l1 = self.input_emb_l1(input)
-        input_emb_l1 = input_emb_l1 / input_emb_l1.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
+        # input_emb_l1 = input_emb_l1 / input_emb_l1.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
         input_l1 = torch.cat([input_emb_l1, action_l2], -1)
         hidden_l1, next_memory_l1 = self.qrnn_l1(input_l1, memory_l1, done_flags)
         # preact_l1 = torch.cat([hidden_l1, self.target_emb(target_l1)], -1)
@@ -280,6 +280,6 @@ class HQRNNActor(QRNNActor):
         head_l1 = self.head(hidden_l1)
 
         next_memory = torch.cat([next_memory_l1, next_memory_l2], 0)
-        head_l1.state_values = head_l1.state_values * 0
+        # head_l1.state_values = head_l1.state_values * 0
 
         return head_l1, head_l2, action_l2, randn_l2, input_emb_l2, target_l1, next_memory

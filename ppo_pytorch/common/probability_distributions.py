@@ -258,9 +258,20 @@ class DiagGaussianPd(ProbabilityDistribution):
         kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
         return kl.mean(-1)
 
+    # def kl(self, prob1, prob2):
+    #     mean1 = prob1[..., :self.d]
+    #     logstd1 = prob1[..., self.d:]
+    #     mean2 = prob2[..., :self.d]
+    #     logstd2 = prob2[..., self.d:]
+    #     def rmse(a, b):
+    #         return (a - b).pow(2).mean(-1).add(1e-6).sqrt()
+    #     return (rmse(mean1, mean2) + rmse(logstd1, logstd2)) / 10
+
     def entropy(self, prob):
+        mean = prob[..., :self.d]
         logstd = prob[..., self.d:]
-        ent = logstd #+ .5 * math.log(2.0 * math.pi * math.e)
+        ent = logstd#.sign() * logstd.abs().add(1e-6).sqrt() #- mean ** 2 #+ .5 * math.log(2.0 * math.pi * math.e)
+        # ent[ent > 0] = 0
         return ent.mean(-1)
 
     def sample(self, prob, randn=None):
@@ -269,7 +280,9 @@ class DiagGaussianPd(ProbabilityDistribution):
         std = torch.exp(logstd)
         if randn is None:
             randn = torch.randn_like(mean)
-        return mean + std * randn, randn
+        sample = mean + std * randn
+        # sample = sample / sample.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
+        return sample, randn
 
     @property
     def mean_div(self):
@@ -351,16 +364,15 @@ class MultivecGaussianPd(ProbabilityDistribution):
     def dtype(self):
         return torch.float
 
-    def pdf(self, x, prob):
+    def neglogp(self, x, prob):
         vecs = prob.contiguous().view(*prob.shape[:-1], self.d, self.num_vec)
-        var = vecs.var(-1).add(self.eps)
+        std = vecs.var(-1).add(self.eps).sqrt()
+        logstd = std.log()
         mean = vecs.mean(-1)
-        pdf = (2 * math.pi * var).rsqrt() + torch.exp(-(x - mean) ** 2 / (2 * var))
-        return pdf
-
-    def logp(self, x, prob):
-        logp = self.pdf(x, prob).log()
-        return logp
+        nll = 0.5 * ((x - mean) / std).pow(2) + \
+              0.5 * math.log(2.0 * math.pi) * self.d + \
+              logstd
+        return nll.mean(-1)
 
     def kl(self, prob1, prob2):
         vecs1 = prob1.contiguous().view(*prob1.shape[:-1], self.d, self.num_vec)
@@ -374,19 +386,24 @@ class MultivecGaussianPd(ProbabilityDistribution):
         logstd1 = std1.log()
         logstd2 = std2.log()
         kl = logstd2 - logstd1 + (square(std1) + square(mean1 - mean2)) / (2.0 * square(std2)) - 0.5
-        return kl
+        return kl.mean(-1)
 
     def entropy(self, prob):
         vecs = prob.contiguous().view(*prob.shape[:-1], self.d, self.num_vec)
-        var = vecs.var(-1).add(self.eps)
-        ent = 0.5 * (2 * math.pi * math.e * var).log()
-        return ent
+        logvar = vecs.var(-1).add(self.eps).log()
+        ent = logvar
+        return ent.mean(-1)
 
-    def sample(self, prob):
-        vecs = prob.contiguous().view(*prob.shape[:-1], self.d, self.num_vec)
-        rand = torch.randint(self.num_vec, size=(vecs.shape[0],)).long()
+    def sample(self, prob, rand=None):
+        vecs = prob.contiguous().view(-1, self.d, self.num_vec)
+        if rand is None:
+            rand = torch.randint(self.num_vec, size=(vecs.shape[0],)).long()
+        else:
+            rand = rand.contiguous().view(-1)
         range = torch.arange(vecs.shape[0]).long()
-        return vecs[range, ..., rand]
+        sample = vecs[range, :, rand]
+        sample = sample / sample.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
+        return sample.view(*prob.shape[:-1], self.d), rand.view(prob.shape[:-1])
 
     @property
     def init_column_norm(self):
@@ -467,7 +484,7 @@ class DiagGaussianTransactionPd(ProbabilityDistribution):
     def dtype(self):
         return torch.float
 
-    def logp(self, a, prob):
+    def logp(self, x, prob):
         assert self.cur is not None and self.next is not None and self.randn is not None
         target, _ = self.sample(prob, self.randn)
         # mean = prob[..., :self.d]
@@ -490,10 +507,27 @@ class DiagGaussianTransactionPd(ProbabilityDistribution):
             return (a - b).pow(2).mean(-1).add(1e-6).sqrt()
         return (rmse(mean1, mean2) + rmse(logstd1, logstd2)) / 10
 
+    # def entropy(self, prob):
+    #     logstd = prob[..., self.d:]
+    #     mean = prob[..., :self.d]
+    #     ent = logstd #- mean.abs() #+ .5 * math.log(2.0 * math.pi * math.e)
+    #     return ent.mean(-1)
+
+    # def kl(self, prob1, prob2):
+    #     mean1 = prob1[..., :self.d]
+    #     mean2 = prob2[..., :self.d]
+    #     logstd1 = prob1[..., self.d:]
+    #     logstd2 = prob2[..., self.d:]
+    #     std1 = torch.exp(logstd1)
+    #     std2 = torch.exp(logstd2)
+    #     kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
+    #     return kl.mean(-1)
+
     def entropy(self, prob):
-        logstd = prob[..., self.d:]
         mean = prob[..., :self.d]
-        ent = logstd #- mean.abs() #+ .5 * math.log(2.0 * math.pi * math.e)
+        logstd = prob[..., self.d:]
+        ent = logstd #- mean ** 2 #+ .5 * math.log(2.0 * math.pi * math.e)
+        # ent[ent > 0] = 0
         return ent.mean(-1)
 
     def sample(self, prob, randn=None):

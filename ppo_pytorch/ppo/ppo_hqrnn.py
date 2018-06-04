@@ -136,10 +136,10 @@ class PPO_HQRNN(PPO_QRNN):
         dones = self._rnn_data.dones[:-1] # (steps, actors)
         dones = torch.stack(dones, 0).transpose(0, 1).contiguous().view(-1) # (actors * steps)
 
-        next_l1 = torch.stack(self._rnn_data.cur_l1[1:], 0) # (steps, actors, action_size)
-        next_l1 = next_l1.transpose(0, 1).contiguous().view(-1, next_l1.shape[-1]) # (actors * steps, action_size)
-        cur_l1 = torch.stack(self._rnn_data.cur_l1[:-1], 0) # (steps, actors, action_size)
-        cur_l1 = cur_l1.transpose(0, 1).contiguous().view(-1, cur_l1.shape[-1]) # (actors * steps, action_size)
+        # next_l1 = torch.stack(self._rnn_data.cur_l1[1:], 0) # (steps, actors, action_size)
+        # next_l1 = next_l1.transpose(0, 1).contiguous().view(-1, next_l1.shape[-1]) # (actors * steps, action_size)
+        # cur_l1 = torch.stack(self._rnn_data.cur_l1[:-1], 0) # (steps, actors, action_size)
+        # cur_l1 = cur_l1.transpose(0, 1).contiguous().view(-1, cur_l1.shape[-1]) # (actors * steps, action_size)
 
         randn_l2 = torch.stack(self._rnn_data.randn_l2[:-1], 0) # (steps, actors, action_size)
         randn_l2 = randn_l2.transpose(0, 1).contiguous().view(-1, randn_l2.shape[-1]) # (actors * steps, action_size)
@@ -157,7 +157,7 @@ class PPO_HQRNN(PPO_QRNN):
                 data_l1.actions, data_l2.actions,
                 data_l1.advantages, data_l2.advantages,
                 data_l1.returns, data_l2.returns,
-                memory, dones, cur_l1, next_l1, randn_l2)
+                memory, dones, randn_l2)
         # (actors, steps, ...)
         num_actors = self.num_actors
         if self.horizon > self.batch_size:
@@ -174,7 +174,7 @@ class PPO_HQRNN(PPO_QRNN):
             for loader_iter, ids in enumerate(actor_index_chunks):
                 # prepare batch data
                 # (actors * steps, ...)
-                st, po_l1, po_l2, vo_l1, vo_l2, ac_l1, ac_l2, adv_l1, adv_l2, ret_l1, ret_l2, mem, done, cu_l1, ne_l1, r_l2 = [
+                st, po_l1, po_l2, vo_l1, vo_l2, ac_l1, ac_l2, adv_l1, adv_l2, ret_l1, ret_l2, mem, done, r_l2 = [
                     x[ids].contiguous().view(-1, *x.shape[2:])
                     for x in data]
                 # (steps, actors, ...)
@@ -189,7 +189,7 @@ class PPO_HQRNN(PPO_QRNN):
                     self.model.set_log(self.logger, self._do_log, self.step)
 
                 with torch.enable_grad():
-                    actor_out_l1, actor_out_l2, *_ = self.model(st, mem, done, r_l2_inp)
+                    actor_out_l1, actor_out_l2, _, _, cur_l1, _, _  = self.model(st, mem, done, r_l2_inp)
                     # (actors * steps, probs)
                     probs_l1, probs_l2 = [h.probs.transpose(0, 1).contiguous().view(-1, h.probs.shape[2])
                                           for h in (actor_out_l1, actor_out_l2)]
@@ -198,8 +198,12 @@ class PPO_HQRNN(PPO_QRNN):
                                                         for h in (actor_out_l1, actor_out_l2)]
 
                     if hasattr(self.model.h_pd, 'cur'):
-                        self.model.h_pd.cur = cu_l1
-                        self.model.h_pd.next = ne_l1
+                        # (actors * steps, action_size)
+                        cur_l1 = cur_l1.detach().transpose(0, 1).contiguous().view(-1, cur_l1.shape[-1])
+                        self.model.h_pd.cur = cur_l1
+                        next_l1 = cur_l1.clone()
+                        next_l1[:-1] = next_l1[1:]
+                        self.model.h_pd.next = next_l1
                     if hasattr(self.model.h_pd, 'randn'):
                         self.model.h_pd.randn = r_l2
 
@@ -208,7 +212,7 @@ class PPO_HQRNN(PPO_QRNN):
                                                         self.model.pd, tag='')
                     loss_l2, kl_l2 = self._get_ppo_loss(probs_l2, po_l2, state_values_l2, vo_l2, ac_l2, adv_l2, ret_l2,
                                                         self.model.h_pd, tag=' l2')
-                    loss = loss_l1.mean() + loss_l2.mean()
+                    loss = loss_l1.mean() + loss_l2.view(num_actors, -1)[:, :-1].mean()
 
                 # optimize
                 loss.backward()
