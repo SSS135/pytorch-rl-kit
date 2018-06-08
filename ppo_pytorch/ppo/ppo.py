@@ -17,7 +17,7 @@ from ..common.gae import calc_advantages, calc_returns
 from ..common.multi_dataset import MultiDataset
 from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
-from ..models import MLPActorCritic
+from ..models import FCActorCritic
 from ..common.param_groups_getter import get_param_groups
 from pathlib import Path
 import math
@@ -62,7 +62,7 @@ class PPO(RLBase):
                  horizon=64,
                  ppo_iters=10,
                  batch_size=64,
-                 model_factory=MLPActorCritic,
+                 model_factory=FCActorCritic,
                  optimizer_factory=partial(optim.Adam, lr=3e-4),
                  value_loss_scale=1.0,
                  entropy_bonus=0.01,
@@ -294,9 +294,9 @@ class PPO(RLBase):
         returns = calc_returns(norm_rewards, values, dones, reward_discount)
         advantages = calc_advantages(norm_rewards, values, dones, reward_discount, advantage_discount)
         if mean_norm:
-            advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-3)
+            advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-2)
         else:
-            advantages = advantages / advantages.pow(2).mean().sqrt()
+            advantages = advantages / max(advantages.pow(2).mean().sqrt(), 1e-2)
         # advantages = advantages.sign() * advantages.abs() ** 0.5
 
         return norm_rewards, returns, advantages

@@ -35,7 +35,7 @@ if __name__ == '__main__':
         args.cuda = None
 
     # parameters for `PPO` class
-    alg_params = ppo.create_cnn_kwargs() if args.atari else ppo.create_mlp_kwargs()
+    alg_params = ppo.create_cnn_kwargs() if args.atari else ppo.create_fc_kwargs()
     # parameters for `GymWrapper` class
     wrap_params = dict(
         atari_preprocessing=args.atari,

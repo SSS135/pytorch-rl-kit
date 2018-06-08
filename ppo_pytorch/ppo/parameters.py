@@ -3,10 +3,10 @@ from functools import partial
 import torch.optim as optim
 from ..common import DecayLR, ValueDecay
 
-from ..models import MLPActorCritic, CNNActorCritic
+from ..models import FCActorCritic, CNNActorCritic
 
 
-def create_mlp_kwargs(learning_decay_frames=5e5, **kwargs):
+def create_fc_kwargs(learning_decay_frames=5e5, **kwargs):
     """
     Get hyperparameters for simple envs like CartPole or Acrobot
     Args:
@@ -23,7 +23,7 @@ def create_mlp_kwargs(learning_decay_frames=5e5, **kwargs):
         ppo_iters=6,
         horizon=64,
         batch_size=128,
-        model_factory=MLPActorCritic,
+        model_factory=FCActorCritic,
         image_observation=False,
         cuda_eval=False,
         cuda_train=False,
@@ -55,7 +55,7 @@ def create_hqrnn_kwargs(**kwargs):
         ppo_iters=6,
         horizon=128,
         batch_size=256,
-        model_factory=MLPActorCritic,
+        model_factory=FCActorCritic,
         image_observation=False,
         cuda_eval=True,
         cuda_train=True,

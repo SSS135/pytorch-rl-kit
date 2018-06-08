@@ -78,6 +78,7 @@ class CNN_QRNNActor(CNNActor):
         self.qrnn = DenseQRNN(self.linear[0].in_features, qrnn_hidden_size, qrnn_layers, norm=qrnn_norm)
         del self.linear
         self.head = self.head_factory(qrnn_hidden_size, self.pd)
+        self.hidden_code_size = qrnn_hidden_size
         self.reset_weights()
 
     def forward(self, input, memory, done_flags):
@@ -90,6 +91,7 @@ class CNN_QRNNActor(CNNActor):
         x, next_memory = self.qrnn(x, memory, done_flags)
 
         head = self.head(x)
+        head.hidden_code = x
 
         if self.do_log:
             self.logger.add_histogram('conv linear', x, self._step)

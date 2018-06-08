@@ -80,8 +80,8 @@ class Actor(nn.Module):
                 m.reset_weights()
 
     @staticmethod
-    def create_mlp(in_size: int, out_size: Optional[int], hidden_sizes: List[int],
-                   activation: Callable, norm: str = None):
+    def create_fc(in_size: int, out_size: Optional[int], hidden_sizes: List[int],
+                  activation: Callable, norm: str = None):
         """
         Create fully connected network
         Args:
@@ -158,7 +158,7 @@ class Actor(nn.Module):
             self.logger.add_image('state attention', img, self._step)
 
 
-class MLPActor(Actor):
+class FCActor(Actor):
     """
     Fully connected network.
     """
@@ -179,8 +179,8 @@ class MLPActor(Actor):
 
         obs_len = int(np.product(observation_space.shape))
 
-        self.hidden_code_size = obs_len
-        self.linear = self.create_mlp(obs_len, None, hidden_sizes, activation, self.norm)
+        self.hidden_code_size = hidden_sizes[0]
+        self.linear = self.create_fc(obs_len, None, hidden_sizes, activation, self.norm)
         self.head = head_factory(hidden_sizes[-1], self.pd)
         self.reset_weights()
 
@@ -188,14 +188,15 @@ class MLPActor(Actor):
         super().reset_weights()
         self.head.reset_weights()
 
-    def forward(self, input):
+    def forward(self, input, hidden_code_only=False):
         x = input
-        for i, layer in enumerate(self.linear):
-            x = layer(x)
-            if self.do_log:
-                self.logger.add_histogram(f'layer {i} output', x, self._step)
+        if not hidden_code_only:
+            for i, layer in enumerate(self.linear):
+                x = layer(x)
+                if self.do_log:
+                    self.logger.add_histogram(f'layer {i} output', x, self._step)
         head = self.head(x)
-        head.hidden_code = input
+        head.hidden_code = self.linear[0][1](self.linear[0][0](input))
         return head
 
 
@@ -271,6 +272,7 @@ class CNNActor(Actor):
 
         # create head
         self.head = head_factory(self.linear[0].out_features, self.pd)
+        self.hidden_code_size = self.linear[0].out_features
 
         self.reset_weights()
 
@@ -334,6 +336,7 @@ class CNNActor(Actor):
         x = self.linear(x)
 
         ac_out = self.head(x)
+        ac_out.hidden_code = x
 
         if self.do_log:
             self.logger.add_histogram('conv linear', x, self._step)

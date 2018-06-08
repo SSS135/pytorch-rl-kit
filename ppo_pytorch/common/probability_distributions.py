@@ -274,7 +274,7 @@ class DiagGaussianPd(ProbabilityDistribution):
         # ent[ent > 0] = 0
         return ent.mean(-1)
 
-    def sample(self, prob, randn=None):
+    def sample(self, prob, randn=False):
         mean = prob[..., :self.d]
         logstd = prob[..., self.d:]
         std = torch.exp(logstd)
@@ -282,7 +282,10 @@ class DiagGaussianPd(ProbabilityDistribution):
             randn = torch.randn_like(mean)
         sample = mean + std * randn
         # sample = sample / sample.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
-        return sample, randn
+        if randn is False:
+            return sample
+        else:
+            return sample, randn
 
     @property
     def mean_div(self):
