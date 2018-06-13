@@ -81,7 +81,7 @@ class ChangeStateAtRestart(gym.Wrapper):
         self.state_names = state_names
         super().__init__(env)
 
-    def _reset(self, **kwargs):
+    def reset(self, **kwargs):
         env: RetroEnv = self.unwrapped
         env.statename = state = random.choice(self.state_names)
         game_path = retro.get_game_path(env.gamename)
@@ -89,7 +89,7 @@ class ChangeStateAtRestart(gym.Wrapper):
             state += '.state'
         with gzip.open(os.path.join(game_path, state), 'rb') as fh:
             env.initial_state = fh.read()
-        return super()._reset(**kwargs)
+        return self.env.reset(**kwargs)
 
 
 sonic_1_train_levels = [

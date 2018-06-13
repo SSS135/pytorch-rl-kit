@@ -133,7 +133,7 @@ class PPO_GE(PPO):
 
         returns = calc_returns(rewards.view(-1, self.num_actors),
                                torch.zeros(self.horizon + 1, self.num_actors),
-                               data.dones.view(-1, self.num_actors), 0.9)
+                               data.dones.view(-1, self.num_actors), 0.95)
         returns = returns.view(-1)
         returns = (returns - returns.mean()) / (returns.std() + 1e-3)
 

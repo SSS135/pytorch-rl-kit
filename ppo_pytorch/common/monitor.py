@@ -14,12 +14,12 @@ class Monitor(gym.Wrapper):
         self.episode_reward = 0
         self.episode_len = 0
 
-    def _reset(self, **kwargs):
+    def reset(self, **kwargs):
         self.episode_reward = 0
         self.episode_len = 0
         return self.env.reset(**kwargs)
 
-    def _step(self, action):
+    def step(self, action):
         state, reward, done, info = self.env.step(action)
 
         self.episode_reward += reward
@@ -32,5 +32,5 @@ class Monitor(gym.Wrapper):
 
         return state, reward, done, info
 
-    def _ensure_no_double_wrap(self):
+    def _warn_double_wrap(self):
         pass

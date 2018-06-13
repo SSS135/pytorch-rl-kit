@@ -404,9 +404,9 @@ class PPO(RLBase):
         else:
             loss_kl = kl.new(1).zero_()
 
-        assert loss_clip.shape == loss_value.shape and \
-               loss_value.shape == loss_kl.shape and \
-               loss_kl.shape == loss_ent.shape
+        assert loss_clip.shape == loss_value.shape
+        assert loss_value.shape == loss_ent.shape
+        assert loss_ent.shape == loss_kl.shape or 'kl' not in self.constraint
         # sum all losses
         total_loss = loss_clip + loss_value + loss_kl + loss_ent
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \

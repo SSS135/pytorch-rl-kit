@@ -52,32 +52,17 @@ class NamedVecEnv:
         raise NotImplementedError
 
 
-class FrameStackAtariEnvFactory(NamedVecEnv):
-    def __init__(self, env_name, num_envs, episode_life=True, scale=True, clip_rewards=True, frame_stack=True):
+class AtariVecEnv(NamedVecEnv):
+    def __init__(self, env_name, episode_life=True, scale=True, clip_rewards=True, frame_stack=True, grayscale=True):
         self.scale = scale
         self.clip_rewards = clip_rewards
         self.episode_life = episode_life
         self.frame_stack = frame_stack
+        self.grayscale = grayscale
         super().__init__(env_name)
 
     def get_env_fn(self):
-        def make(env_name, episode_life, scale, clip_rewards, frame_stack):
-            env = make_atari(env_name)
-            env = Monitor(env)
-            env = wrap_deepmind(env, episode_life, clip_rewards, frame_stack, scale)
-            return env
-        return partial(make, self.env_name, self.episode_life, self.scale, self.clip_rewards, self.frame_stack)
-
-
-class SingleFrameAtariVecEnv(NamedVecEnv):
-    def __init__(self, env_name, episode_life=True, scale=True, clip_rewards=True):
-        self.scale = scale
-        self.clip_rewards = clip_rewards
-        self.episode_life = episode_life
-        super().__init__(env_name)
-
-    def get_env_fn(self):
-        def make(env_name, episode_life, scale, clip_rewards):
+        def make(env_name, episode_life, scale, clip_rewards, frame_stack, grayscale):
             env = gym.make(env_name)
             assert 'NoFrameskip' in env.spec.id
             env = NoopResetEnv(env, noop_max=30)
@@ -87,13 +72,16 @@ class SingleFrameAtariVecEnv(NamedVecEnv):
                 env = EpisodicLifeEnv(env)
             if 'FIRE' in env.unwrapped.get_action_meanings():
                 env = FireResetEnv(env)
+            env = SimplifyFrame(env, 84, grayscale)
             env = ChannelTranspose(env)
             if scale:
                 env = ScaledFloatFrame(env)
             if clip_rewards:
                 env = ClipRewardEnv(env)
+            if frame_stack:
+                env = FrameStack(env, 4)
             return env
-        return partial(make, self.env_name, self.episode_life, self.scale, self.clip_rewards)
+        return partial(make, self.env_name, self.episode_life, self.scale, self.clip_rewards, self.frame_stack, self.grayscale)
 
 
 class SonicVecEnv(NamedVecEnv):
@@ -197,7 +185,7 @@ class ChannelTranspose(gym.ObservationWrapper):
         obs = env.observation_space.shape
         self.observation_space = spaces.Box(low=0, high=255, shape=(obs[2], obs[0], obs[1]))
 
-    def _observation(self, frame):
+    def observation(self, frame):
         return frame.transpose(2, 0, 1)
 
 
@@ -211,7 +199,7 @@ class SimplifyFrame(gym.ObservationWrapper):
         out_ob = size, size, (1 if grayscale else 3)
         self.observation_space = spaces.Box(low=0, high=255, shape=out_ob)
 
-    def _observation(self, frame):
+    def observation(self, frame):
         if self.grayscale:
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         # if self.downscale != 1:

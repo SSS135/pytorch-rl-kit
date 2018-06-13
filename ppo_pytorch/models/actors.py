@@ -123,7 +123,7 @@ class Actor(nn.Module):
         with torch.no_grad():
             img = x[0].unsqueeze(1).clone()
             img = make_conv_heatmap(img)
-            img = make_grid(img, nrow=round(math.sqrt(conv.out_channels)), normalize=False, fill_value=0.1)
+            img = make_grid(img, nrow=round(math.sqrt(x.shape[1])), normalize=False, fill_value=0.1)
             self.logger.add_image('conv activations {} img'.format(index), img, self._step)
             self.logger.add_histogram('conv activations {} hist'.format(index), x[0], self._step)
 
@@ -244,15 +244,17 @@ class CNNActor(Actor):
         elif cnn_kind == 'grouped': # custom grouped (6,950,912 parameters)
             nf = 32
             self.convs = nn.ModuleList([
-                self.make_layer(nn.Conv2d(observation_space.shape[0], nf * 2, 4, 2, 1)),
-                self.make_layer(nn.Conv2d(nf * 2, nf * 8, 4, 2, 0, groups=2)),
+                self.make_layer(nn.Conv2d(observation_space.shape[0], nf * 4, 4, 2, 0)),
+                ChannelShuffle(nf * 4),
+                self.make_layer(nn.Conv2d(nf * 4, nf * 8, 4, 2, 0, groups=8)),
                 ChannelShuffle(nf * 8),
-                self.make_layer(nn.Conv2d(nf * 8, nf * 32, 4, 2, 1, groups=8)),
+                self.make_layer(nn.Conv2d(nf * 8, nf * 16, 4, 2, 1, groups=16)),
+                ChannelShuffle(nf * 16),
+                self.make_layer(nn.Conv2d(nf * 16, nf * 32, 4, 2, 1, groups=32)),
                 ChannelShuffle(nf * 32),
-                self.make_layer(nn.Conv2d(nf * 32, nf * 16, 4, 2, 0, groups=4)),
-                nn.Dropout2d(dropout),
+                self.make_layer(nn.Conv2d(nf * 32, nf * 8, 3, 1, 1, groups=8)),
             ])
-            self.linear = self.make_layer(nn.Linear(nf * 16 * 4 * 4, 512))
+            self.linear = self.make_layer(nn.Linear(nf * 8 * 4 * 4, 512))
         elif cnn_kind == 'depthwise':
             nf = 32
             self.convs = nn.ModuleList([

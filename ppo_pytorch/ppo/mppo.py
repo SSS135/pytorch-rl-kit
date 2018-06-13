@@ -24,19 +24,27 @@ from .ppo import PPO, TrainingData
 from collections import namedtuple
 import torch.nn as nn
 import random
+from optfn.spectral_norm import spectral_norm
+from optfn.gadam import GAdam
+from collections import deque
 
 
-class EnvGenerator(nn.Module):
-    def __init__(self, state_size, action_pd, hidden_size=128):
+class GanG(nn.Module):
+    def __init__(self, state_size, action_pd, hidden_size=256):
         super().__init__()
         self.state_size = state_size
         self.action_pd = action_pd
         self.hidden_size = hidden_size
-        self.action_embedding = nn.Linear(action_pd.input_vector_len, hidden_size)
-        self.state_embedding = nn.Linear(state_size, hidden_size)
+        self.action_embedding = spectral_norm(nn.Linear(action_pd.input_vector_len, hidden_size))
+        self.state_embedding = spectral_norm(nn.Linear(state_size, hidden_size))
         self.model = nn.Sequential(
+            nn.BatchNorm1d(hidden_size),
             nn.ReLU(True),
-            nn.Linear(hidden_size, hidden_size),
+            spectral_norm(nn.Linear(hidden_size, hidden_size)),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(True),
+            spectral_norm(nn.Linear(hidden_size, hidden_size)),
+            nn.BatchNorm1d(hidden_size),
             nn.ReLU(True),
             nn.Linear(hidden_size, state_size * 3 + 2),
         )
@@ -51,6 +59,38 @@ class EnvGenerator(nn.Module):
         next_states = forget_gate * cur_states + input_gate * next_states
         rewards, dones = out[..., -2], out[..., -1]
         return next_states, rewards, dones
+
+
+class GanD(nn.Module):
+    def __init__(self, state_size, action_pd, hidden_size=256):
+        super().__init__()
+        self.state_size = state_size
+        self.action_pd = action_pd
+        self.hidden_size = hidden_size
+        self.action_embedding = spectral_norm(nn.Linear(action_pd.input_vector_len, hidden_size))
+        self.cur_state_embedding = spectral_norm(nn.Linear(state_size, hidden_size))
+        self.next_state_embedding = spectral_norm(nn.Linear(state_size, hidden_size))
+        self.reward_done_embedding = spectral_norm(nn.Linear(2, hidden_size))
+        self.model = nn.Sequential(
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(True),
+            spectral_norm(nn.Linear(hidden_size, hidden_size)),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(True),
+            spectral_norm(nn.Linear(hidden_size, hidden_size)),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(True),
+            spectral_norm(nn.Linear(hidden_size, 1)),
+        )
+
+    def forward(self, cur_states, next_states, actions, rewards, dones):
+        action_inputs = self.action_pd.to_inputs(actions)
+        action_emb = self.action_embedding(action_inputs)
+        cur_state_emb = self.cur_state_embedding(cur_states)
+        next_state_emb = self.next_state_embedding(next_states)
+        reward_done_emb = self.reward_done_embedding(torch.stack([rewards, dones], -1))
+        out = self.model(action_emb + cur_state_emb + next_state_emb + reward_done_emb)
+        return out
 
 
 class ReplayBuffer:
@@ -123,25 +163,36 @@ class ReplayBuffer:
 
 class MPPO(PPO):
     def __init__(self, *args,
-                 replay_buffer_size=100_000,
-                 world_optim_factory=partial(optim.Adam, lr=5e-4),
+                 density_buffer_size=16 * 1024,
+                 replay_buffer_size=16 * 1024,
+                 world_disc_optim_factory=partial(GAdam, lr=5e-4, betas=(0.0, 0.9), nesterov=0.75, amsgrad=True),
+                 world_gen_optim_factory=partial(GAdam, lr=1e-4, betas=(0.0, 0.9), nesterov=0.75, amsgrad=True),
+                 world_train_iters=8,
+                 world_batch_size=64,
                  world_train_rollouts=16,
                  world_train_horizon=16,
-                 world_batch_size=64,
                  **kwargs):
         super().__init__(*args, **kwargs)
         assert world_batch_size % world_train_horizon == 0 and \
                (world_train_rollouts * world_train_horizon) % world_batch_size == 0
+
+        assert replay_buffer_size >= world_train_iters * world_batch_size
+        self.density_buffer_size = density_buffer_size
         self.replay_buffer_size = replay_buffer_size
-        self.world_optim_factory = world_optim_factory
+        self.world_disc_optim_factory = world_disc_optim_factory
+        self.world_gen_optim_factory = world_gen_optim_factory
+        self.world_train_iters = world_train_iters
+        self.world_batch_size = world_batch_size
         self.world_train_rollouts = world_train_rollouts
         self.world_train_horizon = world_train_horizon
-        self.world_train_iters = world_train_iters
 
+        self.world_gen = GanG(self.model.hidden_code_size, self.model.pd)
+        self.world_disc = GanD(self.model.hidden_code_size, self.model.pd)
+        self.world_gen_optim = world_gen_optim_factory(self.world_gen.parameters())
+        self.world_disc_optim = world_disc_optim_factory(self.world_disc.parameters())
+        self.density_buffer = deque(maxlen=density_buffer_size)
         self.replay_buffer = ReplayBuffer(replay_buffer_size)
-        self.world_model = EnvGenerator(self.model.hidden_code_size, self.model.pd)
-        self.world_optim = world_optim_factory(self.world_model.parameters())
-        self.prev_actions = None
+        self.initial_world_training_done = False
 
     def _train(self):
         self._update_replay_buffer()
@@ -154,6 +205,11 @@ class MPPO(PPO):
                                 self.sample.rewards, self.sample.dones)
 
     def _train_world(self):
+        # move model to cuda or cpu
+        self.world_gen = self.world_gen.to(self.device_train).train()
+        self.world_disc = self.world_disc.to(self.device_train).train()
+        self.model = self.model.to(self.device_train).train()
+
         # H x B x *
         states, actions, rewards, dones = self.replay_buffer.sample(
             self.world_train_rollouts * self.world_train_iters, self.world_train_horizon)

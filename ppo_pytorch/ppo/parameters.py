@@ -115,7 +115,7 @@ def create_sega_kwargs(**kwargs):
         ppo_iters=4,
         policy_clip=0.2,
         grad_clip_norm=2,
-        value_loss_scale=0.25,
+        value_loss_scale=0.5,
         optimizer_factory=partial(optim.Adam, lr=5e-5),
         value_clip=0.1,
         reward_scale=0.0025,

@@ -22,6 +22,8 @@ from ..models import QRNNActorCritic
 from ..models.heads import HeadOutput
 from .ppo import PPO, TrainingData
 from collections import namedtuple
+from optfn.virtual_adversarial_training import get_vat_loss
+from ..models.utils import image_to_float
 
 
 RNNData = namedtuple('RNNData', 'memory, dones')
@@ -116,6 +118,9 @@ class PPO_QRNN(PPO):
                 # (steps, actors)
                 done = done.contiguous().view(done.shape[:2])
 
+                st, mem, done = (x.contiguous() for x in (st, mem, done))
+                st = image_to_float(st)
+
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
 
@@ -127,6 +132,11 @@ class PPO_QRNN(PPO):
                     state_values = actor_out.state_values.transpose(0, 1).contiguous().view(-1)
                     # get loss
                     loss, kl = self._get_ppo_loss(probs, po, state_values, vo, ac, adv, ret)
+                    # loss_vat = get_vat_loss(
+                    #     lambda x: self.model(x.view_as(st), mem, done)[0].probs.view_as(probs),
+                    #     st.view(-1, *st.shape[2:]),
+                    #     actor_out.probs.view_as(probs),
+                    #     custom_kl=lambda o, n: self.model.pd.kl(o, n).mean())
                     loss = loss.mean()
 
                 # optimize
