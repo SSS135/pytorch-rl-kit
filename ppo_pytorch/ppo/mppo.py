@@ -58,7 +58,7 @@ class GanG(nn.Module):
         forget_gate, input_gate = forget_gate.sigmoid(), input_gate.sigmoid()
         next_states = forget_gate * cur_states + input_gate * next_states
         rewards, dones = out[..., -2], out[..., -1]
-        return next_states, rewards, dones
+        return next_states, rewards, dones.sigmoid()
 
 
 class GanD(nn.Module):
@@ -119,7 +119,7 @@ class ReplayBuffer:
             self.states = np.zeros((self.capacity, actors, *states.shape[2:]), dtype=states.dtype)
             self.actions = np.zeros((self.capacity, actors, *actions.shape[2:]), dtype=actions.dtype)
             self.rewards = np.zeros((self.capacity, actors), dtype=np.float32)
-            self.dones = np.zeros((self.capacity, actors), dtype=np.bool)
+            self.dones = np.zeros((self.capacity, actors), dtype=np.uint8)
 
         if self.index + states.shape[0] <= self.capacity:
             self._push_unchecked(states, actions, rewards, dones)
@@ -165,24 +165,23 @@ class MPPO(PPO):
     def __init__(self, *args,
                  density_buffer_size=16 * 1024,
                  replay_buffer_size=16 * 1024,
-                 world_disc_optim_factory=partial(GAdam, lr=5e-4, betas=(0.0, 0.9), nesterov=0.75, amsgrad=True),
-                 world_gen_optim_factory=partial(GAdam, lr=1e-4, betas=(0.0, 0.9), nesterov=0.75, amsgrad=True),
+                 world_disc_optim_factory=partial(GAdam, lr=5e-4, betas=(0.0, 0.9), nesterov=0.5, amsgrad=True),
+                 world_gen_optim_factory=partial(GAdam, lr=1e-4, betas=(0.0, 0.9), nesterov=0.5, amsgrad=True),
                  world_train_iters=8,
-                 world_batch_size=64,
                  world_train_rollouts=16,
                  world_train_horizon=16,
                  **kwargs):
         super().__init__(*args, **kwargs)
-        assert world_batch_size % world_train_horizon == 0 and \
-               (world_train_rollouts * world_train_horizon) % world_batch_size == 0
+        # assert world_batch_size % world_train_horizon == 0 and \
+        #        (world_train_rollouts * world_train_horizon) % world_batch_size == 0
+        assert replay_buffer_size >= world_train_iters * world_train_rollouts * world_train_horizon
 
-        assert replay_buffer_size >= world_train_iters * world_batch_size
         self.density_buffer_size = density_buffer_size
         self.replay_buffer_size = replay_buffer_size
         self.world_disc_optim_factory = world_disc_optim_factory
         self.world_gen_optim_factory = world_gen_optim_factory
         self.world_train_iters = world_train_iters
-        self.world_batch_size = world_batch_size
+        # self.world_batch_size = world_batch_size
         self.world_train_rollouts = world_train_rollouts
         self.world_train_horizon = world_train_horizon
 
@@ -194,15 +193,20 @@ class MPPO(PPO):
         self.replay_buffer = ReplayBuffer(replay_buffer_size)
         self.initial_world_training_done = False
 
-    def _train(self):
-        self._update_replay_buffer()
-        self._train_world()
-        return super()._train()
+    def _ppo_update(self, data):
+        self._update_replay_buffer(data)
+        if len(self.replay_buffer) > self.world_train_iters * self.world_train_rollouts * self.world_train_horizon:
+            self._train_world()
+        return super()._ppo_update(data)
 
-    def _update_replay_buffer(self):
+    def _update_replay_buffer(self, data):
         # H x B x *
-        self.replay_buffer.push(self.sample.states[:-1], self.sample.actions[:-1],
-                                self.sample.rewards, self.sample.dones)
+        self.replay_buffer.push(
+            data.states.view(-1, self.num_actors, *data.states.shape[1:]),
+            data.actions.view(-1, self.num_actors, *data.actions.shape[1:]),
+            data.rewards.view(-1, self.num_actors, *data.rewards.shape[1:]),
+            data.dones.view(-1, self.num_actors, *data.dones.shape[1:])
+        )
 
     def _train_world(self):
         # move model to cuda or cpu
@@ -210,12 +214,96 @@ class MPPO(PPO):
         self.world_disc = self.world_disc.to(self.device_train).train()
         self.model = self.model.to(self.device_train).train()
 
-        # H x B x *
-        states, actions, rewards, dones = self.replay_buffer.sample(
+        # (H, B, ...)
+        all_states, all_actions, all_rewards, all_dones = self.replay_buffer.sample(
             self.world_train_rollouts * self.world_train_iters, self.world_train_horizon)
 
-        states = torch.tensor(states, dtype=torch.float)
-        actions = torch.tensor(actions, dtype=torch.float)
-        rewards = torch.tensor(rewards, dtype=torch.float)
-        dones = torch.tensor(dones, dtype=torch.float)
+        data = [torch.from_numpy(x) for x in (all_states, all_actions, all_rewards, all_dones.astype(np.float32))]
+        if self.device_train.type == 'cuda':
+            data = [x.pin_memory() for x in data]
 
+        for train_iter in range(self.world_train_iters):
+            slc = (slice(None), slice(train_iter * self.world_train_rollouts, (train_iter + 1) * self.world_train_rollouts))
+            # (H, B, ...)
+            states, actions, rewards, dones = [x[slc].to(self.device_train) for x in data]
+
+            # disc real
+            hidden_codes = self.model(states.view(-1, *states.shape[2:]), only_hidden_code_output=True).hidden_code
+            hidden_codes = hidden_codes.view(*states.shape[:2], *hidden_codes.shape[1:])
+            with torch.enable_grad():
+                disc_real = self.world_disc(
+                    hidden_codes[:-1].view(-1, *hidden_codes.shape[2:]),
+                    hidden_codes[1:].view(-1, *hidden_codes.shape[2:]),
+                    actions[:-1].view(-1, *actions.shape[2:]),
+                    rewards[:-1].view(-1, *rewards.shape[2:]),
+                    dones[:-1].view(-1, *dones.shape[2:]).clamp(0.1, 0.9)
+                )
+                # disc_real = [
+                #     self.world_disc(hidden_codes[i], hidden_codes[i + 1],
+                #                     actions[i], rewards[i], dones[i].clamp(0.1, 0.9))
+                #     for i in range(self.world_train_horizon - 1)
+                # ]
+                # # (H * B)
+                # disc_real = torch.cat(disc_real, dim=0)
+                real_loss = -disc_real.clamp(max=1).mean()
+            real_loss.backward()
+            self.world_disc_optim.step()
+            self.world_disc_optim.zero_grad()
+            self.world_gen_optim.zero_grad()
+
+            # disc fake
+            disc_fake = []
+            all_gen_hidden_codes = []
+            all_gen_actions = []
+            all_gen_rewards = []
+            all_gen_dones = []
+            for i in range(self.world_train_horizon):
+                ac_out = self.model(all_gen_hidden_codes[-1] if i != 0 else states[0], hidden_code_input=i != 0)
+                if i == 0:
+                    all_gen_hidden_codes.append(ac_out.hidden_code)
+                cur_code = all_gen_hidden_codes[-1]
+                cur_actions = self.model.pd.sample(ac_out.probs)
+                with torch.enable_grad():
+                    gen_next_code, gen_rewards, gen_dones = self.world_gen(cur_code, actions)
+                    d = self.world_disc(cur_code.detach(), gen_next_code.detach(),
+                                        cur_actions, gen_rewards.detach(), gen_dones.detach())
+                all_gen_hidden_codes.append(gen_next_code)
+                all_gen_actions.append(cur_actions)
+                all_gen_rewards.append(gen_rewards)
+                all_gen_dones.append(gen_dones)
+                disc_fake.append(d)
+            with torch.enable_grad():
+                disc_fake = torch.cat(disc_fake)
+                fake_loss = disc_fake.clamp(min=-1).mean()
+            fake_loss.backward()
+            self.world_disc_optim.step()
+            self.world_disc_optim.zero_grad()
+            self.world_gen_optim.zero_grad()
+
+            # gen
+            with torch.enable_grad():
+                all_gen_hidden_codes = torch.stack(all_gen_hidden_codes, 0)
+                all_gen_actions = torch.stack(all_gen_actions, 0)
+                all_gen_rewards = torch.stack(all_gen_rewards, 0)
+                all_gen_dones = torch.stack(all_gen_dones, 0)
+
+                disc_gen = self.world_disc(
+                    all_gen_hidden_codes[:-1].view(-1, *hidden_codes.shape[2:]),
+                    all_gen_hidden_codes[1:].view(-1, *hidden_codes.shape[2:]),
+                    all_gen_actions.view(-1, *actions.shape[2:]),
+                    all_gen_rewards.view(-1, *rewards.shape[2:]),
+                    all_gen_dones.view(-1, *dones.shape[2:])
+                )
+
+                # disc_gen = [
+                #     self.world_disc(all_gen_hidden_codes[i], all_gen_hidden_codes[i + 1],
+                #                     all_gen_actions[i], all_gen_rewards[i], all_gen_dones[i])
+                #     for i in range(self.world_train_horizon)
+                # ]
+                # # (H * B)
+                # disc_gen = torch.cat(disc_gen, dim=0)
+                gen_loss = -disc_gen.mean()
+            gen_loss.backward()
+            self.world_gen_optim.step()
+            self.world_disc_optim.zero_grad()
+            self.world_gen_optim.zero_grad()

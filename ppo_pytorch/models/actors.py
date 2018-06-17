@@ -19,6 +19,8 @@ from optfn.learned_norm import LearnedNorm2d
 from torch.nn.utils import weight_norm
 from optfn.spectral_norm import spectral_norm
 from optfn.weight_rescale import weight_rescale
+from optfn.multihead_attention_2d import MultiheadAttention2d
+from .heads import HeadOutput
 
 
 class GroupTranspose(nn.Module):
@@ -119,7 +121,7 @@ class Actor(nn.Module):
         seq = nn.Sequential(*seq)
         return seq
 
-    def log_conv_activations(self, index: int, conv: nn.Conv2d, x: Variable):
+    def log_conv_activations(self, index: int, x: Variable):
         with torch.no_grad():
             img = x[0].unsqueeze(1).clone()
             img = make_conv_heatmap(img)
@@ -179,7 +181,7 @@ class FCActor(Actor):
 
         obs_len = int(np.product(observation_space.shape))
 
-        self.hidden_code_size = hidden_sizes[0]
+        self.hidden_code_size = obs_len # hidden_sizes[0]
         self.linear = self.create_fc(obs_len, None, hidden_sizes, activation, self.norm)
         self.head = head_factory(hidden_sizes[-1], self.pd)
         self.reset_weights()
@@ -188,15 +190,17 @@ class FCActor(Actor):
         super().reset_weights()
         self.head.reset_weights()
 
-    def forward(self, input, hidden_code_only=False):
+    def forward(self, input, hidden_code_input=False, only_hidden_code_output=False):
+        if only_hidden_code_output:
+            return HeadOutput(hidden_code=input)
         x = input
-        if not hidden_code_only:
-            for i, layer in enumerate(self.linear):
-                x = layer(x)
-                if self.do_log:
-                    self.logger.add_histogram(f'layer {i} output', x, self._step)
+        # if not hidden_code_input:
+        for i, layer in enumerate(self.linear):
+            x = layer(x)
+            if self.do_log:
+                self.logger.add_histogram(f'layer {i} output', x, self._step)
         head = self.head(x)
-        head.hidden_code = self.linear[0][1](self.linear[0][0](input))
+        head.hidden_code = input # self.linear[0][1](self.linear[0][0](input))
         return head
 
 
@@ -319,8 +323,8 @@ class CNNActor(Actor):
             else:
                 x = layer(x)
             # log
-            if self.do_log and isinstance(layer, nn.Sequential) and isinstance(layer[0], nn.Conv2d):
-                self.log_conv_activations(i, layer[0], x)
+            if self.do_log:
+                self.log_conv_activations(i, x)
                 # self.log_conv_filters(i, layer[0])
         return x
 
