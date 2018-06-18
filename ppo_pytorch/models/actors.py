@@ -197,23 +197,22 @@ class FCActor(Actor):
         #     return HeadOutput(hidden_code=hidden_code)
 
         x = input
-        if hidden_code_input:
-            hidden_code = x
-            x = self.linear[-1][-1](x)
-        else:
-            hidden_code = None
-            for i, layer in enumerate(self.linear):
-                # x = layer(x) if self.input_as_hidden_code or i != 0 else layer[-1](x)
-                if i + 1 == len(self.linear):
-                    hidden_code = layer[:-1](x)
-                    x = layer[-1](hidden_code)
-                else:
-                    x = layer(x)
-                if self.do_log:
-                    self.logger.add_histogram(f'layer {i} output', x, self._step)
-
-        if only_hidden_code_output:
-            return HeadOutput(hidden_code=hidden_code)
+        # if hidden_code_input:
+        #     hidden_code = x
+        #     x = self.linear[-1][-1](x)
+        # else:
+        hidden_code = None
+        for i, layer in enumerate(self.linear):
+            # x = layer(x) if self.input_as_hidden_code or i != 0 else layer[-1](x)
+            if i == 0: # i + 1 == len(self.linear):
+                hidden_code = x if hidden_code_input else layer[:-1](x)
+                if only_hidden_code_output:
+                    return HeadOutput(hidden_code=hidden_code)
+                x = layer[-1](hidden_code)
+            else:
+                x = layer(x)
+            if self.do_log:
+                self.logger.add_histogram(f'layer {i} output', x, self._step)
 
         head = self.head(x)
         head.hidden_code = input if self.input_as_hidden_code else hidden_code
