@@ -19,7 +19,7 @@ from optfn.learned_norm import LearnedNorm2d
 from torch.nn.utils import weight_norm
 from optfn.spectral_norm import spectral_norm
 from optfn.weight_rescale import weight_rescale
-from optfn.multihead_attention_2d import MultiheadAttention2d
+from optfn.multihead_attention import MultiheadAttention2d
 from .heads import HeadOutput
 
 
@@ -166,7 +166,7 @@ class FCActor(Actor):
     """
 
     def __init__(self, observation_space: gym.Space, action_space: gym.Space, head_factory: Callable,
-                 hidden_sizes=(128, 128), activation=nn.ELU, **kwargs):
+                 hidden_sizes=(128, 128), activation=nn.ELU, input_as_hidden_code=False, **kwargs):
         """
         Args:
             observation_space: Env's observation space
@@ -178,10 +178,11 @@ class FCActor(Actor):
         super().__init__(observation_space, action_space, **kwargs)
         self.hidden_sizes = hidden_sizes
         self.activation = activation
+        self.input_as_hidden_code = input_as_hidden_code
 
         obs_len = int(np.product(observation_space.shape))
 
-        self.hidden_code_size = obs_len # hidden_sizes[0]
+        self.hidden_code_size = obs_len if input_as_hidden_code else hidden_sizes[-1]
         self.linear = self.create_fc(obs_len, None, hidden_sizes, activation, self.norm)
         self.head = head_factory(hidden_sizes[-1], self.pd)
         self.reset_weights()
@@ -191,16 +192,31 @@ class FCActor(Actor):
         self.head.reset_weights()
 
     def forward(self, input, hidden_code_input=False, only_hidden_code_output=False):
-        if only_hidden_code_output:
-            return HeadOutput(hidden_code=input)
+        # hidden_code = input if self.input_as_hidden_code or hidden_code_input else self.linear[0][:-1](input)
+        # if only_hidden_code_output:
+        #     return HeadOutput(hidden_code=hidden_code)
+
         x = input
-        # if not hidden_code_input:
-        for i, layer in enumerate(self.linear):
-            x = layer(x)
-            if self.do_log:
-                self.logger.add_histogram(f'layer {i} output', x, self._step)
+        if hidden_code_input:
+            hidden_code = x
+            x = self.linear[-1][-1](x)
+        else:
+            hidden_code = None
+            for i, layer in enumerate(self.linear):
+                # x = layer(x) if self.input_as_hidden_code or i != 0 else layer[-1](x)
+                if i + 1 == len(self.linear):
+                    hidden_code = layer[:-1](x)
+                    x = layer[-1](hidden_code)
+                else:
+                    x = layer(x)
+                if self.do_log:
+                    self.logger.add_histogram(f'layer {i} output', x, self._step)
+
+        if only_hidden_code_output:
+            return HeadOutput(hidden_code=hidden_code)
+
         head = self.head(x)
-        head.hidden_code = input # self.linear[0][1](self.linear[0][0](input))
+        head.hidden_code = input if self.input_as_hidden_code else hidden_code
         return head
 
 

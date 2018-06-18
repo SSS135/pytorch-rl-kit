@@ -270,9 +270,12 @@ class DiagGaussianPd(ProbabilityDistribution):
     def entropy(self, prob):
         mean = prob[..., :self.d]
         logstd = prob[..., self.d:]
-        ent = logstd#.sign() * logstd.abs().add(1e-6).sqrt() #- mean ** 2 #+ .5 * math.log(2.0 * math.pi * math.e)
-        # ent[ent > 0] = 0
-        return ent.mean(-1)
+        logvar = logstd * 2
+        kld = logvar - mean.pow(2) - logvar.exp()
+        return kld.mean(-1)
+        # ent = logstd#.sign() * logstd.abs().add(1e-6).sqrt() #- mean ** 2 #+ .5 * math.log(2.0 * math.pi * math.e)
+        # # ent[ent > 0] = 0
+        # return ent.mean(-1)
 
     def sample(self, prob, randn=False):
         mean = prob[..., :self.d]
