@@ -24,12 +24,18 @@ from .ppo import PPO, TrainingData
 from collections import namedtuple
 import torch.nn as nn
 import random
-from optfn.spectral_norm import spectral_init
+from optfn.spectral_norm import spectral_norm
 from optfn.gadam import GAdam
 from collections import deque
 from ..models.utils import weights_init
 from optfn.grad_running_norm import GradRunningNorm
-from optfn.conditional_group_norm import ConditionalGroupNorm
+
+
+def spectral_init(module, gain=1):
+    nn.init.kaiming_uniform_(module.weight, gain)
+    if module.bias is not None:
+        module.bias.data.zero_()
+    return spectral_norm(module)
 
 
 class GanG(nn.Module):
@@ -38,18 +44,13 @@ class GanG(nn.Module):
         self.state_size = state_size
         self.action_pd = action_pd
         self.hidden_size = hidden_size
-        self.condition = None
-        condition_size = hidden_size // 4
-        self.action_embedding = nn.Sequential(
-            spectral_init(nn.Linear(action_pd.input_vector_len, condition_size)),
-            nn.RReLU(-0.3, 0.3, True),
-        )
+        self.action_embedding = spectral_init(nn.Linear(action_pd.input_vector_len, hidden_size, bias=False))
         self.state_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
         self.model = nn.Sequential(
-            ConditionalGroupNorm(4, hidden_size, condition_size, lambda: self.condition),
+            nn.GroupNorm(4, hidden_size),
             nn.RReLU(-0.3, 0.3, True),
             spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
-            ConditionalGroupNorm(4, hidden_size, condition_size, lambda: self.condition),
+            nn.GroupNorm(4, hidden_size),
             nn.RReLU(-0.3, 0.3, True),
             # spectral_norm(nn.Linear(hidden_size, hidden_size)),
             # nn.GroupNorm(4, hidden_size),
@@ -58,11 +59,10 @@ class GanG(nn.Module):
         )
 
     def forward(self, cur_states, actions):
-        state_emb = self.state_embedding(cur_states)
         action_inputs = self.action_pd.to_inputs(actions)
-        self.condition = self.action_embedding(action_inputs)
-        out = self.model(state_emb)
-        self.condition = None
+        action_emb = self.action_embedding(action_inputs)
+        state_emb = self.state_embedding(cur_states)
+        out = self.model(action_emb + state_emb)
         next_states, forget_gate, input_gate, rewards, dones = \
             out.split([self.state_size, self.state_size, self.state_size, 1, 1], dim=-1)
         # next_states = (next_states - next_states.mean(-1, keepdim=True)) / next_states.std(-1, keepdim=True)
@@ -81,17 +81,12 @@ class GanD(nn.Module):
         self.state_size = state_size
         self.action_pd = action_pd
         self.hidden_size = hidden_size
-        self.condition = None
-        condition_size = hidden_size // 4
-        self.action_reward_done_embedding = nn.Sequential(
-            spectral_init(nn.Linear(action_pd.input_vector_len + 2, condition_size)),
-            nn.RReLU(-0.3, 0.3, True),
-        )
-        # self.cur_state_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
-        # self.next_state_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
+        self.action_embedding = spectral_init(nn.Linear(action_pd.input_vector_len, hidden_size, bias=False))
+        self.cur_state_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
+        self.next_state_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
+        self.reward_done_embedding = spectral_init(nn.Linear(2, hidden_size, bias=False))
         self.model_start = nn.Sequential(
-            spectral_init(nn.Linear(state_size * 2, hidden_size, bias=False)),
-            ConditionalGroupNorm(4, hidden_size, condition_size, lambda: self.condition),
+            nn.GroupNorm(4, hidden_size),
             nn.RReLU(-0.3, 0.3, True),
             spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
             # spectral_norm(nn.Linear(hidden_size * 2, hidden_size)),
@@ -99,23 +94,21 @@ class GanD(nn.Module):
             # nn.ReLU(inplace=True),
         )
         self.model_end = nn.Sequential(
-            ConditionalGroupNorm(4, hidden_size, condition_size, lambda: self.condition),
+            nn.GroupNorm(4, hidden_size),
             nn.RReLU(-0.3, 0.3, True),
             spectral_init(nn.Linear(hidden_size, 1)),
         )
 
     def forward(self, cur_states, next_states, actions, rewards, dones):
         action_inputs = self.action_pd.to_inputs(actions)
-        # cur_state_emb = self.cur_state_embedding(cur_states)
-        # next_state_emb = self.next_state_embedding(next_states)
+        action_emb = self.action_embedding(action_inputs)
+        cur_state_emb = self.cur_state_embedding(cur_states)
+        next_state_emb = self.next_state_embedding(next_states)
         # print(next_state_emb[dones > 0].shape)
-        next_states[(dones > 0.5).detach()] = cur_states[(dones > 0.5).detach()]
-        # reward_done_emb = self.reward_done_embedding(torch.stack([rewards, dones], -1))
-        self.condition = self.action_reward_done_embedding(
-            torch.cat([rewards.unsqueeze(-1), dones.unsqueeze(-1), action_inputs], -1))
-        features = self.model_start(torch.cat([cur_states, next_states], -1))
+        next_state_emb[(dones > 0.5).detach()] = 0 # *= 1 - (dones.unsqueeze(-1) > 0.5).float().detach()
+        reward_done_emb = self.reward_done_embedding(torch.stack([rewards, dones], -1))
+        features = self.model_start(action_emb + cur_state_emb + next_state_emb + reward_done_emb)
         out = self.model_end(features).squeeze(-1)
-        self.condition = None
         return out, features
 
 
@@ -191,11 +184,11 @@ class MPPO(PPO):
     def __init__(self, *args,
                  density_buffer_size=16 * 1024,
                  replay_buffer_size=64 * 1024,
-                 world_disc_optim_factory=partial(GAdam, lr=4e-4, betas=(0.5, 0.99)),
-                 world_gen_optim_factory=partial(GAdam, lr=1e-4, betas=(0.5, 0.99)),
+                 world_disc_optim_factory=partial(GAdam, lr=4e-4, betas=(0.5, 0.99), weight_decay=1e-3),
+                 world_gen_optim_factory=partial(GAdam, lr=1e-4, betas=(0.5, 0.99), weight_decay=1e-3),
                  world_train_iters=8,
                  world_train_rollouts=128,
-                 world_train_horizon=1,
+                 world_train_horizon=4,
                  **kwargs):
         super().__init__(*args, **kwargs)
         # assert world_batch_size % world_train_horizon == 0 and \
@@ -230,8 +223,8 @@ class MPPO(PPO):
             if self.initial_world_training_done:
                 self._train_world()
             else:
-                for _ in range(50):
-                    self._train_world()
+                # for _ in range(50):
+                #     self._train_world()
                 self.initial_world_training_done = True
                 # for _ in range(10):
                 #     self._train_world()
@@ -307,9 +300,9 @@ class MPPO(PPO):
                 # # (H * B)
                 # disc_real = torch.cat(disc_real, dim=0)
                 # mask = self.get_done_mask(dones[:-1]).view(-1)
-                # real_loss = -disc_real.clamp(max=1).mean()
+                real_loss = -disc_real.clamp(max=1).mean()
                 # disc_real = (disc_real - disc_real.mean()) / disc_real.var().add(1e-8).sqrt()
-                real_loss = (1 - disc_real.clamp(max=1)).pow(2).mean()
+                # real_loss = (1 - disc_real.clamp(max=1)).pow(2).mean()
             real_loss.backward()
             self.world_disc_optim.step()
             self.world_disc_optim.zero_grad()
@@ -346,9 +339,9 @@ class MPPO(PPO):
                 disc_fake = torch.stack(disc_fake, 0)
 
                 # mask = self.get_done_mask(all_gen_dones).view(-1)
-                # fake_loss = disc_fake.clamp(min=-1).mean()
+                fake_loss = disc_fake.clamp(min=-1).mean()
                 # disc_fake = (disc_fake - disc_fake.mean()) / disc_fake.var().add(1e-8).sqrt()
-                fake_loss = (-1 - disc_fake.clamp(min=-1)).pow(2).mean()
+                # fake_loss = (-1 - disc_fake.clamp(min=-1)).pow(2).mean()
             fake_loss.backward()
             self.world_disc_optim.step()
             self.world_disc_optim.zero_grad()
