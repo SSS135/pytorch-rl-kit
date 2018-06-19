@@ -165,13 +165,10 @@ class CategoricalPd(ProbabilityDistribution):
         return softmax(prob).multinomial(1)
 
     def to_inputs(self, action):
-        acvar = isinstance(action, Variable)
-        onehot = torch.zeros((action.size(0), self.n))
-        if action.is_cuda:
-            onehot = onehot.cuda()
-        onehot.scatter_(1, (action.data if acvar else action).view(action.size(0), -1), 1)
-        if acvar:
-            onehot = Variable(onehot)
+        with torch.no_grad():
+            onehot = torch.zeros((*action.shape[:-1], self.n), device=action.device)
+            onehot.scatter_(1, action, -1)
+            onehot = onehot - 1 / self.n
         return onehot
 
 

@@ -24,11 +24,12 @@ from .ppo import PPO, TrainingData
 from collections import namedtuple
 import torch.nn as nn
 import random
-from optfn.spectral_norm import spectral_norm
+from optfn.spectral_norm import spectral_init
 from optfn.gadam import GAdam
 from collections import deque
 from ..models.utils import weights_init
 from optfn.grad_running_norm import GradRunningNorm
+from optfn.conditional_group_norm import ConditionalGroupNorm
 
 
 class GanG(nn.Module):
@@ -37,13 +38,18 @@ class GanG(nn.Module):
         self.state_size = state_size
         self.action_pd = action_pd
         self.hidden_size = hidden_size
-        self.action_embedding = spectral_norm(nn.Linear(action_pd.input_vector_len, hidden_size, bias=False))
-        self.state_embedding = spectral_norm(nn.Linear(state_size, hidden_size, bias=False))
-        self.model = nn.Sequential(
-            nn.GroupNorm(4, hidden_size),
+        self.condition = None
+        condition_size = hidden_size // 4
+        self.action_embedding = nn.Sequential(
+            spectral_init(nn.Linear(action_pd.input_vector_len, condition_size)),
             nn.RReLU(-0.3, 0.3, True),
-            spectral_norm(nn.Linear(hidden_size, hidden_size, bias=False)),
-            nn.GroupNorm(4, hidden_size),
+        )
+        self.state_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
+        self.model = nn.Sequential(
+            ConditionalGroupNorm(4, hidden_size, condition_size, lambda: self.condition),
+            nn.RReLU(-0.3, 0.3, True),
+            spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
+            ConditionalGroupNorm(4, hidden_size, condition_size, lambda: self.condition),
             nn.RReLU(-0.3, 0.3, True),
             # spectral_norm(nn.Linear(hidden_size, hidden_size)),
             # nn.GroupNorm(4, hidden_size),
@@ -52,10 +58,11 @@ class GanG(nn.Module):
         )
 
     def forward(self, cur_states, actions):
-        action_inputs = self.action_pd.to_inputs(actions)
-        action_emb = self.action_embedding(action_inputs)
         state_emb = self.state_embedding(cur_states)
-        out = self.model(action_emb + state_emb)
+        action_inputs = self.action_pd.to_inputs(actions)
+        self.condition = self.action_embedding(action_inputs)
+        out = self.model(state_emb)
+        self.condition = None
         next_states, forget_gate, input_gate, rewards, dones = \
             out.split([self.state_size, self.state_size, self.state_size, 1, 1], dim=-1)
         # next_states = (next_states - next_states.mean(-1, keepdim=True)) / next_states.std(-1, keepdim=True)
@@ -74,34 +81,41 @@ class GanD(nn.Module):
         self.state_size = state_size
         self.action_pd = action_pd
         self.hidden_size = hidden_size
-        self.action_embedding = spectral_norm(nn.Linear(action_pd.input_vector_len, hidden_size, bias=False))
-        self.cur_state_embedding = spectral_norm(nn.Linear(state_size, hidden_size, bias=False))
-        self.next_state_embedding = spectral_norm(nn.Linear(state_size, hidden_size, bias=False))
-        self.reward_done_embedding = spectral_norm(nn.Linear(2, hidden_size, bias=False))
-        self.model_start = nn.Sequential(
-            nn.GroupNorm(4, hidden_size),
+        self.condition = None
+        condition_size = hidden_size // 4
+        self.action_reward_done_embedding = nn.Sequential(
+            spectral_init(nn.Linear(action_pd.input_vector_len + 2, condition_size)),
             nn.RReLU(-0.3, 0.3, True),
-            spectral_norm(nn.Linear(hidden_size, hidden_size, bias=False)),
+        )
+        # self.cur_state_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
+        # self.next_state_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
+        self.model_start = nn.Sequential(
+            spectral_init(nn.Linear(state_size * 2, hidden_size, bias=False)),
+            ConditionalGroupNorm(4, hidden_size, condition_size, lambda: self.condition),
+            nn.RReLU(-0.3, 0.3, True),
+            spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
             # spectral_norm(nn.Linear(hidden_size * 2, hidden_size)),
             # nn.GroupNorm(4, hidden_size),
             # nn.ReLU(inplace=True),
         )
         self.model_end = nn.Sequential(
-            nn.GroupNorm(4, hidden_size),
+            ConditionalGroupNorm(4, hidden_size, condition_size, lambda: self.condition),
             nn.RReLU(-0.3, 0.3, True),
-            spectral_norm(nn.Linear(hidden_size, 1)),
+            spectral_init(nn.Linear(hidden_size, 1)),
         )
 
     def forward(self, cur_states, next_states, actions, rewards, dones):
         action_inputs = self.action_pd.to_inputs(actions)
-        action_emb = self.action_embedding(action_inputs)
-        cur_state_emb = self.cur_state_embedding(cur_states)
-        next_state_emb = self.next_state_embedding(next_states)
+        # cur_state_emb = self.cur_state_embedding(cur_states)
+        # next_state_emb = self.next_state_embedding(next_states)
         # print(next_state_emb[dones > 0].shape)
-        next_state_emb[(dones > 0.5).detach()] = 0 # *= 1 - (dones.unsqueeze(-1) > 0.5).float().detach()
-        reward_done_emb = self.reward_done_embedding(torch.stack([rewards, dones], -1))
-        features = self.model_start(action_emb + cur_state_emb + next_state_emb + reward_done_emb)
+        next_states[(dones > 0.5).detach()] = cur_states[(dones > 0.5).detach()]
+        # reward_done_emb = self.reward_done_embedding(torch.stack([rewards, dones], -1))
+        self.condition = self.action_reward_done_embedding(
+            torch.cat([rewards.unsqueeze(-1), dones.unsqueeze(-1), action_inputs], -1))
+        features = self.model_start(torch.cat([cur_states, next_states], -1))
         out = self.model_end(features).squeeze(-1)
+        self.condition = None
         return out, features
 
 
@@ -177,8 +191,8 @@ class MPPO(PPO):
     def __init__(self, *args,
                  density_buffer_size=16 * 1024,
                  replay_buffer_size=64 * 1024,
-                 world_disc_optim_factory=partial(GAdam, lr=4e-4, betas=(0.5, 0.99), eps=1e-6),
-                 world_gen_optim_factory=partial(GAdam, lr=1e-4, betas=(0.5, 0.99), eps=1e-6),
+                 world_disc_optim_factory=partial(GAdam, lr=4e-4, betas=(0.5, 0.99)),
+                 world_gen_optim_factory=partial(GAdam, lr=1e-4, betas=(0.5, 0.99)),
                  world_train_iters=8,
                  world_train_rollouts=128,
                  world_train_horizon=1,
