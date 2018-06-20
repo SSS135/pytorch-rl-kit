@@ -68,12 +68,13 @@ class GanG(nn.Module):
             out.split([self.state_size, self.state_size, self.state_size, 1, 1], dim=-1)
         # next_states = (next_states - next_states.mean(-1, keepdim=True)) / next_states.std(-1, keepdim=True)
         # next_states = next_states * cur_states.std(-1, keepdim=True) + cur_states.mean(-1, keepdim=True)
-        next_states = forget_gate.sigmoid() * cur_states + input_gate.sigmoid() * next_states
+        next_states = (forget_gate * 0.5 + 0.5) * cur_states + (input_gate * 0.5 + 0.5) * next_states
         # next_states, rewards, dones = out.split([self.state_size, 1, 1], dim=-1)
         # next_states = cur_states + next_states
-        dones = dones.squeeze(-1).sigmoid()
-        next_states[(dones > 0.5).detach()] = cur_states[(dones > 0.5).detach()]
-        return next_states, rewards.squeeze(-1), dones
+        dones, rewards = dones.squeeze(-1), rewards.squeeze(-1)
+        dones_mask = (dones > 0).detach()
+        next_states[dones_mask] = cur_states[dones_mask]
+        return next_states, rewards, dones
 
 
 class GanD(nn.Module):
@@ -106,7 +107,7 @@ class GanD(nn.Module):
         cur_state_emb = self.cur_state_embedding(cur_states)
         next_state_emb = self.next_state_embedding(next_states)
         # print(next_state_emb[dones > 0].shape)
-        next_state_emb[(dones > 0.5).detach()] = 0 # *= 1 - (dones.unsqueeze(-1) > 0.5).float().detach()
+        next_state_emb[(dones > 0).detach()] = 0 # *= 1 - (dones.unsqueeze(-1) > 0.5).float().detach()
         reward_done_emb = self.reward_done_embedding(torch.stack([rewards, dones], -1))
         features = self.model_start(action_emb + cur_state_emb + next_state_emb + reward_done_emb)
         out = self.model_end(features).squeeze(-1)
@@ -250,7 +251,7 @@ class MPPO(PPO):
         all_states, all_actions, all_rewards, all_dones = self.replay_buffer.sample(
             self.world_train_rollouts * self.world_train_iters, self.world_train_horizon + 1)
 
-        all_dones = all_dones.astype(np.float32).clip(0.2, 0.8)
+        all_dones = all_dones.astype(np.float32) * 2 - 1
         # all_dones += 0.02 * np.random.randn(*all_dones.shape)
         # all_rewards += 0.02 * np.random.randn(*all_rewards.shape)
 
@@ -389,7 +390,7 @@ class MPPO(PPO):
             self.logger.add_scalar('gen 1-step done err', rmse(gen_dones, dones[0]), self.frame)
 
     def get_done_mask(self, dones):
-        done_mask = (dones > 0.5).cpu().numpy().copy()
+        done_mask = (dones > 0).cpu().numpy().copy()
         done_max = np.zeros(done_mask.shape[1], dtype=np.uint8)
         for i in range(done_mask.shape[0]):
             new_done_max = np.maximum(done_max, done_mask[i])
