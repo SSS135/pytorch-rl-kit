@@ -74,7 +74,7 @@ class GanG(nn.Module):
         # next_states, state_f_gate, state_i_gate, next_memory, memory_f_gate, rewards, dones = \
         #     out.split(3 * [self.state_size] + 2 * [self.hidden_size] + [1, 1], dim=-1)
         state_f_gate, state_i_gate, memory_f_gate = \
-            [x.sigmoid() for x in (state_f_gate, state_i_gate, memory_f_gate)]
+            [x.add(0.5) for x in (state_f_gate, state_i_gate, memory_f_gate)]
         next_states = state_f_gate * cur_states + state_i_gate * next_states
         next_memory = (1 - memory_f_gate) * memory + memory_f_gate * next_memory
         dones, rewards = dones.squeeze(-1), rewards.squeeze(-1)
@@ -109,8 +109,8 @@ class GanD(nn.Module):
         )
 
     def forward(self, cur_states, next_states, actions, rewards, dones, memory):
-        cur_states = cur_states + 0.03 * torch.randn_like(cur_states)
-        next_states = next_states + 0.03 * torch.randn_like(next_states)
+        cur_states = cur_states + 0.01 * torch.randn_like(cur_states)
+        next_states = next_states + 0.01 * torch.randn_like(next_states)
         rewards = rewards + 0.03 * torch.randn_like(rewards)
         dones = dones + 0.03 * torch.randn_like(dones)
 
@@ -124,6 +124,7 @@ class GanD(nn.Module):
         reward_done_emb = self.reward_done_embedding(torch.stack([rewards, dones], -1))
         features = self.model_start(action_emb + cur_state_emb + next_state_emb + reward_done_emb + memory)
         next_memory, memory_f_gate, disc = self.model_end(features).split(2 * [self.hidden_size] + [1], -1)
+        memory_f_gate = memory_f_gate.add(0.5)
         next_memory = (1 - memory_f_gate) * memory + memory_f_gate * next_memory
         next_memory[dones_mask] = 0
         return disc.squeeze(-1), features, next_memory
@@ -156,7 +157,7 @@ class GanMemoryInit(nn.Module):
             memory = states.new_zeros((states.shape[0], self.hidden_size))
         states_emb = self.states_embedding(states)
         new_memory, memory_f_gate = self.model(memory + states_emb).chunk(2, -1)
-        memory_f_gate = memory_f_gate.sigmoid()
+        memory_f_gate = memory_f_gate.add(0.5)
         return (1 - memory_f_gate) * memory + memory_f_gate * new_memory
 
 
