@@ -29,6 +29,7 @@ from optfn.gadam import GAdam
 from collections import deque
 from ..models.utils import weights_init
 from optfn.grad_running_norm import GradRunningNorm
+from optfn.drrelu import DRReLU
 
 
 def spectral_init(module, gain=1):
@@ -48,10 +49,10 @@ class GanG(nn.Module):
         self.state_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
         self.model = nn.Sequential(
             nn.GroupNorm(4, hidden_size),
-            nn.RReLU(-0.3, 0.3, True),
+            DRReLU(-0.3, 0.3, 0.95, 1.05, True),
             spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
             nn.GroupNorm(4, hidden_size),
-            nn.RReLU(-0.3, 0.3, True),
+            DRReLU(-0.3, 0.3, 0.95, 1.05, True),
             # spectral_norm(nn.Linear(hidden_size, hidden_size)),
             # nn.GroupNorm(4, hidden_size),
             # nn.ReLU(inplace=True),
@@ -87,7 +88,7 @@ class GanD(nn.Module):
         self.reward_done_embedding = spectral_init(nn.Linear(2, hidden_size, bias=False))
         self.model_start = nn.Sequential(
             nn.GroupNorm(4, hidden_size),
-            nn.RReLU(-0.3, 0.3, True),
+            DRReLU(-0.3, 0.3, 0.95, 1.05, True),
             spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
             # spectral_norm(nn.Linear(hidden_size * 2, hidden_size)),
             # nn.GroupNorm(4, hidden_size),
@@ -95,7 +96,7 @@ class GanD(nn.Module):
         )
         self.model_end = nn.Sequential(
             nn.GroupNorm(4, hidden_size),
-            nn.RReLU(-0.3, 0.3, True),
+            DRReLU(-0.3, 0.3, 0.95, 1.05, True),
             spectral_init(nn.Linear(hidden_size, 1)),
         )
 
@@ -184,8 +185,8 @@ class MPPO(PPO):
     def __init__(self, *args,
                  density_buffer_size=16 * 1024,
                  replay_buffer_size=64 * 1024,
-                 world_disc_optim_factory=partial(GAdam, lr=4e-4, betas=(0.5, 0.99), weight_decay=1e-3),
-                 world_gen_optim_factory=partial(GAdam, lr=1e-4, betas=(0.5, 0.99), weight_decay=1e-3),
+                 world_disc_optim_factory=partial(GAdam, lr=4e-4, betas=(0.5, 0.99), weight_decay=1e-4),
+                 world_gen_optim_factory=partial(GAdam, lr=1e-4, betas=(0.5, 0.99), weight_decay=1e-4),
                  world_train_iters=8,
                  world_train_rollouts=128,
                  world_train_horizon=4,
