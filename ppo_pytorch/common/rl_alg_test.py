@@ -5,15 +5,16 @@ import random
 from collections import namedtuple
 from functools import partial
 from typing import Dict
+from multiprocessing.pool import ThreadPool
+from torch.multiprocessing import Pool
 
 from sklearn.model_selection import ParameterGrid
-from torch.multiprocessing import Pool
 
 from . import GymWrapper
 
 
 def rl_alg_test(hyper_params: Dict[str, list], wrap_params: dict, alg_class: type, alg_params: dict, env_factory,
-                num_processes: int, frames: int, iters: int=1, use_worker_id: bool=False) -> list:
+                num_processes: int, frames: int, iters: int=1, use_worker_id: bool=False, shuffle=False, use_threads=False) -> list:
     """
     Used for hyperparameter search and testing of reinforcement learning algorithms.
     Args:
@@ -31,6 +32,8 @@ def rl_alg_test(hyper_params: Dict[str, list], wrap_params: dict, alg_class: typ
         frames: Training steps.
         iters: Number of iterations for each hyperparameter combination.
         use_worker_id: Used by some environments, like ones created using Unity ML Agents.
+        shuffle: shuffle run order
+        use_threads: use ThreadPool instead of Pool
 
     Returns: list of `GymWrapper` outputs
 
@@ -47,9 +50,10 @@ def rl_alg_test(hyper_params: Dict[str, list], wrap_params: dict, alg_class: typ
     input = [SimInput(*x) for x in input]
     outputs = []
     for _ in range(iters):
-        random.shuffle(input)
+        if shuffle:
+            random.shuffle(input)
         if num_processes > 1 and len(input) > 1:
-            with Pool(num_processes) as pool:
+            with (ThreadPool if use_threads else Pool)(num_processes) as pool:
                 outputs.extend(pool.map(simulate, input))
         else:
             for x in input:

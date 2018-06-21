@@ -71,8 +71,6 @@ class GanG(nn.Module):
             self.state_out(out).split(3 * [self.state_size] + [1, 1], dim=-1)
         next_memory, memory_f_gate = \
             self.memory_out(out).split(2 * [self.hidden_size], dim=-1)
-        # next_states, state_f_gate, state_i_gate, next_memory, memory_f_gate, rewards, dones = \
-        #     out.split(3 * [self.state_size] + 2 * [self.hidden_size] + [1, 1], dim=-1)
         state_f_gate, state_i_gate, memory_f_gate = \
             [x.add(0.5) for x in (state_f_gate, state_i_gate, memory_f_gate)]
         next_states = state_f_gate * cur_states + state_i_gate * next_states
@@ -118,9 +116,8 @@ class GanD(nn.Module):
         action_emb = self.action_embedding(action_inputs)
         cur_state_emb = self.cur_state_embedding(cur_states)
         next_state_emb = self.next_state_embedding(next_states)
-        # print(next_state_emb[dones > 0].shape)
         dones_mask = (dones > 0).detach()
-        next_state_emb[dones_mask] = 0 # *= 1 - (dones.unsqueeze(-1) > 0.5).float().detach()
+        next_state_emb[dones_mask] = 0
         reward_done_emb = self.reward_done_embedding(torch.stack([rewards, dones], -1))
         features = self.model_start(action_emb + cur_state_emb + next_state_emb + reward_done_emb + memory)
         next_memory, memory_f_gate, disc = self.model_end(features).split(2 * [self.hidden_size] + [1], -1)
@@ -249,7 +246,6 @@ class MPPO(PPO):
         self.world_disc_optim_factory = world_disc_optim_factory
         self.world_gen_optim_factory = world_gen_optim_factory
         self.world_train_iters = world_train_iters
-        # self.world_batch_size = world_batch_size
         self.world_train_rollouts = world_train_rollouts
         self.world_train_horizon = world_train_horizon
 
@@ -263,11 +259,7 @@ class MPPO(PPO):
             chain(self.world_disc.parameters(), self.world_disc_init.parameters()))
         self.density_buffer = deque(maxlen=density_buffer_size)
         self.replay_buffer = ReplayBuffer(replay_buffer_size)
-        self.initial_world_training_done = False
-        # self.cur_state_gn = GradRunningNorm(momentum=0.5)
-        # self.next_state_gn = GradRunningNorm(momentum=0.5)
-        # self.reward_gn = GradRunningNorm(momentum=0.5)
-        # self.done_gn = GradRunningNorm(momentum=0.5)
+        self.initial_world_training_done = True
 
     def _ppo_update(self, data):
         self._update_replay_buffer(data)

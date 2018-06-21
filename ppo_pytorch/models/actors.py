@@ -166,7 +166,7 @@ class FCActor(Actor):
     """
 
     def __init__(self, observation_space: gym.Space, action_space: gym.Space, head_factory: Callable,
-                 hidden_sizes=(128, 128), activation=nn.ELU, input_as_hidden_code=False, **kwargs):
+                 hidden_sizes=(128, 128), activation=nn.ELU, hidden_code_type='last', **kwargs):
         """
         Args:
             observation_space: Env's observation space
@@ -178,11 +178,12 @@ class FCActor(Actor):
         super().__init__(observation_space, action_space, **kwargs)
         self.hidden_sizes = hidden_sizes
         self.activation = activation
-        self.input_as_hidden_code = input_as_hidden_code
+        self.hidden_code_type = hidden_code_type
 
         obs_len = int(np.product(observation_space.shape))
 
-        self.hidden_code_size = obs_len if input_as_hidden_code else hidden_sizes[-1]
+        self.hidden_code_size = obs_len if hidden_code_type == 'input' else \
+            (self.pd.prob_vector_len if hidden_code_type == 'probs' else hidden_sizes[-1])
         self.linear = self.create_fc(obs_len, None, hidden_sizes, activation, self.norm)
         self.head = head_factory(hidden_sizes[-1], self.pd)
         self.reset_weights()
@@ -192,6 +193,9 @@ class FCActor(Actor):
         self.head.reset_weights()
 
     def forward(self, input, hidden_code_input=False, only_hidden_code_output=False):
+        if hidden_code_input and only_hidden_code_output:
+            return HeadOutput(hidden_code=input)
+
         # hidden_code = input if self.input_as_hidden_code or hidden_code_input else self.linear[0][:-1](input)
         # if only_hidden_code_output:
         #     return HeadOutput(hidden_code=hidden_code)
@@ -202,20 +206,42 @@ class FCActor(Actor):
         #     x = self.linear[-1][-1](x)
         # else:
         hidden_code = None
-        for i, layer in enumerate(self.linear):
-            # x = layer(x) if self.input_as_hidden_code or i != 0 else layer[-1](x)
-            if i == 0: # i + 1 == len(self.linear):
-                hidden_code = x if hidden_code_input and not self.input_as_hidden_code else layer[:-1](x)
-                if only_hidden_code_output:
-                    return HeadOutput(hidden_code=input if self.input_as_hidden_code else hidden_code)
-                x = layer[-1](hidden_code)
+        if hidden_code == 'last':
+            if hidden_code_input:
+                hidden_code = input
+                x = self.linear[-1][-1](input)
             else:
-                x = layer(x)
-            if self.do_log:
-                self.logger.add_histogram(f'layer {i} output', x, self._step)
+                for i, layer in enumerate(self.linear):
+                    if i + 1 == len(self.linear):
+                        hidden_code = layer[:-1](x)
+                        if only_hidden_code_output:
+                            return HeadOutput(hidden_code=hidden_code)
+                        x = layer[-1](hidden_code)
+                    else:
+                        x = layer(x)
+                    if self.do_log:
+                        self.logger.add_histogram(f'layer {i} output', x, self._step)
+        elif self.hidden_code_type == 'probs' and hidden_code_input:
+            return HeadOutput(hidden_code=input, probs=input)
+        else:
+            for i, layer in enumerate(self.linear):
+                # x = layer(x) if self.input_as_hidden_code or i != 0 else layer[-1](x)
+                if i == 0 and self.hidden_code_type != 'probs': # i + 1 == len(self.linear):
+                    hidden_code = x if hidden_code_input and self.hidden_code_type != 'input' else layer[:-1](x)
+                    if only_hidden_code_output:
+                        return HeadOutput(hidden_code=input if self.hidden_code_type == 'input' else hidden_code)
+                    x = layer[-1](hidden_code)
+                else:
+                    x = layer(x)
+                if self.do_log:
+                    self.logger.add_histogram(f'layer {i} output', x, self._step)
 
         head = self.head(x)
-        head.hidden_code = input if self.input_as_hidden_code else hidden_code
+        if self.hidden_code_type == 'input':
+            hidden_code = input
+        elif self.hidden_code_type == 'probs':
+            hidden_code = head.probs
+        head.hidden_code = hidden_code
         return head
 
 
