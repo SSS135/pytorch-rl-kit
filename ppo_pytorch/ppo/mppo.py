@@ -56,10 +56,6 @@ class GanG(nn.Module):
             spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
             nn.GroupNorm(4, hidden_size),
             DRReLU(-0.3, 0.3, 0.95, 1.05, True),
-            # spectral_norm(nn.Linear(hidden_size, hidden_size)),
-            # nn.GroupNorm(4, hidden_size),
-            # nn.ReLU(inplace=True),
-            # nn.Linear(hidden_size, state_size * 3 + hidden_size * 2 + 2),
         )
 
     def forward(self, cur_states, actions, memory):
@@ -96,9 +92,6 @@ class GanD(nn.Module):
             nn.GroupNorm(4, hidden_size),
             DRReLU(-0.3, 0.3, 0.95, 1.05, True),
             spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
-            # spectral_norm(nn.Linear(hidden_size * 2, hidden_size)),
-            # nn.GroupNorm(4, hidden_size),
-            # nn.ReLU(inplace=True),
         )
         self.model_end = nn.Sequential(
             nn.GroupNorm(4, hidden_size),
@@ -468,14 +461,32 @@ class MPPO(PPO):
             self.world_gen_optim.zero_grad()
 
         if self._do_log:
-            gen_next_code, gen_rewards, gen_dones, _ = self.world_gen(hidden_codes[0], actions[0], gen_init_memory)
-            dones_mask = ((dones[0] < 0) & (gen_dones < 0)).float()
-            rmse = lambda a, b, dm: (a - b).mul((dones_mask.unsqueeze(-1) if a.dim() == 2 else dones_mask) if dm else 1).abs().mean().item()
-            self.logger.add_scalar('gen 1-step state err', rmse(gen_next_code, hidden_codes[1], True), self.frame)
-            state_norm_rmse = rmse(gen_next_code, hidden_codes[1], True) / max(1e-6, rmse(hidden_codes[0], hidden_codes[1], True))
-            self.logger.add_scalar('gen 1-step state norm err', state_norm_rmse, self.frame)
-            self.logger.add_scalar('gen 1-step reward err', rmse(gen_rewards, rewards[0], False), self.frame)
-            self.logger.add_scalar('gen 1-step done err', rmse(gen_dones, dones[0], False), self.frame)
+            gen_memory = gen_init_memory
+            all_gen_hidden_codes = [hidden_codes[0]]
+            all_gen_rewards = []
+            all_gen_dones = []
+            for i in range(self.world_train_horizon):
+                gen_next_code, gen_rewards, gen_dones, gen_memory = \
+                    self.world_gen(all_gen_hidden_codes[i], actions[i], gen_memory)
+                all_gen_hidden_codes.append(gen_next_code)
+                all_gen_rewards.append(gen_rewards)
+                all_gen_dones.append(gen_dones)
+
+            self.log_gen_errors('1-step', hidden_codes[0], hidden_codes[1], all_gen_hidden_codes[1],
+                                dones[0], all_gen_dones[0], rewards[0], all_gen_rewards[0])
+            l = len(all_gen_rewards) - 2
+            self.log_gen_errors(f'full-step', hidden_codes[l - 1], hidden_codes[l], all_gen_hidden_codes[l],
+                                dones[l], all_gen_dones[l], rewards[l], all_gen_rewards[l])
+
+    def log_gen_errors(self, tag, ral_cur_hidden, real_next_hidden, gen_next_hidden,
+                       real_dones, gen_dones, real_rewards, gen_rewards):
+        dones_mask = ((real_dones < 0) & (gen_dones < 0)).float()
+        rmse = lambda a, b, dm: (a - b).mul((dones_mask.unsqueeze(-1) if a.dim() == 2 else dones_mask) if dm else 1).abs().mean().item()
+        state_norm_rmse = rmse(gen_next_hidden, real_next_hidden, True) / max(1e-6, rmse(ral_cur_hidden, real_next_hidden, True))
+        self.logger.add_scalar(f'gen {tag} state err', rmse(gen_next_hidden, real_next_hidden, True), self.frame)
+        self.logger.add_scalar(f'gen {tag} state norm err', state_norm_rmse, self.frame)
+        self.logger.add_scalar(f'gen {tag} reward err', rmse(gen_rewards, real_rewards, False), self.frame)
+        self.logger.add_scalar(f'gen {tag} done err', rmse(gen_dones, real_dones, False), self.frame)
 
     def get_done_mask(self, dones):
         done_mask = (dones > 0).cpu().numpy().copy()

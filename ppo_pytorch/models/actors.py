@@ -166,7 +166,7 @@ class FCActor(Actor):
     """
 
     def __init__(self, observation_space: gym.Space, action_space: gym.Space, head_factory: Callable,
-                 hidden_sizes=(128, 128), activation=nn.ELU, hidden_code_type='last', **kwargs):
+                 hidden_sizes=(128, 128), activation=nn.ELU, hidden_code_type='input', **kwargs):
         """
         Args:
             observation_space: Env's observation space
@@ -206,7 +206,7 @@ class FCActor(Actor):
         #     x = self.linear[-1][-1](x)
         # else:
         hidden_code = None
-        if hidden_code == 'last':
+        if self.hidden_code_type == 'last':
             if hidden_code_input:
                 hidden_code = input
                 x = self.linear[-1][-1](input)
