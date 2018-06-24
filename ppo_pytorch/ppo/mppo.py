@@ -573,18 +573,24 @@ class MPPO(PPO):
                 gen_loss += 0.05 * fm_loss
                 # gen_loss = (1 - disc_gen.clamp(max=1)).pow(2).mean()
 
-            gen_lr_scale = (0 - disc_gen.mean()).clamp(1e-5, 0.5).item() * 2
-            set_lr_scale(self.world_gen_optim, gen_lr_scale)
-
-            set_lr_scale(self.world_disc_optim, (real_lr_scale + fake_lr_scale) / 2.0)
+            # gen_lr_scale = (0 - disc_gen.mean()).clamp(1e-5, 0.5).item() * 2
+            # set_lr_scale(self.world_gen_optim, gen_lr_scale)
+            #
+            # set_lr_scale(self.world_disc_optim, (real_lr_scale + fake_lr_scale) / 2.0)
 
             gen_loss.backward()
             self.world_disc_optim.zero_grad()
-            with torch.enable_grad():
-                fake_loss *= 2 * fake_lr_scale / (fake_lr_scale + real_lr_scale)
-                real_loss *= 2 * real_lr_scale / (fake_lr_scale + real_lr_scale)
+            # with torch.enable_grad():
+            #     fake_loss *= 2 * fake_lr_scale / (fake_lr_scale + real_lr_scale)
+            #     real_loss *= 2 * real_lr_scale / (fake_lr_scale + real_lr_scale)
             fake_loss.backward()
             real_loss.backward()
+
+            torch.nn.utils.clip_grad_norm_(self.world_gen.parameters(), 20)
+            torch.nn.utils.clip_grad_norm_(self.world_disc.parameters(), 20)
+            torch.nn.utils.clip_grad_norm_(self.world_gen_init.parameters(), 20)
+            torch.nn.utils.clip_grad_norm_(self.world_disc_init.parameters(), 20)
+
             denoiser_loss.backward()
 
             self.world_gen_optim.step()
@@ -623,9 +629,9 @@ class MPPO(PPO):
             self.logger.add_scalar('disc real', disc_real.mean(), self.frame)
             self.logger.add_scalar('disc fake', disc_fake.mean(), self.frame)
             self.logger.add_scalar('disc gen', disc_gen.mean(), self.frame)
-            self.logger.add_scalar('disc real lr scale', real_lr_scale, self.frame)
-            self.logger.add_scalar('disc fake lr scale', fake_lr_scale, self.frame)
-            self.logger.add_scalar('disc gen lr scale', gen_lr_scale, self.frame)
+            # self.logger.add_scalar('disc real lr scale', real_lr_scale, self.frame)
+            # self.logger.add_scalar('disc fake lr scale', fake_lr_scale, self.frame)
+            # self.logger.add_scalar('disc gen lr scale', gen_lr_scale, self.frame)
 
     def log_gen_errors(self, tag, ral_cur_hidden, real_next_hidden, gen_next_hidden,
                        real_dones, gen_dones, real_rewards, gen_rewards):
