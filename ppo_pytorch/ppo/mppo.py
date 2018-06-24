@@ -37,7 +37,7 @@ def spectral_init(module, gain=1, n_power_iterations=1):
     nn.init.kaiming_uniform_(module.weight, gain)
     if module.bias is not None:
         module.bias.data.zero_()
-    return spectral_norm(module, n_power_iterations=n_power_iterations)
+    return spectral_norm(module, n_power_iterations=n_power_iterations, auto_update_u=False)
 
 
 def update_spectral_norm(net: nn.Module):
@@ -64,10 +64,10 @@ def set_lr_scale(optim: torch.optim.Optimizer, scale):
 #         self.reward_done_prob_embedding = nn.Linear(2, hidden_size, bias=False)
 #         self.model = nn.Sequential(
 #             nn.GroupNorm(4, hidden_size),
-#             nn.ReLU(True),
+#             nn.RReLU(-0.3, 0.3,
 #             nn.Linear(hidden_size, hidden_size, bias=False),
 #             nn.GroupNorm(4, hidden_size),
-#             nn.ReLU(True),
+#             nn.RReLU(-0.3, 0.3,
 #             nn.Linear(hidden_size, state_size * 3 + 2),
 #         )
 #
@@ -92,20 +92,20 @@ class GanG(nn.Module):
         self.state_size = state_size
         self.action_pd = action_pd
         self.hidden_size = hidden_size
-        self.action_embedding = nn.Linear(action_pd.input_vector_len, hidden_size, bias=False)
-        self.state_embedding = nn.Linear(state_size, hidden_size, bias=False)
-        self.memory_embedding = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.action_embedding = spectral_init(nn.Linear(action_pd.input_vector_len, hidden_size, bias=False))
+        self.state_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
+        self.memory_embedding = spectral_init(nn.Linear(hidden_size, hidden_size, bias=False))
         self.memory_out = nn.Linear(hidden_size, hidden_size * 2)
         self.state_out = nn.Linear(hidden_size, state_size * 3 + 2)
         self.model = nn.Sequential(
             nn.GroupNorm(4, hidden_size),
-            DRReLU(-0.3, 0.3, 0.95, 1.05, True),
-            nn.Linear(hidden_size, hidden_size, bias=False),
+            nn.RReLU(-0.3, 0.3),
+            spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
             nn.GroupNorm(4, hidden_size),
-            DRReLU(-0.3, 0.3, 0.95, 1.05, True),
-            nn.Linear(hidden_size, hidden_size, bias=False),
+            nn.RReLU(-0.3, 0.3),
+            spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
             nn.GroupNorm(4, hidden_size),
-            DRReLU(-0.3, 0.3, 0.95, 1.05, True),
+            nn.RReLU(-0.3, 0.3),
         )
 
     def forward(self, cur_states, actions, memory):
@@ -142,25 +142,25 @@ class GanD(nn.Module):
         self.memory_embedding = spectral_init(nn.Linear(hidden_size, hidden_size, bias=False))
         self.model_start = nn.Sequential(
             nn.GroupNorm(4, hidden_size),
-            DRReLU(-0.3, 0.3, 0.95, 1.05, True),
+            nn.RReLU(-0.3, 0.3, True),
             spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
             nn.GroupNorm(4, hidden_size),
-            DRReLU(-0.3, 0.3, 0.95, 1.05, True),
+            nn.RReLU(-0.3, 0.3, True),
             spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
             nn.GroupNorm(4, hidden_size),
         )
         self.model_end = nn.Sequential(
-            DRReLU(-0.3, 0.3, 0.95, 1.05),
+            nn.RReLU(-0.3, 0.3),
         )
-        self.disc_fc = spectral_init(nn.Linear(hidden_size, 1))
+        self.disc_fc = nn.Linear(hidden_size, 1)
         self.memory_fc = nn.Linear(hidden_size, hidden_size * 2)
 
     def forward(self, cur_states, next_states, actions, rewards, dones, memory):
-        # cur_states_std = cur_states.detach().std()
-        # cur_states = cur_states + 0.1 * torch.randn_like(cur_states) * cur_states_std
-        # next_states = next_states + 0.1 * torch.randn_like(next_states) * cur_states_std
-        # rewards = rewards + 0.03 * torch.randn_like(rewards)
-        # dones = dones + 0.03 * torch.randn_like(dones)
+        cur_states_std = cur_states.detach().std()
+        cur_states = cur_states + 0.03 * torch.randn_like(cur_states) * cur_states_std
+        next_states = next_states + 0.03 * torch.randn_like(next_states) * cur_states_std
+        rewards = rewards + 0.03 * torch.randn_like(rewards)
+        dones = dones + 0.03 * torch.randn_like(dones)
 
         action_inputs = self.action_pd.to_inputs(actions)
         action_emb = self.action_embedding(action_inputs)
@@ -188,10 +188,10 @@ class GanMemoryInit(nn.Module):
         self.states_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
         self.model = nn.Sequential(
             nn.GroupNorm(4, hidden_size),
-            DRReLU(-0.3, 0.3, 0.95, 1.05, True),
+            nn.RReLU(-0.3, 0.3),
             spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
             nn.GroupNorm(4, hidden_size),
-            DRReLU(-0.3, 0.3, 0.95, 1.05, True),
+            nn.RReLU(-0.3, 0.3),
             nn.Linear(hidden_size, hidden_size * 2),
         )
 
@@ -216,17 +216,17 @@ class DenoisingAutoencoder(nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
         self.model = nn.Sequential(
-            # nn.Linear(hidden_size, hidden_size, bias=False),
-            # nn.GroupNorm(4, hidden_size),
-            # DRReLU(-0.3, 0.3, 0.95, 1.05, True),
-            # nn.Linear(hidden_size, hidden_size, bias=False),
-            # nn.GroupNorm(4, hidden_size),
-            # DRReLU(-0.3, 0.3, 0.95, 1.05, True),
+            spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
+            nn.GroupNorm(4, hidden_size),
+            nn.RReLU(-0.3, 0.3),
+            spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
+            nn.GroupNorm(4, hidden_size),
+            nn.RReLU(-0.3, 0.3),
             nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(True),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(True),
-            nn.Linear(hidden_size, hidden_size)
+            # nn.RReLU(-0.3, 0.3,
+            # nn.Linear(hidden_size, hidden_size),
+            # nn.RReLU(-0.3, 0.3,
+            # nn.Linear(hidden_size, hidden_size)
         )
 
     def forward(self, corrupted):
@@ -305,9 +305,9 @@ class MPPO(PPO):
     def __init__(self, *args,
                  density_buffer_size=16 * 1024,
                  replay_buffer_size=64 * 1024,
-                 world_disc_optim_factory=partial(GAdam, lr=4e-4, betas=(0.5, 0.99), weight_decay=1e-4, eps=1e-6),
-                 world_gen_optim_factory=partial(GAdam, lr=1e-4, betas=(0.5, 0.99), weight_decay=1e-4, eps=1e-6),
-                 denoiser_optim_factory=partial(GAdam, lr=4e-4, betas=(0.5, 0.99), weight_decay=1e-4, eps=1e-6),
+                 world_disc_optim_factory=partial(GAdam, lr=3e-4, betas=(0.5, 0.99)),
+                 world_gen_optim_factory=partial(GAdam, lr=3e-4, betas=(0.5, 0.99)),
+                 denoiser_optim_factory=partial(GAdam, lr=3e-4, betas=(0.5, 0.99)),
                  world_train_iters=8,
                  world_train_rollouts=128,
                  world_train_horizon=4,
@@ -573,7 +573,7 @@ class MPPO(PPO):
                 gen_loss += 0.05 * fm_loss
                 # gen_loss = (1 - disc_gen.clamp(max=1)).pow(2).mean()
 
-            gen_lr_scale = (1 - disc_gen.mean()).clamp(1e-5, 0.5).item() * 2
+            gen_lr_scale = (0 - disc_gen.mean()).clamp(1e-5, 0.5).item() * 2
             set_lr_scale(self.world_gen_optim, gen_lr_scale)
 
             set_lr_scale(self.world_disc_optim, (real_lr_scale + fake_lr_scale) / 2.0)
