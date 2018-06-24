@@ -87,16 +87,18 @@ def set_lr_scale(optim: torch.optim.Optimizer, scale):
 
 
 class GanG(nn.Module):
-    def __init__(self, state_size, action_pd, hidden_size=256):
+    def __init__(self, hidden_code_size, state_size, action_pd, hidden_size=256):
         super().__init__()
+        self.hidden_code_size = hidden_code_size
         self.state_size = state_size
         self.action_pd = action_pd
         self.hidden_size = hidden_size
         self.action_embedding = spectral_init(nn.Linear(action_pd.input_vector_len, hidden_size, bias=False))
-        self.state_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
+        self.cur_hc_embedding = spectral_init(nn.Linear(hidden_code_size, hidden_size, bias=False))
+        self.cur_state_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
         self.memory_embedding = spectral_init(nn.Linear(hidden_size, hidden_size, bias=False))
         self.memory_out = nn.Linear(hidden_size, hidden_size * 2)
-        self.state_out = nn.Linear(hidden_size, state_size * 3 + 2)
+        self.hc_out = nn.Linear(hidden_size, hidden_code_size * 3 + 2)
         self.model = nn.Sequential(
             nn.GroupNorm(4, hidden_size),
             nn.RReLU(-0.3, 0.3),
@@ -108,38 +110,47 @@ class GanG(nn.Module):
             nn.RReLU(-0.3, 0.3),
         )
 
-    def forward(self, cur_states, actions, memory):
+    def forward(self, cur_hc, actions, memory, cur_states=None):
+        if memory is None:
+            memory = cur_hc.new_zeros(cur_hc.shape[0], self.hidden_size)
+
         action_inputs = self.action_pd.to_inputs(actions)
         action_emb = self.action_embedding(action_inputs)
-        state_emb = self.state_embedding(cur_states)
+        cur_hc_emb = self.cur_hc_embedding(cur_hc)
         memory_emb = self.memory_embedding(memory)
-        out = self.model(action_emb + state_emb + memory_emb)
-        next_states, state_f_gate, state_i_gate, rewards, dones = \
-            self.state_out(out).split(3 * [self.state_size] + [1, 1], dim=-1)
+        model_input = action_emb + cur_hc_emb + memory_emb
+        if cur_states is not None:
+            cur_state_emb = self.cur_state_embedding(cur_states)
+            model_input = model_input + cur_state_emb
+        out = self.model(model_input)
+        next_hc, hc_f_gate, hc_i_gate, rewards, dones = \
+            self.hc_out(out).split(3 * [self.hidden_code_size] + [1, 1], dim=-1)
         next_memory, memory_f_gate = \
             self.memory_out(out).split(2 * [self.hidden_size], dim=-1)
-        state_f_gate, state_i_gate, memory_f_gate = \
-            [x.sigmoid() for x in (state_f_gate, state_i_gate, memory_f_gate)]
-        next_states = state_f_gate * cur_states + state_i_gate * next_states
+        hc_f_gate, hc_i_gate, memory_f_gate = \
+            [x.sigmoid() for x in (hc_f_gate, hc_i_gate, memory_f_gate)]
+        next_hc = hc_f_gate * cur_hc + hc_i_gate * next_hc
         next_memory = (1 - memory_f_gate) * memory + memory_f_gate * next_memory
         dones, rewards = dones.squeeze(-1), rewards.squeeze(-1)
         # dones_mask = (dones > 0).detach()
-        # next_states[dones_mask] = cur_states[dones_mask]
+        # next_hc[dones_mask] = cur_states[dones_mask]
         # next_memory[dones_mask] = 0
-        return next_states, rewards, dones, next_memory
+        return next_hc, rewards, dones, next_memory
 
 
 class GanD(nn.Module):
-    def __init__(self, state_size, action_pd, hidden_size=256):
+    def __init__(self, hidden_code_size, state_size, action_pd, hidden_size=256):
         super().__init__()
+        self.hidden_code_size = hidden_code_size
         self.state_size = state_size
         self.action_pd = action_pd
         self.hidden_size = hidden_size
         self.action_embedding = spectral_init(nn.Linear(action_pd.input_vector_len, hidden_size, bias=False))
-        self.cur_state_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
-        self.next_state_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
+        self.cur_code_embedding = spectral_init(nn.Linear(hidden_code_size, hidden_size, bias=False))
+        self.next_code_embedding = spectral_init(nn.Linear(hidden_code_size, hidden_size, bias=False))
         self.reward_done_embedding = spectral_init(nn.Linear(2, hidden_size, bias=False))
         self.memory_embedding = spectral_init(nn.Linear(hidden_size, hidden_size, bias=False))
+        self.cur_state_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
         self.model_start = nn.Sequential(
             nn.GroupNorm(4, hidden_size),
             nn.RReLU(-0.3, 0.3, True),
@@ -155,22 +166,29 @@ class GanD(nn.Module):
         self.disc_fc = nn.Linear(hidden_size, 1)
         self.memory_fc = nn.Linear(hidden_size, hidden_size * 2)
 
-    def forward(self, cur_states, next_states, actions, rewards, dones, memory):
-        cur_states_std = cur_states.detach().std()
-        cur_states = cur_states + 0.03 * torch.randn_like(cur_states) * cur_states_std
-        next_states = next_states + 0.03 * torch.randn_like(next_states) * cur_states_std
-        rewards = rewards + 0.03 * torch.randn_like(rewards)
-        dones = dones + 0.03 * torch.randn_like(dones)
+    def forward(self, cur_hc, next_hc, actions, rewards, dones, memory, cur_states=None):
+        # cur_hc_std = cur_hc.detach().std()
+        # cur_hc = cur_hc + 0.03 * torch.randn_like(cur_hc) * cur_hc_std
+        # next_hc = next_hc + 0.03 * torch.randn_like(next_hc) * cur_hc_std
+        # rewards = rewards + 0.03 * torch.randn_like(rewards)
+        # dones = dones + 0.03 * torch.randn_like(dones)
+
+        if memory is None:
+            memory = cur_hc.new_zeros(cur_hc.shape[0], self.hidden_size)
 
         action_inputs = self.action_pd.to_inputs(actions)
         action_emb = self.action_embedding(action_inputs)
-        cur_state_emb = self.cur_state_embedding(cur_states)
-        next_state_emb = self.next_state_embedding(next_states)
+        cur_hc_emb = self.cur_code_embedding(cur_hc)
+        next_hc_emb = self.next_code_embedding(next_hc)
         memory_emb = self.memory_embedding(memory)
         # dones_mask = (dones > 0).detach()
-        # next_state_emb[dones_mask] = 0
+        # next_hc_emb[dones_mask] = 0
         reward_done_emb = self.reward_done_embedding(torch.stack([rewards, dones], -1))
-        features = self.model_start(action_emb + cur_state_emb + next_state_emb + reward_done_emb + memory_emb)
+        model_input = action_emb + cur_hc_emb + next_hc_emb + reward_done_emb + memory_emb
+        if cur_states is not None:
+            cur_state_emb = self.cur_state_embedding(cur_states)
+            model_input = model_input + cur_state_emb
+        features = self.model_start(model_input)
         model_end_out = self.model_end(features)
         disc = self.disc_fc(model_end_out)
         next_memory, memory_f_gate = self.memory_fc(model_end_out).chunk(2, -1)
@@ -180,35 +198,35 @@ class GanD(nn.Module):
         return disc.squeeze(-1), features, next_memory
 
 
-class GanMemoryInit(nn.Module):
-    def __init__(self, state_size, hidden_size=256):
-        super().__init__()
-        self.state_size = state_size
-        self.hidden_size = hidden_size
-        self.states_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
-        self.model = nn.Sequential(
-            nn.GroupNorm(4, hidden_size),
-            nn.RReLU(-0.3, 0.3),
-            spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
-            nn.GroupNorm(4, hidden_size),
-            nn.RReLU(-0.3, 0.3),
-            nn.Linear(hidden_size, hidden_size * 2),
-        )
-
-    def forward(self, states, memory=None):
-        """
-        Args:
-            states: (B, state_size)
-            memory: (B, hidden_size) or None
-
-        Returns: memory (B, hidden_size)
-        """
-        if memory is None:
-            memory = states.new_zeros((states.shape[0], self.hidden_size))
-        states_emb = self.states_embedding(states)
-        new_memory, memory_f_gate = self.model(memory + states_emb).chunk(2, -1)
-        memory_f_gate = memory_f_gate.sigmoid()
-        return (1 - memory_f_gate) * memory + memory_f_gate * new_memory
+# class GanMemoryInit(nn.Module):
+#     def __init__(self, state_size, hidden_size=256):
+#         super().__init__()
+#         self.state_size = state_size
+#         self.hidden_size = hidden_size
+#         self.states_embedding = spectral_init(nn.Linear(state_size, hidden_size, bias=False))
+#         self.model = nn.Sequential(
+#             nn.GroupNorm(4, hidden_size),
+#             nn.RReLU(-0.3, 0.3),
+#             spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
+#             nn.GroupNorm(4, hidden_size),
+#             nn.RReLU(-0.3, 0.3),
+#             nn.Linear(hidden_size, hidden_size * 2),
+#         )
+#
+#     def forward(self, states, memory=None):
+#         """
+#         Args:
+#             states: (B, state_size)
+#             memory: (B, hidden_size) or None
+#
+#         Returns: memory (B, hidden_size)
+#         """
+#         if memory is None:
+#             memory = states.new_zeros((states.shape[0], self.hidden_size))
+#         states_emb = self.states_embedding(states)
+#         new_memory, memory_f_gate = self.model(memory + states_emb).chunk(2, -1)
+#         memory_f_gate = memory_f_gate.sigmoid()
+#         return (1 - memory_f_gate) * memory + memory_f_gate * new_memory
 
 
 class DenoisingAutoencoder(nn.Module):
@@ -305,14 +323,13 @@ class MPPO(PPO):
     def __init__(self, *args,
                  density_buffer_size=16 * 1024,
                  replay_buffer_size=64 * 1024,
-                 world_disc_optim_factory=partial(GAdam, lr=3e-4, betas=(0.5, 0.99)),
-                 world_gen_optim_factory=partial(GAdam, lr=3e-4, betas=(0.5, 0.99)),
-                 denoiser_optim_factory=partial(GAdam, lr=3e-4, betas=(0.5, 0.99)),
+                 world_disc_optim_factory=partial(GAdam, lr=4e-4, betas=(0, 0.9), weight_decay=1e-4, eps=1e-6),
+                 world_gen_optim_factory=partial(GAdam, lr=2e-4, betas=(0, 0.9), weight_decay=1e-4, eps=1e-6),
+                 denoiser_optim_factory=partial(GAdam, lr=4e-4, betas=(0, 0.9), weight_decay=1e-4, eps=1e-6),
                  world_train_iters=8,
-                 world_train_rollouts=128,
-                 world_train_horizon=4,
+                 world_train_rollouts=64,
+                 world_train_horizon=8,
                  began_gamma=0.5,
-                 began_lr=1e-3,
                  **kwargs):
         super().__init__(*args, **kwargs)
         # assert world_batch_size % world_train_horizon == 0 and \
@@ -327,34 +344,31 @@ class MPPO(PPO):
         self.world_train_rollouts = world_train_rollouts
         self.world_train_horizon = world_train_horizon
         self.began_gamma = began_gamma
-        self.began_lr = began_lr
 
-        self.world_gen = GanG(self.model.hidden_code_size, self.model.pd)
-        self.world_disc = GanD(self.model.hidden_code_size, self.model.pd)
-        self.world_gen_init = GanMemoryInit(self.observation_space.shape[0])
-        self.world_disc_init = GanMemoryInit(self.observation_space.shape[0])
+        self.world_gen = GanG(self.model.hidden_code_size, self.observation_space.shape[0], self.model.pd)
+        self.world_disc = GanD(self.model.hidden_code_size, self.observation_space.shape[0], self.model.pd)
+        # self.world_gen_init = GanMemoryInit(self.observation_space.shape[0])
+        # self.world_disc_init = GanMemoryInit(self.observation_space.shape[0])
         self.disc_denoiser = DenoisingAutoencoder()
-        self.world_gen_optim = world_gen_optim_factory(
-            chain(self.world_gen.parameters(), self.world_gen_init.parameters()))
-        self.world_disc_optim = world_disc_optim_factory(
-            chain(self.world_disc.parameters(), self.world_disc_init.parameters()))
+        self.world_gen_optim = world_gen_optim_factory(self.world_gen.parameters())
+        self.world_disc_optim = world_disc_optim_factory(self.world_disc.parameters())
         self.denoiser_optim = denoiser_optim_factory(self.disc_denoiser.parameters())
         self.density_buffer = deque(maxlen=density_buffer_size)
         self.replay_buffer = ReplayBuffer(replay_buffer_size)
-        self.initial_world_training_done = True
+        # self.initial_world_training_done = True
 
     def _ppo_update(self, data):
         self._update_replay_buffer(data)
         min_buf_size = self.world_train_iters * self.world_train_rollouts * (self.world_train_horizon + 1)
         if len(self.replay_buffer) >= min_buf_size or len(self.replay_buffer) == self.replay_buffer_size:
-            if self.initial_world_training_done:
-                self._train_world()
-            else:
-                # for _ in range(50):
-                #     self._train_world()
-                self.initial_world_training_done = True
-                # for _ in range(10):
-                #     self._train_world()
+            # if self.initial_world_training_done:
+            self._train_world()
+            # else:
+            #     # for _ in range(50):
+            #     #     self._train_world()
+            #     self.initial_world_training_done = True
+            #     # for _ in range(10):
+            #     #     self._train_world()
         return super()._ppo_update(data)
 
     def _update_replay_buffer(self, data):
@@ -370,8 +384,8 @@ class MPPO(PPO):
         # move model to cuda or cpu
         self.world_gen = self.world_gen.to(self.device_train).train()
         self.world_disc = self.world_disc.to(self.device_train).train()
-        self.world_gen_init = self.world_gen_init.to(self.device_train).train()
-        self.world_disc_init = self.world_disc_init.to(self.device_train).train()
+        # self.world_gen_init = self.world_gen_init.to(self.device_train).train()
+        # self.world_disc_init = self.world_disc_init.to(self.device_train).train()
         self.disc_denoiser = self.disc_denoiser.to(self.device_train).train()
         self.model = self.model.to(self.device_train).train()
 
@@ -397,8 +411,8 @@ class MPPO(PPO):
 
             update_spectral_norm(self.world_gen)
             update_spectral_norm(self.world_disc)
-            update_spectral_norm(self.world_gen_init)
-            update_spectral_norm(self.world_disc_init)
+            # update_spectral_norm(self.world_gen_init)
+            # update_spectral_norm(self.world_disc_init)
             update_spectral_norm(self.disc_denoiser)
 
             # disc real
@@ -441,14 +455,16 @@ class MPPO(PPO):
                 # # (H * B)
                 # disc_real = torch.cat(disc_real, dim=0)
 
-                disc_memory = self.world_disc_init(states[0])
+                # disc_memory = self.world_disc_init(states[0])
                 # cur_dones_mask = torch.ones_like(dones[0])
+                disc_memory = None
                 disc_real = []
                 all_features = []
                 # all_dones_masks = []
                 for i in range(horizon - 1):
                     d, features, disc_memory = self.world_disc(
-                        hidden_codes[i], hidden_codes[i + 1], actions[i], rewards[i], dones[i], disc_memory)
+                        hidden_codes[i], hidden_codes[i + 1], actions[i], rewards[i], dones[i],
+                        disc_memory, states[0] if i == 0 else None)
                     # all_dones_masks.append(cur_dones_mask)
                     disc_real.append(d)
                     all_features.append(features)
@@ -467,7 +483,7 @@ class MPPO(PPO):
                 # disc_real = (disc_real - disc_real.mean()) / disc_real.var().add(1e-8).sqrt()
                 # real_loss = (1 - disc_real.clamp(max=1)).pow(2).mean()
 
-            real_lr_scale = (1 - disc_real.mean()).clamp(1e-5, 0.5).item() * 2
+            # real_lr_scale = (1 - disc_real.mean()).clamp(1e-5, 0.5).item() * 2
             # set_lr_scale(self.world_disc_optim, real_lr_scale)
 
             # real_loss.backward()
@@ -486,17 +502,20 @@ class MPPO(PPO):
             all_gen_dones = []
             # all_dones_masks = []
             # cur_dones_mask = torch.ones_like(dones[0])
-            with torch.enable_grad():
-                gen_memory = gen_init_memory = self.world_gen_init(states[0])
-                disc_memory = disc_init_memory = self.world_disc_init(states[0])
+            # with torch.enable_grad():
+            #     gen_memory = gen_init_memory = self.world_gen_init(states[0])
+            #     disc_memory = disc_init_memory = self.world_disc_init(states[0])
+            gen_memory, disc_memory = None, None
             for i in range(horizon):
                 ac_out = self.model(all_gen_hidden_codes[-1], hidden_code_input=True)
                 cur_code = all_gen_hidden_codes[-1]
                 cur_actions = self.model.pd.sample(ac_out.probs)
                 with torch.enable_grad():
-                    gen_next_code, gen_rewards, gen_dones, gen_memory = self.world_gen(cur_code, cur_actions, gen_memory)
-                    d, _, disc_memory = self.world_disc(cur_code.detach(), gen_next_code.detach(), cur_actions,
-                                                        gen_rewards.detach(), gen_dones.detach(), disc_memory)
+                    gen_next_code, gen_rewards, gen_dones, gen_memory = self.world_gen(
+                        cur_code, cur_actions, gen_memory, states[0] if i == 0 else None)
+                    d, _, disc_memory = self.world_disc(
+                        cur_code.detach(), gen_next_code.detach(), cur_actions,
+                        gen_rewards.detach(), gen_dones.detach(), disc_memory, states[0] if i == 0 else None)
                 # all_dones_masks.append(cur_dones_mask)
                 # cur_dones_mask = cur_dones_mask.clone()
                 # cur_dones_mask[gen_dones[i] > 0] = 0
@@ -524,7 +543,7 @@ class MPPO(PPO):
                 # disc_fake = (disc_fake - disc_fake.mean()) / disc_fake.var().add(1e-8).sqrt()
                 # fake_loss = (-1 - disc_fake.clamp(min=-1)).pow(2).mean()
 
-            fake_lr_scale = (1 + disc_fake.mean()).clamp(1e-5, 0.5).item() * 2
+            # fake_lr_scale = (1 + disc_fake.mean()).clamp(1e-5, 0.5).item() * 2
             # set_lr_scale(self.world_disc_optim, fake_lr_scale)
 
 
@@ -551,13 +570,14 @@ class MPPO(PPO):
                 # # (H * B)
                 # disc_gen = torch.cat(disc_gen, dim=0)
 
-                disc_memory = disc_init_memory.detach()
+                disc_memory = None
                 disc_gen = []
                 all_features = []
                 for i in range(horizon):
                     d, features, disc_memory = self.world_disc(
                         all_gen_hidden_codes[i], all_gen_hidden_codes[i + 1],
-                        all_gen_actions[i], all_gen_rewards[i], all_gen_dones[i], disc_memory)
+                        all_gen_actions[i], all_gen_rewards[i], all_gen_dones[i],
+                        disc_memory, states[0] if i == 0 else None)
                     disc_gen.append(d)
                     all_features.append(features)
                 # (H, B)
@@ -588,8 +608,8 @@ class MPPO(PPO):
 
             torch.nn.utils.clip_grad_norm_(self.world_gen.parameters(), 20)
             torch.nn.utils.clip_grad_norm_(self.world_disc.parameters(), 20)
-            torch.nn.utils.clip_grad_norm_(self.world_gen_init.parameters(), 20)
-            torch.nn.utils.clip_grad_norm_(self.world_disc_init.parameters(), 20)
+            # torch.nn.utils.clip_grad_norm_(self.world_gen_init.parameters(), 20)
+            # torch.nn.utils.clip_grad_norm_(self.world_disc_init.parameters(), 20)
 
             denoiser_loss.backward()
 
@@ -605,7 +625,7 @@ class MPPO(PPO):
             # self.world_gen_optim.zero_grad()
 
         if self._do_log:
-            gen_memory = gen_init_memory
+            gen_memory = None
             all_gen_hidden_codes = [hidden_codes[0]]
             all_gen_rewards = []
             all_gen_dones = []
