@@ -33,11 +33,11 @@ from optfn.grad_running_norm import GradRunningNorm
 from optfn.drrelu import DRReLU
 
 
-def spectral_init(module, gain=1, n_power_iterations=1):
+def spectral_init(module, gain=2 ** 0.5, n_power_iterations=1):
     nn.init.kaiming_uniform_(module.weight, gain)
     if module.bias is not None:
         module.bias.data.zero_()
-    return spectral_norm(module, n_power_iterations=n_power_iterations, auto_update_u=False)
+    return module # spectral_norm(module, n_power_iterations=n_power_iterations, auto_update_u=False)
 
 
 def update_spectral_norm(net: nn.Module):
@@ -50,6 +50,18 @@ def update_spectral_norm(net: nn.Module):
 def set_lr_scale(optim: torch.optim.Optimizer, scale):
     for group in optim.param_groups:
         group['lr'] = scale * optim.defaults['lr']
+
+
+def l1_quantile_loss(output, target, tau, reduce=True):
+    u = target - output
+    loss = (tau - (u <= 0).float()) * u
+    return loss.mean() if reduce else loss
+
+
+def huber_quantile_loss(output, target, tau, k=0.05, reduce=True):
+    u = target - output
+    loss = (tau - (u.detach() <= 0).float()) * u * u.detach().abs().clamp(max=k).div_(k)
+    return loss.mean() if reduce else loss
 
 
 # class QuantileG(nn.Module):
@@ -93,46 +105,48 @@ class GanG(nn.Module):
         self.state_size = state_size
         self.action_pd = action_pd
         self.hidden_size = hidden_size
-        self.action_embedding = spectral_init(nn.Linear(action_pd.input_vector_len, hidden_size * 2))
-        self.cur_code_embedding = spectral_init(nn.Linear(hidden_code_size, hidden_size * 2))
-        self.cur_state_embedding = spectral_init(nn.Linear(state_size, hidden_size * 2))
-        self.memory_embedding = spectral_init(nn.Linear(hidden_size, hidden_size * 2))
-        self.memory_out = nn.Linear(hidden_size, hidden_size * 2)
-        self.code_out = nn.Linear(hidden_size, hidden_code_size * 3 + 2)
+        # self.action_embedding = spectral_init(nn.Linear(action_pd.input_vector_len, hidden_size))
+        # self.cur_code_embedding = spectral_init(nn.Linear(hidden_code_size, hidden_size))
+        # self.cur_state_embedding = spectral_init(nn.Linear(state_size, hidden_size))
+        # self.memory_embedding = spectral_init(nn.Linear(hidden_size, hidden_size))
+        # self.memory_out = nn.Linear(hidden_size, hidden_size * 2)
+        # self.code_out = nn.Linear(hidden_size, hidden_code_size * 3 + 2)
         self.model = nn.Sequential(
             # nn.GroupNorm(4, hidden_size),
-            # nn.LeakyReLU(0.1, True),
-            spectral_init(nn.Linear(hidden_size * 2, hidden_size, bias=False)),
-            nn.GroupNorm(4, hidden_size),
-            DRReLU(),
+            spectral_init(nn.Linear(action_pd.input_vector_len + hidden_code_size * 2 + hidden_size + state_size + 2, hidden_size, bias=False)),
+            nn.ReLU(),
             spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
             nn.GroupNorm(4, hidden_size),
-            DRReLU(),
+            nn.ReLU(),
+            spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
+            nn.GroupNorm(4, hidden_size),
+            nn.ReLU(),
+            spectral_init(nn.Linear(hidden_size, hidden_size * 3 + hidden_code_size * 3 + 2))
         )
 
-    def forward(self, cur_code, actions, memory, cur_states=None):
+    def forward(self, cur_code, actions, memory, cur_states, tau):
         if memory is None:
             memory = cur_code.new_zeros(cur_code.shape[0], self.hidden_size)
+        if cur_states is None:
+            cur_states = cur_code.new_zeros(cur_code.shape[0], self.state_size)
 
         action_inputs = self.action_pd.to_inputs(actions)
-        embeddings = [
-            self.action_embedding(action_inputs),
-            self.cur_code_embedding(cur_code),
-            self.memory_embedding(memory),
-            *([self.cur_state_embedding(cur_states)] if cur_states is not None else []),
-        ]
-        embeddings = torch.stack(embeddings, -1)
-        embeddings = embeddings.max(-1)[0]
+        # embeddings = [
+        #     self.action_embedding(action_inputs),
+        #     self.cur_code_embedding(cur_code),
+        #     self.memory_embedding(memory),
+        #     self.cur_state_embedding(cur_states) if cur_states is not None else torch.zeros_like(memory),
+        # ]
+        # embeddings = torch.cat(embeddings, -1)
+        # embeddings = embeddings.max(-1)[0]
+        embeddings = torch.cat([action_inputs, cur_code, memory, cur_states, tau * 2 - 1], -1)
 
-        out = self.model(embeddings)
-        next_code, code_f_gate, code_i_gate, rewards, dones = \
-            self.code_out(out).split(3 * [self.hidden_code_size] + [1, 1], dim=-1)
-        next_memory, memory_f_gate = \
-            self.memory_out(out).split(2 * [self.hidden_size], dim=-1)
-        code_f_gate, code_i_gate, memory_f_gate = \
-            [x.sigmoid() for x in (code_f_gate, code_i_gate, memory_f_gate)]
+        next_code, code_f_gate, code_i_gate, rewards, dones, next_memory, memory_f_gate, memory_i_gate = \
+            self.model(embeddings).split(3 * [self.hidden_code_size] + [1, 1] + 3 * [self.hidden_size], dim=-1)
+        code_f_gate, code_i_gate, memory_f_gate, memory_i_gate = \
+            [x.sigmoid() for x in (code_f_gate, code_i_gate, memory_f_gate, memory_i_gate)]
         next_code = code_f_gate * cur_code + code_i_gate * next_code
-        next_memory = (1 - memory_f_gate) * memory + memory_f_gate * next_memory
+        next_memory = memory_f_gate * memory + memory_i_gate * next_memory
         dones, rewards = dones.squeeze(-1), rewards.squeeze(-1)
         # dones_mask = (dones > 0).detach()
         # next_code[dones_mask] = cur_states[dones_mask]
@@ -328,7 +342,7 @@ class MPPO(PPO):
                  density_buffer_size=16 * 1024,
                  replay_buffer_size=64 * 1024,
                  world_disc_optim_factory=partial(GAdam, lr=3e-4, betas=(0, 0.9), weight_decay=1e-4, eps=1e-6),
-                 world_gen_optim_factory=partial(GAdam, lr=1e-4, betas=(0, 0.9), weight_decay=1e-4, eps=1e-6),
+                 world_gen_optim_factory=partial(GAdam, lr=3e-4, betas=(0.5, 0.99)),
                  denoiser_optim_factory=partial(GAdam, lr=3e-4, betas=(0, 0.9), weight_decay=1e-4, eps=1e-6),
                  world_train_iters=8,
                  world_train_rollouts=64,
@@ -422,158 +436,193 @@ class MPPO(PPO):
             hidden_codes = hidden_codes.view(*states.shape[:2], *hidden_codes.shape[1:])
             # hidden_codes += 0.05 * torch.randn_like(hidden_codes)
 
-            with torch.enable_grad():
-                disc_memory = None
-                disc_real = []
-                all_features = []
-                # all_dones_masks = []
-                for i in range(horizon - 1):
-                    d, features, disc_memory = self.world_disc(
-                        hidden_codes[i], hidden_codes[i + 1], actions[i], rewards[i], dones[i],
-                        disc_memory, states[0] if i == 0 else None)
-                    # all_dones_masks.append(cur_dones_mask)
-                    disc_real.append(d)
-                    all_features.append(features)
-                    # cur_dones_mask = cur_dones_mask.clone()
-                    # cur_dones_mask[dones[i] > 0] = 0
-                # (H, B)
-                # all_dones_masks = torch.stack(all_dones_masks, 0)
-                disc_real = torch.stack(disc_real, 0)
-                all_features = torch.cat(all_features, 0)
-                # disc_real = disc_real #* all_dones_masks.detach()
-
-                # mask = self.get_done_mask(dones[:-1]).view(-1)
-                real_loss = -disc_real.clamp(max=1).mean()
-                denoised_features = self.disc_denoiser(all_features.detach() + torch.randn_like(all_features))
-                denoiser_loss = F.mse_loss(denoised_features, all_features.detach())
-                # disc_real = (disc_real - disc_real.mean()) / disc_real.var().add(1e-8).sqrt()
-                # real_loss = (1 - disc_real.clamp(max=1)).pow(2).mean()
-
-            # set_lr_scale(self.world_disc_optim, real_lr_scale)
-
-            # real_loss.backward()
-            # denoiser_loss.backward()
-            # self.world_disc_optim.step()
-            # self.denoiser_optim.step()
-            # self.world_disc_optim.zero_grad()
-            # self.world_gen_optim.zero_grad()
-            # self.denoiser_optim.zero_grad()
-
-            all_gen_hidden_codes = [hidden_codes[0]]
-            all_gen_actions = []
+            # mse
+            all_gen_hidden_codes = []
             all_gen_rewards = []
             all_gen_dones = []
+            tau = hidden_codes.new_empty((hidden_codes.shape[0] - 1, hidden_codes.shape[1], hidden_codes.shape[2] + 2)).uniform_()
             gen_memory = None
             for i in range(horizon):
-                ac_out = self.model(all_gen_hidden_codes[-1], hidden_code_input=True)
-                cur_code = all_gen_hidden_codes[-1]
-                cur_actions = self.model.pd.sample(ac_out.probs)
                 with torch.enable_grad():
                     gen_next_code, gen_rewards, gen_dones, gen_memory = self.world_gen(
-                        cur_code, cur_actions, gen_memory, states[0] if i == 0 else None)
+                        hidden_codes[i] if i == 0 else all_gen_hidden_codes[-1],
+                        actions[i], gen_memory, states[0] if i == 0 else None, tau[i])
                 all_gen_hidden_codes.append(gen_next_code)
-                all_gen_actions.append(cur_actions)
                 all_gen_rewards.append(gen_rewards)
                 all_gen_dones.append(gen_dones)
             with torch.enable_grad():
                 all_gen_hidden_codes = torch.stack(all_gen_hidden_codes, 0)
-                all_gen_actions = torch.stack(all_gen_actions, 0)
                 all_gen_rewards = torch.stack(all_gen_rewards, 0)
                 all_gen_dones = torch.stack(all_gen_dones, 0)
-
-            # disc fake
-            disc_fake = []
-            # all_dones_masks = []
-            # cur_dones_mask = torch.ones_like(dones[0])
-            gen_memory, disc_memory = None, None
-            for i in range(horizon):
-                with torch.enable_grad():
-                    d, _, disc_memory = self.world_disc(
-                        all_gen_hidden_codes[i].detach(), all_gen_hidden_codes[i + 1].detach(),
-                        all_gen_actions[i], all_gen_rewards[i].detach(), all_gen_dones[i].detach(),
-                        disc_memory, states[0] if i == 0 else None)
-                # all_dones_masks.append(cur_dones_mask)
-                # cur_dones_mask = cur_dones_mask.clone()
-                # cur_dones_mask[gen_dones[i] > 0] = 0
-                disc_fake.append(d)
-            with torch.enable_grad():
-                # all_dones_masks = torch.stack(all_dones_masks, 0)
-                disc_fake = torch.stack(disc_fake, 0)
-
-                # disc_fake = disc_fake #* all_dones_masks.detach()
-
-                # mask = self.get_done_mask(all_gen_dones).view(-1)
-                fake_loss = disc_fake.clamp(min=-1).mean()
-                # disc_fake = (disc_fake - disc_fake.mean()) / disc_fake.var().add(1e-8).sqrt()
-                # fake_loss = (-1 - disc_fake.clamp(min=-1)).pow(2).mean()
-
-                # real_lr_scale = (disc_real.detach() < 1).float().mean().item()
-                # fake_lr_scale = (disc_fake.detach() > -1).float().mean().item()
-                # fake_loss *= fake_lr_scale / (fake_lr_scale + real_lr_scale)
-                # real_loss *= real_lr_scale / (fake_lr_scale + real_lr_scale)
-
-            # set_lr_scale(self.world_disc_optim, 0.5 * (real_lr_scale + fake_lr_scale))
-
-            fake_loss.backward()
-            real_loss.backward()
-            denoiser_loss.backward()
-
-            torch.nn.utils.clip_grad_norm_(self.world_disc.parameters(), 20)
-
-            self.world_disc_optim.step()
-            self.denoiser_optim.step()
-
-            self.world_disc_optim.zero_grad()
-            self.world_gen_optim.zero_grad()
-            self.denoiser_optim.zero_grad()
-
-            # if not self.initial_world_training_done:
-            #     continue
-
-            # gen
-            with torch.enable_grad():
-                disc_memory = None
-                disc_gen = []
-                all_features = []
-                for i in range(horizon):
-                    d, features, disc_memory = self.world_disc(
-                        all_gen_hidden_codes[i], all_gen_hidden_codes[i + 1],
-                        all_gen_actions[i], all_gen_rewards[i], all_gen_dones[i],
-                        disc_memory, states[0] if i == 0 else None)
-                    disc_gen.append(d)
-                    all_features.append(features)
-                # (H, B)
-                disc_gen = torch.stack(disc_gen, 0)
-                all_features = torch.cat(all_features, 0)
-                # disc_gen = disc_gen #* all_dones_masks.detach()
-
-                denoised_features = self.disc_denoiser(all_features.detach())
-                fm_loss = F.mse_loss(all_features, denoised_features.detach())
-                gen_loss = -disc_gen.mean() #+ \
-                           #(features_gen.mean(0) - features_real.mean(0).detach()).pow(2).mean() #+ \
-                           #(features_gen.std(0) - features_real.std(0).detach()).pow(2).mean()
-                gen_loss += 0.05 * fm_loss
-                # gen_loss = (1 - disc_gen.clamp(max=1)).pow(2).mean()
-
-            # real_lr_scale = (1 - disc_real.mean()).clamp(1e-5, 0.5).item() * 2
-            # fake_lr_scale = (1 + disc_fake.mean()).clamp(1e-5, 0.5).item() * 2
-            # gen_lr_scale = (disc_gen.detach() < 1).float().mean().item()
-            # set_lr_scale(self.world_gen_optim, gen_lr_scale)
-            # set_lr_scale(self.world_disc_optim, (real_lr_scale + fake_lr_scale) / 2.0)
-            # with torch.enable_grad():
-            #     fake_loss *= 2 * fake_lr_scale / (fake_lr_scale + real_lr_scale)
-            #     real_loss *= 2 * real_lr_scale / (fake_lr_scale + real_lr_scale)
-
-            gen_loss.backward()
-
-            torch.nn.utils.clip_grad_norm_(self.world_gen.parameters(), 20)
-            # torch.nn.utils.clip_grad_norm_(self.world_gen_init.parameters(), 20)
-            # torch.nn.utils.clip_grad_norm_(self.world_disc_init.parameters(), 20)
-
+                # print(all_gen_hidden_codes.shape, hidden_codes.shape, all_gen_rewards.shape, rewards.shape, all_gen_dones.shape, dones.shape)
+                gen_mse_loss = huber_quantile_loss(all_gen_hidden_codes, hidden_codes[1:], tau[..., :-2]) + \
+                               huber_quantile_loss(all_gen_rewards, rewards[:-1], tau[..., -2]) + \
+                               huber_quantile_loss(0.2 * all_gen_dones, 0.2 * dones[:-1], tau[..., -1])
+                # gen_mse_loss = (all_gen_hidden_codes - hidden_codes[1:]).pow(2).mean(-1)
+                               # (all_gen_rewards - rewards[:-1]).pow(2) + \
+                               # (all_gen_dones - dones[:-1]).pow(2)
+                dones_shift = dones[:-1].clone()
+                dones_shift[1:] = dones[:-2]
+                dones_shift[0] = 0
+                # gen_mse_loss = gen_mse_loss.mul(1 - dones_shift).mean()
+                gen_mse_loss = gen_mse_loss.mean()
+            gen_mse_loss.backward()
+            # torch.nn.utils.clip_grad_norm_(self.world_gen.parameters(), 20)
             self.world_gen_optim.step()
-
-            self.world_disc_optim.zero_grad()
             self.world_gen_optim.zero_grad()
+
+            # with torch.enable_grad():
+            #     disc_memory = None
+            #     disc_real = []
+            #     all_features = []
+            #     # all_dones_masks = []
+            #     for i in range(horizon - 1):
+            #         d, features, disc_memory = self.world_disc(
+            #             hidden_codes[i], hidden_codes[i + 1], actions[i], rewards[i], dones[i],
+            #             disc_memory, states[0] if i == 0 else None)
+            #         # all_dones_masks.append(cur_dones_mask)
+            #         disc_real.append(d)
+            #         all_features.append(features)
+            #         # cur_dones_mask = cur_dones_mask.clone()
+            #         # cur_dones_mask[dones[i] > 0] = 0
+            #     # (H, B)
+            #     # all_dones_masks = torch.stack(all_dones_masks, 0)
+            #     disc_real = torch.stack(disc_real, 0)
+            #     all_features = torch.cat(all_features, 0)
+            #     # disc_real = disc_real #* all_dones_masks.detach()
+            #
+            #     # mask = self.get_done_mask(dones[:-1]).view(-1)
+            #     real_loss = -disc_real.clamp(max=1).mean()
+            #     denoised_features = self.disc_denoiser(all_features.detach() + torch.randn_like(all_features))
+            #     denoiser_loss = F.mse_loss(denoised_features, all_features.detach())
+            #     # disc_real = (disc_real - disc_real.mean()) / disc_real.var().add(1e-8).sqrt()
+            #     # real_loss = (1 - disc_real.clamp(max=1)).pow(2).mean()
+            #
+            # # set_lr_scale(self.world_disc_optim, real_lr_scale)
+            #
+            # # real_loss.backward()
+            # # denoiser_loss.backward()
+            # # self.world_disc_optim.step()
+            # # self.denoiser_optim.step()
+            # # self.world_disc_optim.zero_grad()
+            # # self.world_gen_optim.zero_grad()
+            # # self.denoiser_optim.zero_grad()
+            #
+            # all_gen_hidden_codes = [hidden_codes[0]]
+            # all_gen_actions = []
+            # all_gen_rewards = []
+            # all_gen_dones = []
+            # gen_memory = None
+            # for i in range(horizon):
+            #     ac_out = self.model(all_gen_hidden_codes[-1], hidden_code_input=True)
+            #     cur_code = all_gen_hidden_codes[-1]
+            #     cur_actions = self.model.pd.sample(ac_out.probs)
+            #     with torch.enable_grad():
+            #         gen_next_code, gen_rewards, gen_dones, gen_memory = self.world_gen(
+            #             cur_code, cur_actions, gen_memory, states[0] if i == 0 else None)
+            #     all_gen_hidden_codes.append(gen_next_code)
+            #     all_gen_actions.append(cur_actions)
+            #     all_gen_rewards.append(gen_rewards)
+            #     all_gen_dones.append(gen_dones)
+            # with torch.enable_grad():
+            #     all_gen_hidden_codes = torch.stack(all_gen_hidden_codes, 0)
+            #     all_gen_actions = torch.stack(all_gen_actions, 0)
+            #     all_gen_rewards = torch.stack(all_gen_rewards, 0)
+            #     all_gen_dones = torch.stack(all_gen_dones, 0)
+            #
+            # # disc fake
+            # disc_fake = []
+            # # all_dones_masks = []
+            # # cur_dones_mask = torch.ones_like(dones[0])
+            # gen_memory, disc_memory = None, None
+            # for i in range(horizon):
+            #     with torch.enable_grad():
+            #         d, _, disc_memory = self.world_disc(
+            #             all_gen_hidden_codes[i].detach(), all_gen_hidden_codes[i + 1].detach(),
+            #             all_gen_actions[i], all_gen_rewards[i].detach(), all_gen_dones[i].detach(),
+            #             disc_memory, states[0] if i == 0 else None)
+            #     # all_dones_masks.append(cur_dones_mask)
+            #     # cur_dones_mask = cur_dones_mask.clone()
+            #     # cur_dones_mask[gen_dones[i] > 0] = 0
+            #     disc_fake.append(d)
+            # with torch.enable_grad():
+            #     # all_dones_masks = torch.stack(all_dones_masks, 0)
+            #     disc_fake = torch.stack(disc_fake, 0)
+            #
+            #     # disc_fake = disc_fake #* all_dones_masks.detach()
+            #
+            #     # mask = self.get_done_mask(all_gen_dones).view(-1)
+            #     fake_loss = disc_fake.clamp(min=-1).mean()
+            #     # disc_fake = (disc_fake - disc_fake.mean()) / disc_fake.var().add(1e-8).sqrt()
+            #     # fake_loss = (-1 - disc_fake.clamp(min=-1)).pow(2).mean()
+            #
+            #     # real_lr_scale = (disc_real.detach() < 1).float().mean().item()
+            #     # fake_lr_scale = (disc_fake.detach() > -1).float().mean().item()
+            #     # fake_loss *= fake_lr_scale / (fake_lr_scale + real_lr_scale)
+            #     # real_loss *= real_lr_scale / (fake_lr_scale + real_lr_scale)
+            #
+            # # set_lr_scale(self.world_disc_optim, 0.5 * (real_lr_scale + fake_lr_scale))
+            #
+            # fake_loss.backward()
+            # real_loss.backward()
+            # denoiser_loss.backward()
+            #
+            # torch.nn.utils.clip_grad_norm_(self.world_disc.parameters(), 20)
+            #
+            # self.world_disc_optim.step()
+            # self.denoiser_optim.step()
+            #
+            # self.world_disc_optim.zero_grad()
+            # self.world_gen_optim.zero_grad()
+            # self.denoiser_optim.zero_grad()
+            #
+            # # if not self.initial_world_training_done:
+            # #     continue
+            #
+            # # gen
+            # with torch.enable_grad():
+            #     disc_memory = None
+            #     disc_gen = []
+            #     all_features = []
+            #     for i in range(horizon):
+            #         d, features, disc_memory = self.world_disc(
+            #             all_gen_hidden_codes[i], all_gen_hidden_codes[i + 1],
+            #             all_gen_actions[i], all_gen_rewards[i], all_gen_dones[i],
+            #             disc_memory, states[0] if i == 0 else None)
+            #         disc_gen.append(d)
+            #         all_features.append(features)
+            #     # (H, B)
+            #     disc_gen = torch.stack(disc_gen, 0)
+            #     all_features = torch.cat(all_features, 0)
+            #     # disc_gen = disc_gen #* all_dones_masks.detach()
+            #
+            #     denoised_features = self.disc_denoiser(all_features.detach())
+            #     fm_loss = F.mse_loss(all_features, denoised_features.detach())
+            #     gen_loss = -disc_gen.mean() #+ \
+            #                #(features_gen.mean(0) - features_real.mean(0).detach()).pow(2).mean() #+ \
+            #                #(features_gen.std(0) - features_real.std(0).detach()).pow(2).mean()
+            #     gen_loss += 0.05 * fm_loss
+            #     # gen_loss = (1 - disc_gen.clamp(max=1)).pow(2).mean()
+            #
+            # # real_lr_scale = (1 - disc_real.mean()).clamp(1e-5, 0.5).item() * 2
+            # # fake_lr_scale = (1 + disc_fake.mean()).clamp(1e-5, 0.5).item() * 2
+            # # gen_lr_scale = (disc_gen.detach() < 1).float().mean().item()
+            # # set_lr_scale(self.world_gen_optim, gen_lr_scale)
+            # # set_lr_scale(self.world_disc_optim, (real_lr_scale + fake_lr_scale) / 2.0)
+            # # with torch.enable_grad():
+            # #     fake_loss *= 2 * fake_lr_scale / (fake_lr_scale + real_lr_scale)
+            # #     real_loss *= 2 * real_lr_scale / (fake_lr_scale + real_lr_scale)
+            #
+            # gen_loss.backward()
+            #
+            # torch.nn.utils.clip_grad_norm_(self.world_gen.parameters(), 20)
+            # # torch.nn.utils.clip_grad_norm_(self.world_gen_init.parameters(), 20)
+            # # torch.nn.utils.clip_grad_norm_(self.world_disc_init.parameters(), 20)
+            #
+            # self.world_gen_optim.step()
+            #
+            # self.world_disc_optim.zero_grad()
+            # self.world_gen_optim.zero_grad()
 
             # self.world_disc_optim.zero_grad()
             # self.world_gen_optim.zero_grad()
@@ -585,7 +634,8 @@ class MPPO(PPO):
             all_gen_dones = []
             for i in range(horizon):
                 gen_next_code, gen_rewards, gen_dones, gen_memory = \
-                    self.world_gen(all_gen_hidden_codes[i], actions[i], gen_memory)
+                    self.world_gen(all_gen_hidden_codes[i], actions[i], gen_memory,
+                                   states[0] if i == 0 else None, tau[i])
                 all_gen_hidden_codes.append(gen_next_code)
                 all_gen_rewards.append(gen_rewards)
                 all_gen_dones.append(gen_dones)
@@ -596,22 +646,22 @@ class MPPO(PPO):
             self.log_gen_errors(f'full-step', hidden_codes[l - 1], hidden_codes[l], all_gen_hidden_codes[l],
                                 dones[l], all_gen_dones[l], rewards[l], all_gen_rewards[l])
 
-            self.logger.add_scalar('DAE train loss', denoiser_loss, self.frame)
-            self.logger.add_scalar('DAE FM loss', fm_loss, self.frame)
-            began_M = disc_real.mean() + torch.abs(self.began_gamma * disc_real.mean() - disc_fake.mean())
-            self.logger.add_scalar('convergence', began_M, self.frame)
-            self.logger.add_scalar('disc real', disc_real.mean(), self.frame)
-            self.logger.add_scalar('disc fake', disc_fake.mean(), self.frame)
-            self.logger.add_scalar('disc gen', disc_gen.mean(), self.frame)
+            # self.logger.add_scalar('DAE train loss', denoiser_loss, self.frame)
+            # self.logger.add_scalar('DAE FM loss', fm_loss, self.frame)
+            # began_M = disc_real.mean() + torch.abs(self.began_gamma * disc_real.mean() - disc_fake.mean())
+            # self.logger.add_scalar('convergence', began_M, self.frame)
+            # self.logger.add_scalar('disc real', disc_real.mean(), self.frame)
+            # self.logger.add_scalar('disc fake', disc_fake.mean(), self.frame)
+            # self.logger.add_scalar('disc gen', disc_gen.mean(), self.frame)
             # self.logger.add_scalar('disc real lr scale', real_lr_scale, self.frame)
             # self.logger.add_scalar('disc fake lr scale', fake_lr_scale, self.frame)
             # self.logger.add_scalar('disc gen lr scale', gen_lr_scale, self.frame)
 
-    def log_gen_errors(self, tag, ral_cur_hidden, real_next_hidden, gen_next_hidden,
+    def log_gen_errors(self, tag, real_cur_hidden, real_next_hidden, gen_next_hidden,
                        real_dones, gen_dones, real_rewards, gen_rewards):
         # dones_mask = ((real_dones < 0) & (gen_dones < 0)).float()
         rmse = lambda a, b: (a - b).abs().mean().item()
-        state_norm_rmse = rmse(gen_next_hidden, real_next_hidden) / max(1e-6, rmse(ral_cur_hidden, real_next_hidden))
+        state_norm_rmse = rmse(gen_next_hidden, real_next_hidden) / max(1e-10, rmse(real_cur_hidden, real_next_hidden))
         self.logger.add_scalar(f'gen {tag} state err', rmse(gen_next_hidden, real_next_hidden), self.frame)
         self.logger.add_scalar(f'gen {tag} state norm err', state_norm_rmse, self.frame)
         self.logger.add_scalar(f'gen {tag} reward err', rmse(gen_rewards, real_rewards), self.frame)

@@ -106,14 +106,14 @@ class Actor(nn.Module):
         for i in range(len(hidden_sizes)):
             n_in = in_size if i == 0 else hidden_sizes[i - 1]
             n_out = hidden_sizes[i]
-            layer = []
-            layer.append(nn.Linear(n_in, n_out))
-            if norm == 'group':
-                layer.append(nn.GroupNorm(n_out // 16, n_out))
-            elif norm == 'layer':
-                layer.append(nn.LayerNorm(n_out))
-            elif norm == 'batch':
-                layer.append(nn.BatchNorm1d(n_out, momentum=0.01))
+            layer = [nn.Linear(n_in, n_out)]
+            if i != 0:
+                if norm == 'group':
+                    layer.append(nn.GroupNorm(n_out // 16, n_out))
+                elif norm == 'layer':
+                    layer.append(nn.LayerNorm(n_out))
+                elif norm == 'batch':
+                    layer.append(nn.BatchNorm1d(n_out, momentum=0.01))
             layer.append(activation())
             seq.append(nn.Sequential(*layer))
         if out_size is not None:
@@ -166,7 +166,7 @@ class FCActor(Actor):
     """
 
     def __init__(self, observation_space: gym.Space, action_space: gym.Space, head_factory: Callable,
-                 hidden_sizes=(128, 128), activation=nn.ELU, hidden_code_type='first', **kwargs):
+                 hidden_sizes=(128, 128), activation=nn.ELU, hidden_code_type='last', **kwargs):
         """
         Args:
             observation_space: Env's observation space
