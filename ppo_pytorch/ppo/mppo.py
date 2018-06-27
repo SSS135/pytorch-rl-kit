@@ -31,9 +31,10 @@ from collections import deque
 from ..models.utils import weights_init
 from optfn.grad_running_norm import GradRunningNorm
 from optfn.drrelu import DRReLU
+from optfn.skip_connections import ResidualBlock
 
 
-def spectral_init(module, gain=2 ** 0.5, n_power_iterations=1):
+def spectral_init(module, gain=1, n_power_iterations=1):
     nn.init.kaiming_uniform_(module.weight, gain)
     if module.bias is not None:
         module.bias.data.zero_()
@@ -54,7 +55,7 @@ def set_lr_scale(optim: torch.optim.Optimizer, scale):
 
 def l1_quantile_loss(output, target, tau, reduce=True):
     u = target - output
-    loss = (tau - (u <= 0).float()) * u
+    loss = (tau - (u.detach() <= 0).float()) * u
     return loss.mean() if reduce else loss
 
 
@@ -111,16 +112,14 @@ class GanG(nn.Module):
         # self.memory_embedding = spectral_init(nn.Linear(hidden_size, hidden_size))
         # self.memory_out = nn.Linear(hidden_size, hidden_size * 2)
         # self.code_out = nn.Linear(hidden_size, hidden_code_size * 3 + 2)
+        input_size = action_pd.input_vector_len + hidden_code_size * 2 + hidden_size + state_size + 2
         self.model = nn.Sequential(
-            # nn.GroupNorm(4, hidden_size),
-            spectral_init(nn.Linear(action_pd.input_vector_len + hidden_code_size * 2 + hidden_size + state_size + 2, hidden_size, bias=False)),
-            nn.ReLU(),
-            spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
+            spectral_init(nn.Linear(input_size, hidden_size)),
             nn.GroupNorm(4, hidden_size),
-            nn.ReLU(),
-            spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
+            nn.LeakyReLU(0.1, True),
+            spectral_init(nn.Linear(hidden_size, hidden_size)),
             nn.GroupNorm(4, hidden_size),
-            nn.ReLU(),
+            nn.LeakyReLU(0.1, True),
             spectral_init(nn.Linear(hidden_size, hidden_size * 3 + hidden_code_size * 3 + 2))
         )
 
@@ -341,11 +340,11 @@ class MPPO(PPO):
     def __init__(self, *args,
                  density_buffer_size=16 * 1024,
                  replay_buffer_size=64 * 1024,
-                 world_disc_optim_factory=partial(GAdam, lr=3e-4, betas=(0, 0.9), weight_decay=1e-4, eps=1e-6),
-                 world_gen_optim_factory=partial(GAdam, lr=3e-4, betas=(0.5, 0.99)),
-                 denoiser_optim_factory=partial(GAdam, lr=3e-4, betas=(0, 0.9), weight_decay=1e-4, eps=1e-6),
+                 world_disc_optim_factory=partial(GAdam, lr=4e-4, betas=(0.5, 0.99), weight_decay=1e-4, eps=1e-6),
+                 world_gen_optim_factory=partial(GAdam, lr=5e-4, betas=(0.9, 0.99), weight_decay=1e-4, eps=1e-6),
+                 denoiser_optim_factory=partial(GAdam, lr=4e-4, betas=(0.5, 0.99), weight_decay=1e-4, eps=1e-6),
                  world_train_iters=8,
-                 world_train_rollouts=64,
+                 world_train_rollouts=32,
                  world_train_horizon=8,
                  began_gamma=0.5,
                  **kwargs):
@@ -436,7 +435,7 @@ class MPPO(PPO):
             hidden_codes = hidden_codes.view(*states.shape[:2], *hidden_codes.shape[1:])
             # hidden_codes += 0.05 * torch.randn_like(hidden_codes)
 
-            # mse
+            # quentile
             all_gen_hidden_codes = []
             all_gen_rewards = []
             all_gen_dones = []
@@ -458,14 +457,20 @@ class MPPO(PPO):
                 gen_mse_loss = huber_quantile_loss(all_gen_hidden_codes, hidden_codes[1:], tau[..., :-2]) + \
                                huber_quantile_loss(all_gen_rewards, rewards[:-1], tau[..., -2]) + \
                                huber_quantile_loss(0.2 * all_gen_dones, 0.2 * dones[:-1], tau[..., -1])
+
+                gen_head = self.model(all_gen_hidden_codes.view(-1, all_gen_hidden_codes.shape[-1]), hidden_code_input=True)
+                real_head = self.model(hidden_codes[1:].view(-1, hidden_codes.shape[-1]), hidden_code_input=True)
+                head_mse_loss = (gen_head.probs - real_head.probs.detach()).pow(2).mean(-1) + \
+                                (gen_head.state_values - real_head.state_values.detach()).pow(2).mean(-1)
+
                 # gen_mse_loss = (all_gen_hidden_codes - hidden_codes[1:]).pow(2).mean(-1)
                                # (all_gen_rewards - rewards[:-1]).pow(2) + \
                                # (all_gen_dones - dones[:-1]).pow(2)
-                dones_shift = dones[:-1].clone()
-                dones_shift[1:] = dones[:-2]
-                dones_shift[0] = 0
+                # dones_shift = dones[:-1].clone()
+                # dones_shift[1:] = dones[:-2]
+                # dones_shift[0] = 0
                 # gen_mse_loss = gen_mse_loss.mul(1 - dones_shift).mean()
-                gen_mse_loss = gen_mse_loss.mean()
+                gen_mse_loss = gen_mse_loss.mean() + head_mse_loss.mean()
             gen_mse_loss.backward()
             # torch.nn.utils.clip_grad_norm_(self.world_gen.parameters(), 20)
             self.world_gen_optim.step()
@@ -513,13 +518,14 @@ class MPPO(PPO):
             # all_gen_rewards = []
             # all_gen_dones = []
             # gen_memory = None
+            # tau = hidden_codes.new_empty((hidden_codes.shape[0] - 1, hidden_codes.shape[1], hidden_codes.shape[2] + 2)).uniform_()
             # for i in range(horizon):
             #     ac_out = self.model(all_gen_hidden_codes[-1], hidden_code_input=True)
             #     cur_code = all_gen_hidden_codes[-1]
             #     cur_actions = self.model.pd.sample(ac_out.probs)
             #     with torch.enable_grad():
             #         gen_next_code, gen_rewards, gen_dones, gen_memory = self.world_gen(
-            #             cur_code, cur_actions, gen_memory, states[0] if i == 0 else None)
+            #             cur_code, cur_actions, gen_memory, states[0] if i == 0 else None, tau[i])
             #     all_gen_hidden_codes.append(gen_next_code)
             #     all_gen_actions.append(cur_actions)
             #     all_gen_rewards.append(gen_rewards)
@@ -624,14 +630,12 @@ class MPPO(PPO):
             # self.world_disc_optim.zero_grad()
             # self.world_gen_optim.zero_grad()
 
-            # self.world_disc_optim.zero_grad()
-            # self.world_gen_optim.zero_grad()
-
         if self._do_log:
             gen_memory = None
             all_gen_hidden_codes = [hidden_codes[0]]
             all_gen_rewards = []
             all_gen_dones = []
+            tau = hidden_codes.new_empty((hidden_codes.shape[0] - 1, hidden_codes.shape[1], hidden_codes.shape[2] + 2)).uniform_()
             for i in range(horizon):
                 gen_next_code, gen_rewards, gen_dones, gen_memory = \
                     self.world_gen(all_gen_hidden_codes[i], actions[i], gen_memory,

@@ -166,7 +166,7 @@ class FCActor(Actor):
     """
 
     def __init__(self, observation_space: gym.Space, action_space: gym.Space, head_factory: Callable,
-                 hidden_sizes=(128, 128), activation=nn.ELU, hidden_code_type='last', **kwargs):
+                 hidden_sizes=(128, 128), activation=nn.ReLU, hidden_code_type='last', **kwargs):
         """
         Args:
             observation_space: Env's observation space
