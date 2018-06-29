@@ -2,7 +2,6 @@ import pprint
 from itertools import count
 from typing import Callable
 
-import gym
 import numpy as np
 
 from .tensorboard_env_logger import TensorboardEnvLogger

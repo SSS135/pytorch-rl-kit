@@ -3,6 +3,7 @@ from functools import partial
 from typing import Optional, List, Callable
 
 import gym
+import gym.spaces
 import numpy as np
 import torch
 import torch.nn as nn
@@ -271,7 +272,7 @@ class CNNActor(Actor):
         # create convolutional layers
         if cnn_kind == 'normal': # Nature DQN (1,683,456 parameters)
             self.convs = nn.ModuleList([
-                self.make_layer(nn.Conv2d(observation_space.shape[0], 32, 8, 4)),
+                self.make_layer(nn.Conv2d(observation_space.shape[0], 32, 8, 4), allow_norm=False),
                 self.make_layer(nn.Conv2d(32, 64, 4, 2)),
                 self.make_layer(nn.Conv2d(64, 64, 3, 1)),
             ])
@@ -279,11 +280,10 @@ class CNNActor(Actor):
         elif cnn_kind == 'large': # custom (2,066,432 parameters)
             nf = 32
             self.convs = nn.ModuleList([
-                self.make_layer(nn.Conv2d(observation_space.shape[0], nf, 4, 2, 0, bias=self.norm is None)),
+                self.make_layer(nn.Conv2d(observation_space.shape[0], nf, 4, 2, 0), allow_norm=False),
                 self.make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0, bias=self.norm is None)),
                 self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1, bias=self.norm is None)),
                 self.make_layer(nn.Conv2d(nf * 4, nf * 8, 4, 2, 1, bias=self.norm is None)),
-                nn.Dropout2d(dropout),
             ])
             self.linear = self.make_layer(nn.Linear(nf * 8 * 4 * 4, 512))
         elif cnn_kind == 'grouped': # custom grouped (6,950,912 parameters)
@@ -319,7 +319,7 @@ class CNNActor(Actor):
 
         # create head
         self.head = head_factory(self.linear[0].out_features, self.pd)
-        self.hidden_code_size = self.linear[0].out_features
+        self.hidden_code_size = self.linear[0].in_features # self.linear[0].out_features
 
         self.reset_weights()
 
@@ -369,27 +369,35 @@ class CNNActor(Actor):
                 # self.log_conv_filters(i, layer[0])
         return x
 
-    def forward(self, input):
-        log_policy_attention = self.do_log and input.is_leaf
-        input = image_to_float(input)
-        if log_policy_attention:
-            input.requires_grad = True
+    def forward(self, input, hidden_code_input=False, only_hidden_code_output=False):
+        if not hidden_code_input:
+            log_policy_attention = self.do_log and input.is_leaf
+            input = image_to_float(input)
+            if log_policy_attention:
+                input.requires_grad = True
 
-        x = self._extract_features(input)
+            x = self._extract_features(input)
 
-        # flatten convolution output
-        x = x.view(x.size(0), -1)
+            # flatten convolution output
+            x = x.view(x.size(0), -1)
+        else:
+            x = input
+
+        if only_hidden_code_output:
+            return HeadOutput(hidden_code=x)
+
         # run linear layer
         x = self.linear(x)
 
         ac_out = self.head(x)
         ac_out.hidden_code = x
 
-        if self.do_log:
-            self.logger.add_histogram('conv linear', x, self._step)
+        if not hidden_code_input:
+            if self.do_log:
+                self.logger.add_histogram('conv linear', x, self._step)
 
-        if log_policy_attention:
-            self.log_policy_attention(input, ac_out)
+            if log_policy_attention:
+                self.log_policy_attention(input, ac_out)
 
         return ac_out
 
