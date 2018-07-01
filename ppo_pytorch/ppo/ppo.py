@@ -350,11 +350,11 @@ class PPO(RLBase):
         if pd is None:
             pd = self.model.pd
 
-        # if tag not in self.grad_norms:
-        #     self.grad_norms[tag] = (GradRunningNorm(), GradRunningNorm(self.value_loss_scale))
-        # prob_norm, value_norm = self.grad_norms[tag]
-        # probs = prob_norm(probs)
-        # values = value_norm(values)
+        if tag not in self.grad_norms:
+            self.grad_norms[tag] = (GradRunningNorm(), GradRunningNorm(self.value_loss_scale))
+        prob_norm, value_norm = self.grad_norms[tag]
+        probs = prob_norm(probs)
+        values = value_norm(values)
 
         # clipping factors
         value_clip = self.value_clip * self.clip_mult

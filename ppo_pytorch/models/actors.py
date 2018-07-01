@@ -319,7 +319,7 @@ class CNNActor(Actor):
 
         # create head
         self.head = head_factory(self.linear[0].out_features, self.pd)
-        self.hidden_code_size = self.linear[0].in_features # self.linear[0].out_features
+        self.hidden_code_size = self.linear[0].out_features
 
         self.reset_weights()
 
@@ -370,8 +370,8 @@ class CNNActor(Actor):
         return x
 
     def forward(self, input, hidden_code_input=False, only_hidden_code_output=False):
+        log_policy_attention = self.do_log and input.is_leaf and not hidden_code_input and not only_hidden_code_output
         if not hidden_code_input:
-            log_policy_attention = self.do_log and input.is_leaf
             input = image_to_float(input)
             if log_policy_attention:
                 input.requires_grad = True
@@ -380,17 +380,17 @@ class CNNActor(Actor):
 
             # flatten convolution output
             x = x.view(x.size(0), -1)
+            # run linear layer
+            x = self.linear(x)
         else:
             x = input
 
+        hidden_code = x
         if only_hidden_code_output:
-            return HeadOutput(hidden_code=x)
-
-        # run linear layer
-        x = self.linear(x)
+            return HeadOutput(hidden_code=hidden_code)
 
         ac_out = self.head(x)
-        ac_out.hidden_code = x
+        ac_out.hidden_code = hidden_code
 
         if not hidden_code_input:
             if self.do_log:
