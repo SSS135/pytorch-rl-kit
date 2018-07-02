@@ -1,9 +1,9 @@
 from functools import partial
 
 from .actors import FCActor, CNNActor, Actor, Sega_CNNActor
+from .heads import ActionValuesHead, ActorCriticHead, HeadBase
 from .qrnn_actors import QRNNActor, CNN_QRNNActor, Sega_CNN_HQRNNActor, HQRNNActor
 from .seq_actors import Sega_CNNSeqActor
-from .heads import ActionValuesHead, ActorCriticHead, HeadBase
 
 FCActorCritic = partial(FCActor, head_factory=ActorCriticHead)
 CNNActorCritic = partial(CNNActor, head_factory=ActorCriticHead)

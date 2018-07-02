@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+
 import torch
 from ppo_pytorch import ppo
 from ppo_pytorch.common.rl_alg_test import rl_alg_test

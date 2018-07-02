@@ -5,7 +5,6 @@ from typing import Callable
 import numpy as np
 
 from .tensorboard_env_logger import TensorboardEnvLogger
-from .env_factory import NamedVecEnv
 
 
 class GymWrapper:

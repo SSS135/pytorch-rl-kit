@@ -1,28 +1,17 @@
-import gzip
-import multiprocessing.dummy as mp
-import os
-import pprint
-import retro
-from itertools import count
-
-import gym
-import numpy as np
-from retro.retro_env import RetroEnv
-
-from .atari_wrappers import wrap_deepmind, make_atari
-from .monitor import Monitor
-from .rl_base import RLBase
-from .tensorboard_env_logger import TensorboardEnvLogger
-from .atari_wrappers import NoopResetEnv, MaxAndSkipEnv, EpisodicLifeEnv, FireResetEnv, ScaledFloatFrame, ClipRewardEnv, FrameStack
-import gym.spaces as spaces
-from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 from functools import partial
-from .sonic_utils import SonicDiscretizer, AllowBacktracking, ChangeStateAtRestart
-import random
-from .sonic_utils import sonic_1_test_levels, sonic_2_test_levels, sonic_3_test_levels
-from .sonic_utils import sonic_1_train_levels, sonic_2_train_levels, sonic_3_train_levels
 from multiprocessing.dummy import Pool
+
 import cv2
+import gym
+import gym.spaces as spaces
+import numpy as np
+from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
+
+from .atari_wrappers import NoopResetEnv, MaxAndSkipEnv, EpisodicLifeEnv, FireResetEnv, ScaledFloatFrame, ClipRewardEnv, \
+    FrameStack
+from .monitor import Monitor
+from .sonic_utils import SonicDiscretizer, AllowBacktracking, ChangeStateAtRestart
+from .sonic_utils import sonic_1_train_levels, sonic_2_train_levels, sonic_3_train_levels
 
 
 class NamedVecEnv:

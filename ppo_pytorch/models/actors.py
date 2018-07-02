@@ -2,26 +2,20 @@ import math
 from functools import partial
 from typing import Optional, List, Callable
 
-import gym
 import gym.spaces
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.init as init
 import torch.nn.functional as F
+import torch.nn.init as init
+from optfn.learned_norm import LearnedNorm2d
 from torch import autograd
 from torch.autograd import Variable
 
+from .heads import HeadOutput
 from .utils import weights_init, make_conv_heatmap, image_to_float
 from ..common.make_grid import make_grid
 from ..common.probability_distributions import make_pd
-from optfn.swish import Swish
-from optfn.learned_norm import LearnedNorm2d
-from torch.nn.utils import weight_norm
-from optfn.spectral_norm import spectral_norm
-from optfn.weight_rescale import weight_rescale
-from optfn.multihead_attention import MultiheadAttention2d
-from .heads import HeadOutput
 
 
 class GroupTranspose(nn.Module):

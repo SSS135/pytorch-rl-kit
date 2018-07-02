@@ -1,32 +1,22 @@
-import copy
 import pprint
 from collections import namedtuple
 from functools import partial
+from pathlib import Path
 
 import gym.spaces
 import numpy as np
 import torch
+import torch.autograd
 import torch.nn.functional as F
 import torch.optim as optim
+from optfn.opt_clip import opt_clip
 from torch.nn.utils import clip_grad_norm_
-from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
 
-from ..common import DecayLR, ValueDecay
 from ..common.gae import calc_advantages, calc_returns
-from ..common.multi_dataset import MultiDataset
 from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
 from ..models import FCActorCritic
-from ..common.param_groups_getter import get_param_groups
-from pathlib import Path
-import math
-from optfn.grad_running_norm import GradRunningNorm
-from optfn.opt_clip import opt_clip
-import torch.autograd
-from ..models.utils import apply_weight_norm
-from optfn.weight_rescale import weight_rescale
-
 
 # def lerp(start, end, weight):
 #     """
@@ -150,7 +140,7 @@ class PPO(RLBase):
         # self.model.apply(partial(apply_weight_norm, norm=weight_rescale))
         if model_init_path is not None:
             self.model.load_state_dict(torch.load(model_init_path))
-        self.optimizer = optimizer_factory(get_param_groups(self.model))
+        self.optimizer = optimizer_factory(self.model.parameters())
         self.lr_scheduler = lr_scheduler_factory(self.optimizer) if lr_scheduler_factory is not None else None
         self.clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
         self.entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
@@ -350,11 +340,11 @@ class PPO(RLBase):
         if pd is None:
             pd = self.model.pd
 
-        if tag not in self.grad_norms:
-            self.grad_norms[tag] = (GradRunningNorm(), GradRunningNorm(self.value_loss_scale))
-        prob_norm, value_norm = self.grad_norms[tag]
-        probs = prob_norm(probs)
-        values = value_norm(values)
+        # if tag not in self.grad_norms:
+        #     self.grad_norms[tag] = (GradRunningNorm(), GradRunningNorm(self.value_loss_scale))
+        # prob_norm, value_norm = self.grad_norms[tag]
+        # probs = prob_norm(probs)
+        # values = value_norm(values)
 
         # clipping factors
         value_clip = self.value_clip * self.clip_mult

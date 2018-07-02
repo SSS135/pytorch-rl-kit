@@ -1,9 +1,9 @@
-import numpy as np
-import gym
-from gym import spaces
-from gym.envs.classic_control.cartpole import CartPoleEnv
-from gym.envs.registration import register
 import random
+
+import gym
+import numpy as np
+from gym import spaces
+from gym.envs.registration import register
 
 register(
     id='Repeat-v0',

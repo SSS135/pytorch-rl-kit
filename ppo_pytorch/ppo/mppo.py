@@ -1,37 +1,13 @@
-import copy
-import pprint
-from collections import namedtuple, OrderedDict
 from functools import partial
 from itertools import chain
 
-import gym.spaces
 import numpy as np
 import torch
-import torch.nn.functional as F
-import torch.optim as optim
-from torch.autograd import Variable
-from torch.nn.utils import clip_grad_norm_
-from torch.utils.data import DataLoader
-from torchvision.utils import make_grid
-
-from ..common import DecayLR, ValueDecay
-from ..common.gae import calc_advantages, calc_returns
-from ..common.multi_dataset import MultiDataset
-from ..common.probability_distributions import DiagGaussianPd
-from ..common.rl_base import RLBase
-from ..models import QRNNActorCritic
-from ..models.heads import HeadOutput
-from .ppo import PPO, TrainingData
-from collections import namedtuple
 import torch.nn as nn
-import random
-from optfn.spectral_norm import spectral_norm, SpectralNorm
 from optfn.gadam import GAdam
-from collections import deque
-from ..models.utils import weights_init
-from optfn.grad_running_norm import GradRunningNorm
-from optfn.drrelu import DRReLU
-from optfn.skip_connections import ResidualBlock
+from optfn.spectral_norm import SpectralNorm
+
+from .ppo import PPO
 
 
 def spectral_init(module, gain=1, n_power_iterations=1):
@@ -78,7 +54,7 @@ class GanG(nn.Module):
         # self.memory_embedding = spectral_init(nn.Linear(hidden_size, hidden_size))
         # self.memory_out = nn.Linear(hidden_size, hidden_size * 2)
         # self.code_out = nn.Linear(hidden_size, hidden_code_size * 3 + 2)
-        input_size = action_pd.input_vector_len + hidden_code_size * 2 + hidden_size + 2
+        input_size = action_pd.input_vector_len + hidden_code_size * 2 + hidden_size + 2 + action_pd.prob_vector_len + 1
         output_size = hidden_size * 3 + hidden_code_size * 3 + 2
         self.model = nn.Sequential(
             spectral_init(nn.Linear(input_size, hidden_size)),
@@ -116,8 +92,8 @@ class GanG(nn.Module):
 
 
 class ReplayBuffer:
-    def __init__(self, capacity):
-        self.capacity = capacity
+    def __init__(self, per_actor_capacity):
+        self.per_actor_capacity = per_actor_capacity
         self.states = None
         self.actions = None
         self.rewards = None
@@ -138,15 +114,15 @@ class ReplayBuffer:
 
         if self.states is None:
             actors = states.shape[1]
-            self.states = np.zeros((self.capacity, actors, *states.shape[2:]), dtype=states.dtype)
-            self.actions = np.zeros((self.capacity, actors, *actions.shape[2:]), dtype=actions.dtype)
-            self.rewards = np.zeros((self.capacity, actors), dtype=np.float32)
-            self.dones = np.zeros((self.capacity, actors), dtype=np.uint8)
+            self.states = np.zeros((self.per_actor_capacity, actors, *states.shape[2:]), dtype=states.dtype)
+            self.actions = np.zeros((self.per_actor_capacity, actors, *actions.shape[2:]), dtype=actions.dtype)
+            self.rewards = np.zeros((self.per_actor_capacity, actors), dtype=np.float32)
+            self.dones = np.zeros((self.per_actor_capacity, actors), dtype=np.uint8)
 
-        if self.index + states.shape[0] <= self.capacity:
+        if self.index + states.shape[0] <= self.per_actor_capacity:
             self._push_unchecked(states, actions, rewards, dones)
         else:
-            n = self.capacity - self.index
+            n = self.per_actor_capacity - self.index
             self._push_unchecked(states[:n], actions[:n], rewards[:n], dones[:n])
             self.index = 0
             self.full_loop = True
@@ -169,7 +145,7 @@ class ReplayBuffer:
 
         for ri in range(rollouts):
             rand_r = np.random.randint(self.states.shape[1])
-            rand_h = np.random.randint(len(self) - horizon)
+            rand_h = np.random.randint(self.per_actor_capacity - horizon)
             src_slice = (slice(rand_h, rand_h + horizon), rand_r)
             dst_slice = (slice(None), ri)
             states[dst_slice] = self.states[src_slice]
@@ -180,17 +156,16 @@ class ReplayBuffer:
         return states, actions, rewards, dones
 
     def __len__(self):
-        return self.capacity if self.full_loop else self.index
+        return (self.per_actor_capacity if self.full_loop else self.index) * \
+               (self.states.shape[1] if self.states is not None else 1)
 
 
 class MPPO(PPO):
     def __init__(self, *args,
-                 density_buffer_size=16 * 1024,
-                 replay_buffer_size=16 * 1024,
-                 # world_disc_optim_factory=partial(GAdam, lr=4e-4, betas=(0.5, 0.99), weight_decay=1e-4, eps=1e-6),
-                 world_gen_optim_factory=partial(GAdam, lr=6e-4, betas=(0.9, 0.9), amsgrad=True, amaxgrad=True,
-                                                 amsgrad_decay=0.1, weight_decay=1e-5),
-                 # denoiser_optim_factory=partial(GAdam, lr=4e-4, betas=(0.5, 0.99), weight_decay=1e-4, eps=1e-6),
+                 density_buffer_size=2 * 1024,
+                 per_actor_replay_buffer_size=4 * 1024,
+                 world_gen_optim_factory=partial(GAdam, lr=1e-3, betas=(0.9, 0.95), amsgrad=True, amaxgrad=True,
+                                                 amsgrad_decay=0.05, weight_decay=1e-5),
                  world_train_iters=32,
                  world_train_rollouts=32,
                  world_train_horizon=8,
@@ -199,11 +174,10 @@ class MPPO(PPO):
         super().__init__(*args, **kwargs)
         # assert world_batch_size % world_train_horizon == 0 and \
         #        (world_train_rollouts * world_train_horizon) % world_batch_size == 0
-        assert replay_buffer_size >= world_train_iters * world_train_rollouts * (world_train_horizon + 1)
+        assert per_actor_replay_buffer_size * self.num_actors >= world_train_iters * world_train_rollouts * (world_train_horizon + 1)
 
         self.density_buffer_size = density_buffer_size
-        self.replay_buffer_size = replay_buffer_size
-        # self.world_disc_optim_factory = world_disc_optim_factory
+        self.per_actor_replay_buffer_size = per_actor_replay_buffer_size
         self.world_gen_optim_factory = world_gen_optim_factory
         self.world_train_iters = world_train_iters
         self.world_train_rollouts = world_train_rollouts
@@ -211,31 +185,19 @@ class MPPO(PPO):
         self.began_gamma = began_gamma
 
         self.world_gen = GanG(self.model.hidden_code_size, self.model.pd)
-        self.memory_init_model = copy.deepcopy(self.model)
-        # self.world_disc = GanD(self.model.hidden_code_size, self.observation_space.shape[0], self.model.pd)
-        # self.world_gen_init = GanMemoryInit(self.observation_space.shape[0])
-        # self.world_disc_init = GanMemoryInit(self.observation_space.shape[0])
-        # self.disc_denoiser = DenoisingAutoencoder()
+        self.memory_init_model = self.model_factory(self.observation_space, self.action_space)
+        for src, dst in zip(self.model.parameters(), self.memory_init_model.parameters()):
+            dst.data.copy_(src.data)
         self.world_gen_optim = world_gen_optim_factory(
             chain(self.world_gen.parameters(), self.memory_init_model.parameters()))
-        # self.world_disc_optim = world_disc_optim_factory(self.world_disc.parameters())
-        # self.denoiser_optim = denoiser_optim_factory(self.disc_denoiser.parameters())
         # self.density_buffer = deque(maxlen=density_buffer_size)
-        self.replay_buffer = ReplayBuffer(replay_buffer_size)
-        # self.initial_world_training_done = True
+        self.replay_buffer = ReplayBuffer(per_actor_replay_buffer_size)
 
     def _ppo_update(self, data):
         self._update_replay_buffer(data)
         min_buf_size = self.world_train_iters * self.world_train_rollouts * (self.world_train_horizon + 1)
-        if len(self.replay_buffer) >= min_buf_size or len(self.replay_buffer) == self.replay_buffer_size:
-            # if self.initial_world_training_done:
+        if len(self.replay_buffer) >= min_buf_size or len(self.replay_buffer) == self.per_actor_replay_buffer_size * self.num_actors:
             self._train_world()
-            # else:
-            #     # for _ in range(50):
-            #     #     self._train_world()
-            #     self.initial_world_training_done = True
-            #     # for _ in range(10):
-            #     #     self._train_world()
         return super()._ppo_update(data)
 
     def _update_replay_buffer(self, data):
@@ -281,21 +243,21 @@ class MPPO(PPO):
             # update_spectral_norm(self.world_disc)
             # update_spectral_norm(self.disc_denoiser)
 
-            # disc real
-            hidden_codes = self.model(states.view(-1, *states.shape[2:]), only_hidden_code_output=True).hidden_code
-            hidden_codes = hidden_codes.view(*states.shape[:2], *hidden_codes.shape[1:])
-            # hidden_codes += 0.05 * torch.randn_like(hidden_codes)
-
             # quentile
             with torch.enable_grad():
+                real_head = self.model(states.view(-1, *states.shape[2:]))
+                hidden_codes = real_head.hidden_code.detach().view(*states.shape[:2], *real_head.hidden_code.shape[1:])
+
                 all_gen_next_hc = []
                 all_gen_rewards = []
                 all_gen_dones = []
-                tau = hidden_codes.new_empty((hidden_codes.shape[0] - 1, hidden_codes.shape[1], hidden_codes.shape[2] + 2)).uniform_()
+                prob_len = self.model.pd.prob_vector_len
+                hc_len = hidden_codes.shape[2]
+                tau = hidden_codes.new_empty((hidden_codes.shape[0] - 1, hidden_codes.shape[1], hc_len + 2 + prob_len + 1)).uniform_()
                 gen_memory = self.memory_init_model(states[0], only_hidden_code_output=True).hidden_code
                 for i in range(horizon):
                     gen_next_code, gen_rewards, gen_dones, gen_memory = self.world_gen(
-                        hidden_codes[i] if i == 0 else all_gen_next_hc[-1], actions[i], gen_memory, tau[i])
+                        hidden_codes[0] if i == 0 else all_gen_next_hc[-1], actions[i], gen_memory, tau[i])
                     all_gen_next_hc.append(gen_next_code)
                     all_gen_rewards.append(gen_rewards)
                     all_gen_dones.append(gen_dones)
@@ -303,14 +265,20 @@ class MPPO(PPO):
                 all_gen_rewards = torch.stack(all_gen_rewards, 0)
                 all_gen_dones = torch.stack(all_gen_dones, 0)
                 # print(all_gen_hidden_codes.shape, hidden_codes.shape, all_gen_rewards.shape, rewards.shape, all_gen_dones.shape, dones.shape)
-                gen_q_loss = huber_quantile_loss(all_gen_next_hc, hidden_codes[1:], tau[..., :-2]) + \
-                             0.2 * huber_quantile_loss(all_gen_rewards, rewards[:-1], tau[..., -2]) + \
-                             0.2 * huber_quantile_loss(all_gen_dones, dones[:-1], tau[..., -1])
+                tau_hc, tau_prob, tau_done, tau_reward, tau_value = tau.split([hc_len, prob_len, 1, 1, 1], -1)
+                tau_done, tau_reward, tau_value = [x.squeeze(-1) for x in (tau_done, tau_reward, tau_value)]
+                gen_q_loss = huber_quantile_loss(all_gen_next_hc, hidden_codes[1:], tau_hc) + \
+                             0.2 * huber_quantile_loss(all_gen_rewards, rewards[:-1], tau_reward) + \
+                             0.2 * huber_quantile_loss(all_gen_dones, dones[:-1], tau_done)
 
-                # gen_head = self.model(all_gen_hidden_codes.view(-1, all_gen_hidden_codes.shape[-1]), hidden_code_input=True)
+                gen_head = self.model(all_gen_next_hc.view(-1, all_gen_next_hc.shape[-1]), hidden_code_input=True)
                 # real_head = self.model(hidden_codes[1:].view(-1, hidden_codes.shape[-1]), hidden_code_input=True)
-                # head_mse_loss = (gen_head.probs - real_head.probs.detach()).pow(2).mean(-1) + \
-                #                 (gen_head.state_values - real_head.state_values.detach()).pow(2).mean(-1)
+                real_probs = real_head.probs.detach().view(-1, states.shape[1], *real_head.probs.shape[1:])
+                gen_probs = gen_head.probs.view(-1, states.shape[1], *gen_head.probs.shape[1:])
+                real_values = real_head.state_values.detach().view(-1, states.shape[1])
+                gen_values = gen_head.state_values.view(-1, states.shape[1])
+                head_q_loss = huber_quantile_loss(gen_probs, real_probs[1:], tau_prob) + \
+                              huber_quantile_loss(gen_values, real_values[1:], tau_value)
 
                 # gen_mse_loss = (all_gen_hidden_codes - hidden_codes[1:]).pow(2).mean(-1)
                                # (all_gen_rewards - rewards[:-1]).pow(2) + \
@@ -321,9 +289,10 @@ class MPPO(PPO):
                 # dones_shift[0] = 0
                 # gen_q_loss = gen_q_loss.mul(1 - dones_shift).mean()
 
-                gen_q_loss = gen_q_loss.mean() #+ head_mse_loss.mean()
+                gen_q_loss = gen_q_loss.mean() + 0.2 * head_q_loss.mean() #+ head_mse_loss.mean()
             gen_q_loss.backward()
             # torch.nn.utils.clip_grad_norm_(self.world_gen.parameters(), 20)
+            self.optimizer.zero_grad()
             self.world_gen_optim.step()
             self.world_gen_optim.zero_grad()
 
@@ -360,12 +329,3 @@ class MPPO(PPO):
         value_rms = real_values.pow(2).mean().sqrt()
         self.logger.add_scalar(f'gen {tag} value norm err', rmse(real_values / value_rms, gen_values / value_rms), self.frame)
 
-    # def get_done_mask(self, dones):
-    #     done_mask = (dones > 0).cpu().numpy().copy()
-    #     done_max = np.zeros(done_mask.shape[1], dtype=np.uint8)
-    #     for i in range(done_mask.shape[0]):
-    #         new_done_max = np.maximum(done_max, done_mask[i])
-    #         done_mask[i] = new_done_max & (~done_mask[i] | done_max)
-    #         done_max = new_done_max
-    #     done_mask = ~done_mask
-    #     return torch.tensor(done_mask, device=dones.device, dtype=dones.dtype)

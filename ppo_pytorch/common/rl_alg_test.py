@@ -4,11 +4,11 @@ import pprint
 import random
 from collections import namedtuple
 from functools import partial
-from typing import Dict
 from multiprocessing.pool import ThreadPool
-from torch.multiprocessing import Pool
+from typing import Dict
 
 from sklearn.model_selection import ParameterGrid
+from torch.multiprocessing import Pool
 
 from . import GymWrapper
 

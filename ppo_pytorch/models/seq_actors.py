@@ -1,30 +1,18 @@
 import math
-from functools import partial
-from typing import Optional, List, Callable
+from typing import Callable
 
 import gym
 import gym.spaces
 import numpy as np
-import torch.nn as nn
-import torch.nn.init as init
-from torch import autograd
-from torch.autograd import Variable
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
-
-from .utils import weights_init, make_conv_heatmap, image_to_float
-from ..common.make_grid import make_grid
-from ..common.probability_distributions import make_pd
-from .actors import Actor, CNNActor
-from optfn.qrnn import QRNN, DenseQRNN
-from optfn.sigmoid_pow import sigmoid_pow
-from optfn.rnn.dlstm import DLSTM
-from pretrainedmodels import nasnetamobile
-from optfn.shuffle_conv import ShuffleConv2d
-from optfn.swish import Swish
-from .heads import ActorCriticHead
-from ..common.probability_distributions import make_pd, MultivecGaussianPd, FixedStdGaussianPd, BernoulliPd, DiagGaussianPd
 from optfn.temporal_group_norm import TemporalGroupNorm
+
+from .actors import Actor, CNNActor
+from .heads import ActorCriticHead
+from .utils import image_to_float
+from ..common.probability_distributions import make_pd, MultivecGaussianPd, BernoulliPd
 
 
 class Sega_CNNSeqActor(CNNActor):

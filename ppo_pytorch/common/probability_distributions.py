@@ -6,9 +6,9 @@ import math
 import gym.spaces
 import numpy as np
 import torch
+import torch.distributions
 import torch.nn.functional as F
 from torch.autograd import Variable
-import torch.distributions
 
 
 def log_softmax(prob):

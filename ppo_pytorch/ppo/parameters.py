@@ -1,8 +1,8 @@
 from functools import partial
 
 import torch.optim as optim
-from ..common import DecayLR, ValueDecay
 
+from ..common import DecayLR, ValueDecay
 from ..models import FCActorCritic, CNNActorCritic
 
 

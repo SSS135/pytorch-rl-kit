@@ -5,10 +5,10 @@ https://github.com/openai/retro-baselines/blob/master/agents/sonic_util.py
 import gzip
 import os
 import random
-import retro
 
 import gym
 import numpy as np
+import retro
 from retro.retro_env import RetroEnv
 
 

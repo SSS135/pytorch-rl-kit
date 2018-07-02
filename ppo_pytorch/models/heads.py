@@ -1,8 +1,7 @@
 import torch.nn as nn
-import torch.nn.init as init
-from ..common.probability_distributions import ProbabilityDistribution, CategoricalPd
-from optfn.grad_running_norm import GradRunningNorm
+
 from .utils import normalized_columns_initializer
+from ..common.probability_distributions import ProbabilityDistribution, CategoricalPd
 
 
 class HeadOutput:
