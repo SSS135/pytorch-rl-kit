@@ -245,7 +245,7 @@ class CNNActor(Actor):
     Convolution network.
     """
     def __init__(self, observation_space, action_space, head_factory, cnn_kind='large',
-                 cnn_activation=nn.ReLU, linear_activation=nn.ReLU, cnn_hidden_code=True, **kwargs):
+                 cnn_activation=nn.ReLU, linear_activation=nn.ReLU, cnn_hidden_code=False, **kwargs):
         """
         Args:
             observation_space: Env's observation space
