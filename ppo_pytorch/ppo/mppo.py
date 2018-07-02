@@ -54,11 +54,6 @@ class GanG(nn.Module):
         # self.memory_embedding = spectral_init(nn.Linear(hidden_size, hidden_size))
         # self.memory_out = nn.Linear(hidden_size, hidden_size * 2)
         # self.code_out = nn.Linear(hidden_size, hidden_code_size * 3 + 2)
-        self.state_embedding = nn.Sequential(
-            spectral_init(nn.Linear(hidden_code_size, hidden_size, bias=False)),
-            nn.GroupNorm(4, hidden_size),
-            nn.LeakyReLU(0.1, True),
-        )
         input_size = action_pd.input_vector_len + hidden_code_size * 2 + hidden_size + 2 + action_pd.prob_vector_len + 1
         output_size = hidden_size * 3 + hidden_code_size * 3 + 2
         self.model = nn.Sequential(
@@ -70,10 +65,15 @@ class GanG(nn.Module):
             nn.LeakyReLU(0.1, True),
             spectral_init(nn.Linear(hidden_size, output_size))
         )
+        self.memory_init = nn.Sequential(
+            spectral_init(nn.Linear(hidden_code_size, hidden_size, bias=False)),
+            nn.GroupNorm(4, hidden_size),
+            nn.LeakyReLU(0.1, True),
+        )
 
-    def forward(self, cur_code, actions, memory, tau, states):
+    def forward(self, cur_code, actions, memory, tau, memory_init):
         if memory is None:
-            memory = self.state_embedding(states)
+            memory = self.memory_init(memory_init)
         action_inputs = self.action_pd.to_inputs(actions)
         # embeddings = [
         #     self.action_embedding(action_inputs),
