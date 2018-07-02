@@ -43,7 +43,7 @@ def huber_quantile_loss(output, target, tau, k=0.05, reduce=True):
 
 
 class GanG(nn.Module):
-    def __init__(self, hidden_code_size, action_pd, hidden_size=512):
+    def __init__(self, hidden_code_size, action_pd, hidden_size=1024):
         super().__init__()
         self.hidden_code_size = hidden_code_size
         self.action_pd = action_pd
@@ -54,19 +54,26 @@ class GanG(nn.Module):
         # self.memory_embedding = spectral_init(nn.Linear(hidden_size, hidden_size))
         # self.memory_out = nn.Linear(hidden_size, hidden_size * 2)
         # self.code_out = nn.Linear(hidden_size, hidden_code_size * 3 + 2)
+        self.state_embedding = nn.Sequential(
+            spectral_init(nn.Linear(hidden_code_size, hidden_size, bias=False)),
+            nn.GroupNorm(4, hidden_size),
+            nn.LeakyReLU(0.1, True),
+        )
         input_size = action_pd.input_vector_len + hidden_code_size * 2 + hidden_size + 2 + action_pd.prob_vector_len + 1
         output_size = hidden_size * 3 + hidden_code_size * 3 + 2
         self.model = nn.Sequential(
             spectral_init(nn.Linear(input_size, hidden_size)),
             nn.LeakyReLU(0.1, True),
             nn.GroupNorm(4, hidden_size),
-            spectral_init(nn.Linear(hidden_size, hidden_size)),
+            spectral_init(nn.Linear(hidden_size, hidden_size, bias=False)),
             nn.GroupNorm(4, hidden_size),
             nn.LeakyReLU(0.1, True),
             spectral_init(nn.Linear(hidden_size, output_size))
         )
 
-    def forward(self, cur_code, actions, memory, tau):
+    def forward(self, cur_code, actions, memory, tau, states):
+        if memory is None:
+            memory = self.state_embedding(states)
         action_inputs = self.action_pd.to_inputs(actions)
         # embeddings = [
         #     self.action_embedding(action_inputs),
@@ -254,10 +261,12 @@ class MPPO(PPO):
                 prob_len = self.model.pd.prob_vector_len
                 hc_len = hidden_codes.shape[2]
                 tau = hidden_codes.new_empty((hidden_codes.shape[0] - 1, hidden_codes.shape[1], hc_len + 2 + prob_len + 1)).uniform_()
-                gen_memory = self.memory_init_model(states[0], only_hidden_code_output=True).hidden_code
+                init_state = self.memory_init_model(states[0], only_hidden_code_output=True).hidden_code
+                gen_memory = None
                 for i in range(horizon):
                     gen_next_code, gen_rewards, gen_dones, gen_memory = self.world_gen(
-                        hidden_codes[0] if i == 0 else all_gen_next_hc[-1], actions[i], gen_memory, tau[i])
+                        hidden_codes[0] if i == 0 else all_gen_next_hc[-1], actions[i],
+                        gen_memory, tau[i], init_state if i == 0 else None)
                     all_gen_next_hc.append(gen_next_code)
                     all_gen_rewards.append(gen_rewards)
                     all_gen_dones.append(gen_dones)

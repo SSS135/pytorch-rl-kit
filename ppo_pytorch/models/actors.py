@@ -245,7 +245,7 @@ class CNNActor(Actor):
     Convolution network.
     """
     def __init__(self, observation_space, action_space, head_factory, cnn_kind='large',
-                 cnn_activation=nn.ReLU, linear_activation=nn.ReLU, dropout=0, **kwargs):
+                 cnn_activation=nn.ReLU, linear_activation=nn.ReLU, cnn_hidden_code=True, **kwargs):
         """
         Args:
             observation_space: Env's observation space
@@ -262,6 +262,7 @@ class CNNActor(Actor):
         self.linear_activation = linear_activation
         self.cnn_kind = cnn_kind
         self.head_factory = head_factory
+        self.cnn_hidden_code = cnn_hidden_code
 
         # create convolutional layers
         if cnn_kind == 'normal': # Nature DQN (1,683,456 parameters)
@@ -313,7 +314,7 @@ class CNNActor(Actor):
 
         # create head
         self.head = head_factory(self.linear[0].out_features, self.pd)
-        self.hidden_code_size = self.linear[0].out_features
+        self.hidden_code_size = self.linear[0].in_features if cnn_hidden_code else self.linear[0].out_features
 
         self.reset_weights()
 
@@ -372,16 +373,19 @@ class CNNActor(Actor):
 
             x = self._extract_features(input)
 
-            # flatten convolution output
             x = x.view(x.size(0), -1)
-            # run linear layer
-            x = self.linear(x)
+
+            if not self.cnn_hidden_code:
+                x = self.linear(x)
         else:
             x = input
 
         hidden_code = x
         if only_hidden_code_output:
             return HeadOutput(hidden_code=hidden_code)
+
+        if self.cnn_hidden_code:
+            x = self.linear(x)
 
         ac_out = self.head(x)
         ac_out.hidden_code = hidden_code
