@@ -6,12 +6,13 @@ import torch
 import torch.nn as nn
 from optfn.gadam import GAdam
 from optfn.spectral_norm import SpectralNorm
+from optfn.recurrent_sequential import RecurrentMarker, RecurrentSequential
 
 from .ppo import PPO
 
 
-def spectral_init(module, gain=1, n_power_iterations=1):
-    nn.init.kaiming_uniform_(module.weight, gain)
+def spectral_init(module, gain=nn.init.calculate_gain('leaky_relu', 0.1), n_power_iterations=1):
+    nn.init.orthogonal_(module.weight, gain=gain)
     if module.bias is not None:
         module.bias.data.zero_()
     return module # spectral_norm(module, n_power_iterations=n_power_iterations, auto_update_u=False)
@@ -43,9 +44,9 @@ def huber_quantile_loss(output, target, tau, k=0.05, reduce=True):
 
 
 class GanG(nn.Module):
-    def __init__(self, hidden_code_size, action_pd, hidden_size=1024):
+    def __init__(self, latent_input_code_size, action_pd, hidden_size=512):
         super().__init__()
-        self.hidden_code_size = hidden_code_size
+        self.latent_input_code_size = latent_input_code_size
         self.action_pd = action_pd
         self.hidden_size = hidden_size
         # self.action_embedding = spectral_init(nn.Linear(action_pd.input_vector_len, hidden_size))
@@ -54,8 +55,8 @@ class GanG(nn.Module):
         # self.memory_embedding = spectral_init(nn.Linear(hidden_size, hidden_size))
         # self.memory_out = nn.Linear(hidden_size, hidden_size * 2)
         # self.code_out = nn.Linear(hidden_size, hidden_code_size * 3 + 2)
-        input_size = action_pd.input_vector_len + hidden_code_size * 2 + hidden_size + 2 + action_pd.prob_vector_len + 1
-        output_size = hidden_size * 3 + hidden_code_size * 3 + 2
+        input_size = action_pd.input_vector_len + latent_input_code_size * 2 + hidden_size + 2 + action_pd.prob_vector_len + 1
+        output_size = hidden_size * 3 + latent_input_code_size * 3 + 2
         self.model = nn.Sequential(
             spectral_init(nn.Linear(input_size, hidden_size)),
             nn.LeakyReLU(0.1, True),
@@ -66,10 +67,17 @@ class GanG(nn.Module):
             spectral_init(nn.Linear(hidden_size, output_size))
         )
         self.memory_init = nn.Sequential(
-            spectral_init(nn.Linear(hidden_code_size, hidden_size, bias=False)),
+            spectral_init(nn.Linear(latent_input_code_size, hidden_size, bias=False)),
             nn.GroupNorm(4, hidden_size),
             nn.LeakyReLU(0.1, True),
         )
+
+        split_w = self.model[0].weight.split([
+            action_pd.input_vector_len, latent_input_code_size, hidden_size,
+            latent_input_code_size, action_pd.prob_vector_len, 3
+        ], 1)
+        for w in split_w:
+            nn.init.orthogonal_(w, gain=nn.init.calculate_gain('leaky_relu', 0.1))
 
     def forward(self, cur_code, actions, memory, tau, memory_init):
         if memory is None:
@@ -86,7 +94,7 @@ class GanG(nn.Module):
         embeddings = torch.cat([action_inputs, cur_code, memory, tau * 2 - 1], -1)
 
         next_code, code_f_gate, code_i_gate, rewards, dones, next_memory, memory_f_gate, memory_i_gate = \
-            self.model(embeddings).split(3 * [self.hidden_code_size] + [1, 1] + 3 * [self.hidden_size], dim=-1)
+            self.model(embeddings).split(3 * [self.latent_input_code_size] + [1, 1] + 3 * [self.hidden_size], dim=-1)
         code_f_gate, code_i_gate, memory_f_gate, memory_i_gate = \
             [x.sigmoid() for x in (code_f_gate, code_i_gate, memory_f_gate, memory_i_gate)]
         next_code = code_f_gate * cur_code + code_i_gate * next_code
@@ -261,6 +269,7 @@ class MPPO(PPO):
                 prob_len = self.model.pd.prob_vector_len
                 hc_len = hidden_codes.shape[2]
                 tau = hidden_codes.new_empty((hidden_codes.shape[0] - 1, hidden_codes.shape[1], hc_len + 2 + prob_len + 1)).uniform_()
+                tau_hc, tau_prob, tau_done, tau_reward, tau_value = tau.split([hc_len, prob_len, 1, 1, 1], -1)
                 init_state = self.memory_init_model(states[0], only_hidden_code_output=True).hidden_code
                 gen_memory = None
                 for i in range(horizon):
@@ -274,31 +283,30 @@ class MPPO(PPO):
                 all_gen_rewards = torch.stack(all_gen_rewards, 0)
                 all_gen_dones = torch.stack(all_gen_dones, 0)
                 # print(all_gen_hidden_codes.shape, hidden_codes.shape, all_gen_rewards.shape, rewards.shape, all_gen_dones.shape, dones.shape)
-                tau_hc, tau_prob, tau_done, tau_reward, tau_value = tau.split([hc_len, prob_len, 1, 1, 1], -1)
                 tau_done, tau_reward, tau_value = [x.squeeze(-1) for x in (tau_done, tau_reward, tau_value)]
                 gen_q_loss = huber_quantile_loss(all_gen_next_hc, hidden_codes[1:], tau_hc) + \
                              0.2 * huber_quantile_loss(all_gen_rewards, rewards[:-1], tau_reward) + \
                              0.2 * huber_quantile_loss(all_gen_dones, dones[:-1], tau_done)
 
-                gen_head = self.model(all_gen_next_hc.view(-1, all_gen_next_hc.shape[-1]), hidden_code_input=True)
-                # real_head = self.model(hidden_codes[1:].view(-1, hidden_codes.shape[-1]), hidden_code_input=True)
-                real_probs = real_head.probs.detach().view(-1, states.shape[1], *real_head.probs.shape[1:])
-                gen_probs = gen_head.probs.view(-1, states.shape[1], *gen_head.probs.shape[1:])
-                real_values = real_head.state_values.detach().view(-1, states.shape[1])
-                gen_values = gen_head.state_values.view(-1, states.shape[1])
-                head_q_loss = huber_quantile_loss(gen_probs, real_probs[1:], tau_prob) + \
-                              huber_quantile_loss(gen_values, real_values[1:], tau_value)
+                # gen_head = self.model(all_gen_next_hc.view(-1, all_gen_next_hc.shape[-1]), hidden_code_input=True)
+                # # real_head = self.model(hidden_codes[1:].view(-1, hidden_codes.shape[-1]), hidden_code_input=True)
+                # real_probs = real_head.probs.detach().view(-1, states.shape[1], *real_head.probs.shape[1:])
+                # gen_probs = gen_head.probs.view(-1, states.shape[1], *gen_head.probs.shape[1:])
+                # real_values = real_head.state_values.detach().view(-1, states.shape[1])
+                # gen_values = gen_head.state_values.view(-1, states.shape[1])
+                # head_q_loss = huber_quantile_loss(gen_probs, real_probs[1:], tau_prob) + \
+                #               huber_quantile_loss(gen_values, real_values[1:], tau_value)
 
                 # gen_mse_loss = (all_gen_hidden_codes - hidden_codes[1:]).pow(2).mean(-1)
                                # (all_gen_rewards - rewards[:-1]).pow(2) + \
                                # (all_gen_dones - dones[:-1]).pow(2)
 
-                # dones_shift = dones[:-1].clone()
-                # dones_shift[1:] = dones[:-2]
-                # dones_shift[0] = 0
-                # gen_q_loss = gen_q_loss.mul(1 - dones_shift).mean()
+                dones_shift = dones[:-1].clone()
+                dones_shift[1:] = dones[:-2]
+                dones_shift[0] = 0
+                gen_q_loss = gen_q_loss.mul(1 - dones_shift).mean()
 
-                gen_q_loss = gen_q_loss.mean() + 0.2 * head_q_loss.mean() #+ head_mse_loss.mean()
+                gen_q_loss = gen_q_loss.mean() #+ 0.2 * head_q_loss.mean() #+ head_mse_loss.mean()
             gen_q_loss.backward()
             # torch.nn.utils.clip_grad_norm_(self.world_gen.parameters(), 20)
             self.optimizer.zero_grad()
@@ -322,7 +330,7 @@ class MPPO(PPO):
         real_values, real_probs = head_real.state_values, head_real.probs
         gen_values, gen_probs = head_gen.state_values, head_gen.probs
         rmse = lambda a, b: (a - b).abs().mean().item()
-        state_norm_rmse = rmse(gen_next_hidden, real_next_hidden) / max(1e-10, rmse(real_cur_hidden, real_next_hidden))
+        state_norm_rmse = rmse(gen_next_hidden, real_next_hidden) / max(1e-3, rmse(real_cur_hidden, real_next_hidden))
         self.logger.add_scalar(f'gen {tag} raw prob err', rmse(real_probs, gen_probs), self.frame)
         self.logger.add_scalar(f'gen {tag} kl err', self.model.pd.kl(real_probs, gen_probs).mean(), self.frame)
         self.logger.add_scalar(f'gen {tag} abs prob err', rmse(

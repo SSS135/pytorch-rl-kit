@@ -377,6 +377,8 @@ class CNNActor(Actor):
 
             if not self.cnn_hidden_code:
                 x = self.linear(x)
+
+            # x.data.mul_(4).round_().div_(4)
         else:
             x = input
 
@@ -398,6 +400,19 @@ class CNNActor(Actor):
                 self.log_policy_attention(input, ac_out)
 
         return ac_out
+
+    def parameters(self, hidden_code_l1_decay=0):
+        if hidden_code_l1_decay == 0:
+            return super().parameters()
+
+        all_params = list(super().parameters())
+        hidden_code_weight = self.linear[0].weight
+        normal_params = [p for p in all_params if p is not hidden_code_weight]
+        assert len(all_params) == len(set(normal_params)) + 1
+        return [
+            dict(params=normal_params),
+            dict(params=[hidden_code_weight], l1_decay=hidden_code_l1_decay)
+        ]
 
 
 class Sega_CNNActor(CNNActor):

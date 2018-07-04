@@ -167,7 +167,7 @@ class CategoricalPd(ProbabilityDistribution):
     def to_inputs(self, action):
         with torch.no_grad():
             onehot = torch.zeros((*action.shape[:-1], self.n), device=action.device)
-            onehot.scatter_(1, action, -1)
+            onehot.scatter_(dim=-1, index=action, value=1)
             onehot = onehot - 1 / self.n
         return onehot
 
