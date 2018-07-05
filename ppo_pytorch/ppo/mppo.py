@@ -6,15 +6,14 @@ import torch
 import torch.nn as nn
 from optfn.gadam import GAdam
 from optfn.spectral_norm import SpectralNorm
-from optfn.recurrent_sequential import RecurrentMarker, RecurrentSequential
 
 from .ppo import PPO
 
 
 def spectral_init(module, gain=nn.init.calculate_gain('leaky_relu', 0.1), n_power_iterations=1):
     nn.init.orthogonal_(module.weight, gain=gain)
-    if module.bias is not None:
-        module.bias.data.zero_()
+    # if module.bias is not None:
+    #     module.bias.data.zero_()
     return module # spectral_norm(module, n_power_iterations=n_power_iterations, auto_update_u=False)
 
 
@@ -49,12 +48,6 @@ class GanG(nn.Module):
         self.latent_input_code_size = latent_input_code_size
         self.action_pd = action_pd
         self.hidden_size = hidden_size
-        # self.action_embedding = spectral_init(nn.Linear(action_pd.input_vector_len, hidden_size))
-        # self.cur_code_embedding = spectral_init(nn.Linear(hidden_code_size, hidden_size))
-        # self.cur_state_embedding = spectral_init(nn.Linear(state_size, hidden_size))
-        # self.memory_embedding = spectral_init(nn.Linear(hidden_size, hidden_size))
-        # self.memory_out = nn.Linear(hidden_size, hidden_size * 2)
-        # self.code_out = nn.Linear(hidden_size, hidden_code_size * 3 + 2)
         input_size = action_pd.input_vector_len + latent_input_code_size * 2 + hidden_size + 2 + action_pd.prob_vector_len + 1
         output_size = hidden_size * 3 + latent_input_code_size * 3 + 2
         self.model = nn.Sequential(
@@ -83,14 +76,6 @@ class GanG(nn.Module):
         if memory is None:
             memory = self.memory_init(memory_init)
         action_inputs = self.action_pd.to_inputs(actions)
-        # embeddings = [
-        #     self.action_embedding(action_inputs),
-        #     self.cur_code_embedding(cur_code),
-        #     self.memory_embedding(memory),
-        #     self.cur_state_embedding(cur_states) if cur_states is not None else torch.zeros_like(memory),
-        # ]
-        # embeddings = torch.cat(embeddings, -1)
-        # embeddings = embeddings.max(-1)[0]
         embeddings = torch.cat([action_inputs, cur_code, memory, tau * 2 - 1], -1)
 
         next_code, code_f_gate, code_i_gate, rewards, dones, next_memory, memory_f_gate, memory_i_gate = \
@@ -100,9 +85,6 @@ class GanG(nn.Module):
         next_code = code_f_gate * cur_code + code_i_gate * next_code
         next_memory = memory_f_gate * memory + memory_i_gate * next_memory
         dones, rewards = dones.squeeze(-1), rewards.squeeze(-1)
-        # dones_mask = (dones > 0).detach()
-        # next_code[dones_mask] = cur_states[dones_mask]
-        # next_memory[dones_mask] = 0
         return next_code, rewards, dones, next_memory
 
 
@@ -213,24 +195,19 @@ class MPPO(PPO):
         min_buf_size = self.world_train_iters * self.world_train_rollouts * (self.world_train_horizon + 1)
         if len(self.replay_buffer) >= min_buf_size or len(self.replay_buffer) == self.per_actor_replay_buffer_size * self.num_actors:
             self._train_world()
+        if self._do_log:
+            self._test_world(data)
         return super()._ppo_update(data)
 
     def _update_replay_buffer(self, data):
         # H x B x *
-        self.replay_buffer.push(
-            data.states.view(-1, self.num_actors, *data.states.shape[1:]),
-            data.actions.view(-1, self.num_actors, *data.actions.shape[1:]),
-            data.rewards.view(-1, self.num_actors, *data.rewards.shape[1:]),
-            data.dones.view(-1, self.num_actors, *data.dones.shape[1:])
-        )
+        states, actions, rewards, dones = [x.view(-1, self.num_actors, *x.shape[1:])
+                                           for x in (data.states, data.actions, data.rewards, data.dones)]
+        self.replay_buffer.push(states, actions, rewards, dones)
 
     def _train_world(self):
         # move model to cuda or cpu
         self.world_gen = self.world_gen.to(self.device_train).train()
-        # self.world_disc = self.world_disc.to(self.device_train).train()
-        # self.world_gen_init = self.world_gen_init.to(self.device_train).train()
-        # self.world_disc_init = self.world_disc_init.to(self.device_train).train()
-        # self.disc_denoiser = self.disc_denoiser.to(self.device_train).train()
         self.model = self.model.to(self.device_train).train()
         self.memory_init_model = self.memory_init_model.to(self.device_train).train()
 
@@ -242,8 +219,6 @@ class MPPO(PPO):
             rollouts * self.world_train_iters, horizon + 1)
 
         all_dones = all_dones.astype(np.float32) * 2 - 1
-        # all_dones += 0.02 * np.random.randn(*all_dones.shape)
-        # all_rewards += 0.02 * np.random.randn(*all_rewards.shape)
 
         data = [torch.from_numpy(x) for x in (all_states, all_actions, all_rewards, all_dones)]
         if self.device_train.type == 'cuda':
@@ -263,27 +238,8 @@ class MPPO(PPO):
                 real_head = self.model(states.view(-1, *states.shape[2:]))
                 hidden_codes = real_head.hidden_code.detach().view(*states.shape[:2], *real_head.hidden_code.shape[1:])
 
-                all_gen_next_hc = []
-                all_gen_rewards = []
-                all_gen_dones = []
-                prob_len = self.model.pd.prob_vector_len
-                hc_len = hidden_codes.shape[2]
-                tau = hidden_codes.new_empty((hidden_codes.shape[0] - 1, hidden_codes.shape[1], hc_len + 2 + prob_len + 1)).uniform_()
-                tau_hc, tau_prob, tau_done, tau_reward, tau_value = tau.split([hc_len, prob_len, 1, 1, 1], -1)
-                init_state = self.memory_init_model(states[0], only_hidden_code_output=True).hidden_code
-                gen_memory = None
-                for i in range(horizon):
-                    gen_next_code, gen_rewards, gen_dones, gen_memory = self.world_gen(
-                        hidden_codes[0] if i == 0 else all_gen_next_hc[-1], actions[i],
-                        gen_memory, tau[i], init_state if i == 0 else None)
-                    all_gen_next_hc.append(gen_next_code)
-                    all_gen_rewards.append(gen_rewards)
-                    all_gen_dones.append(gen_dones)
-                all_gen_next_hc = torch.stack(all_gen_next_hc, 0)
-                all_gen_rewards = torch.stack(all_gen_rewards, 0)
-                all_gen_dones = torch.stack(all_gen_dones, 0)
-                # print(all_gen_hidden_codes.shape, hidden_codes.shape, all_gen_rewards.shape, rewards.shape, all_gen_dones.shape, dones.shape)
-                tau_done, tau_reward, tau_value = [x.squeeze(-1) for x in (tau_done, tau_reward, tau_value)]
+                all_gen_next_hc, all_gen_rewards, all_gen_dones, tau_hc, tau_prob, tau_done, tau_reward, tau_value = \
+                    self.run_generator(hidden_codes, states, actions)
                 gen_q_loss = huber_quantile_loss(all_gen_next_hc, hidden_codes[1:], tau_hc) + \
                              0.2 * huber_quantile_loss(all_gen_rewards, rewards[:-1], tau_reward) + \
                              0.2 * huber_quantile_loss(all_gen_dones, dones[:-1], tau_done)
@@ -314,16 +270,62 @@ class MPPO(PPO):
             self.world_gen_optim.zero_grad()
 
         if self._do_log:
-            self.log_gen_errors('1-step', hidden_codes[0], hidden_codes[1], all_gen_next_hc[0],
-                                dones[0], all_gen_dones[0], rewards[0], all_gen_rewards[0], actions[1])
-            l = len(all_gen_rewards) - 2
-            self.log_gen_errors(f'full-step', hidden_codes[l], hidden_codes[l + 1], all_gen_next_hc[l],
-                                dones[l], all_gen_dones[l], rewards[l], all_gen_rewards[l], actions[l + 1])
-
             self.logger.add_scalar('gen loss', gen_q_loss, self.frame)
 
-    def log_gen_errors(self, tag, real_cur_hidden, real_next_hidden, gen_next_hidden,
-                       real_dones, gen_dones, real_rewards, gen_rewards, actions):
+    def run_generator(self, hidden_codes, states, actions):
+        all_gen_next_hc = []
+        all_gen_rewards = []
+        all_gen_dones = []
+        prob_len = self.model.pd.prob_vector_len
+        hc_len = hidden_codes.shape[2]
+        tau = hidden_codes.new_empty((hidden_codes.shape[0] - 1, hidden_codes.shape[1], hc_len + 2 + prob_len + 1)).uniform_()
+        tau_hc, tau_prob, tau_done, tau_reward, tau_value = tau.split([hc_len, prob_len, 1, 1, 1], -1)
+        tau_done, tau_reward, tau_value = [x.squeeze(-1) for x in (tau_done, tau_reward, tau_value)]
+        init_state = self.memory_init_model(states[0], only_hidden_code_output=True).hidden_code
+        gen_memory = None
+        for i in range(hidden_codes.shape[0] - 1):
+            gen_next_code, gen_rewards, gen_dones, gen_memory = self.world_gen(
+                hidden_codes[0] if i == 0 else all_gen_next_hc[-1], actions[i],
+                gen_memory, tau[i], init_state if i == 0 else None)
+            all_gen_next_hc.append(gen_next_code)
+            all_gen_rewards.append(gen_rewards)
+            all_gen_dones.append(gen_dones)
+        all_gen_next_hc = torch.stack(all_gen_next_hc, 0)
+        all_gen_rewards = torch.stack(all_gen_rewards, 0)
+        all_gen_dones = torch.stack(all_gen_dones, 0)
+        return all_gen_next_hc, all_gen_rewards, all_gen_dones, tau_hc, tau_prob, tau_done, tau_reward, tau_value
+
+    def _test_world(self, data):
+        self.world_gen = self.world_gen.to(self.device_train).train()
+        self.memory_init_model = self.memory_init_model.to(self.device_train).train()
+        self.model = self.model.to(self.device_train).train()
+
+        world_horizon = self.world_train_horizon
+        data_horizon = data.states.shape[0] // self.num_actors
+        fix_data_horizon = data_horizon - data_horizon % (world_horizon + 1)
+        rollouts = fix_data_horizon // (world_horizon + 1) * self.num_actors
+        states, actions, rewards, dones = [
+            x.to(self.device_train)
+                .view(-1, self.num_actors, *x.shape[1:])[:fix_data_horizon]
+                .view(rollouts // self.num_actors, world_horizon + 1, self.num_actors, *x.shape[1:])
+                .transpose(0, 1).contiguous()
+                .view(world_horizon + 1, -1, *x.shape[1:])
+            for x in (data.states, data.actions, data.rewards, data.dones)
+        ]
+
+        real_head = self.model(states.view(-1, *states.shape[2:]))
+        hidden_codes = real_head.hidden_code.detach().view(*states.shape[:2], *real_head.hidden_code.shape[1:])
+        all_gen_next_hc, all_gen_rewards, all_gen_dones, tau_hc, tau_prob, tau_done, tau_reward, tau_value = \
+            self.run_generator(hidden_codes, states, actions)
+
+        self._log_gen_errors('1-step', hidden_codes[0], hidden_codes[1], all_gen_next_hc[0],
+                             dones[0], all_gen_dones[0], rewards[0], all_gen_rewards[0], actions[1])
+        l = all_gen_rewards.shape[0] - 1
+        self._log_gen_errors(f'full-step', hidden_codes[l], hidden_codes[l + 1], all_gen_next_hc[l],
+                             dones[l], all_gen_dones[l], rewards[l], all_gen_rewards[l], actions[l + 1])
+
+    def _log_gen_errors(self, tag, real_cur_hidden, real_next_hidden, gen_next_hidden,
+                        real_dones, gen_dones, real_rewards, gen_rewards, actions):
         # dones_mask = ((real_dones < 0) & (gen_dones < 0)).float()
         head_real = self.model(real_next_hidden, hidden_code_input=True)
         head_gen = self.model(gen_next_hidden, hidden_code_input=True)
