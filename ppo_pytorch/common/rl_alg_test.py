@@ -4,16 +4,16 @@ import pprint
 import random
 from collections import namedtuple
 from functools import partial
-from multiprocessing.pool import ThreadPool
 from typing import Dict
+from multiprocessing.pool import ThreadPool
+from torch.multiprocessing import Pool
 
 from sklearn.model_selection import ParameterGrid
-from torch.multiprocessing import Pool
 
 from . import GymWrapper
 
 
-def rl_alg_test(hyper_params: Dict[str, list], wrap_params: dict, alg_class: type, alg_params: dict, env_factory,
+def rl_alg_test(hyper_params: Dict[str, list] or list, wrap_params: dict, alg_class: type, alg_params: dict, env_factory,
                 num_processes: int, frames: int, iters: int=1, use_worker_id: bool=False, shuffle=False, use_threads=False) -> list:
     """
     Used for hyperparameter search and testing of reinforcement learning algorithms.
@@ -38,9 +38,9 @@ def rl_alg_test(hyper_params: Dict[str, list], wrap_params: dict, alg_class: typ
     Returns: list of `GymWrapper` outputs
 
     """
-    hyper_params = list(ParameterGrid(hyper_params))
+    hyper_params = list(ParameterGrid(hyper_params)) if isinstance(hyper_params, dict) else hyper_params
     input = zip(hyper_params,
-                itertools.repeat(wrap_params),
+                itertools.repeat(wrap_params) if isinstance(wrap_params, dict) else wrap_params,
                 itertools.repeat(alg_class),
                 itertools.repeat(alg_params),
                 itertools.repeat(env_factory),

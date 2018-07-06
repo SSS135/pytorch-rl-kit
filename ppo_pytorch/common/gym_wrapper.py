@@ -12,7 +12,8 @@ class GymWrapper:
                  rl_alg_factory: Callable,
                  env_factory: Callable,
                  log_time_interval=5,
-                 log_path=None):
+                 log_path=None,
+                 tag=''):
         """
         Simplifies training of RL algorithms with gym environments.
         Args:
@@ -35,7 +36,7 @@ class GymWrapper:
         if log_path is not None:
             env_name = self.env.env_name
             alg_name = type(self.rl_alg).__name__
-            self.logger = TensorboardEnvLogger(alg_name, env_name, log_path, self.env.num_envs, log_time_interval)
+            self.logger = TensorboardEnvLogger(alg_name, env_name, log_path, self.env.num_envs, log_time_interval, tag=tag)
             self.logger.add_text('GymWrapper', pprint.pformat(self._init_args))
             self.rl_alg.logger = self.logger
         else:

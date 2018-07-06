@@ -332,7 +332,7 @@ class MPPO(PPO):
         real_values, real_probs = head_real.state_values, head_real.probs
         gen_values, gen_probs = head_gen.state_values, head_gen.probs
         rmse = lambda a, b: (a - b).abs().mean().item()
-        state_norm_rmse = rmse(gen_next_hidden, real_next_hidden) / max(1e-3, rmse(real_cur_hidden, real_next_hidden))
+        state_norm_rmse = rmse(gen_next_hidden, real_next_hidden) / max(0.01, rmse(real_cur_hidden, real_next_hidden))
         self.logger.add_scalar(f'gen {tag} raw prob err', rmse(real_probs, gen_probs), self.frame)
         self.logger.add_scalar(f'gen {tag} kl err', self.model.pd.kl(real_probs, gen_probs).mean(), self.frame)
         self.logger.add_scalar(f'gen {tag} abs prob err', rmse(

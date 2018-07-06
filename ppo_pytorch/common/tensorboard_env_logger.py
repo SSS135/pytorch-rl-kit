@@ -2,6 +2,7 @@ import os
 import time
 import uuid
 from collections import deque, namedtuple
+from itertools import count
 
 import numpy as np
 
@@ -15,7 +16,8 @@ class TensorboardEnvLogger:
                  log_path,
                  env_count,
                  log_time_interval=5,
-                 reward_std_episodes=100,):
+                 reward_std_episodes=100,
+                 tag='',):
         """
         Tensorboard logger. Does logging of environment episode information
             and wrapping logger calls for classes inherited from `RLBase`.
@@ -33,6 +35,7 @@ class TensorboardEnvLogger:
         self.log_path = log_path
         self.alg_name = alg_name
         self.env_name = env_name
+        self.tag = tag
         self.env_count = env_count
         self.reward_window = deque(maxlen=reward_std_episodes)
         self.reward_sum = np.zeros(self.env_count)
@@ -42,9 +45,14 @@ class TensorboardEnvLogger:
         self.episode = 0
         self.frame = 0
         self.last_log_time = time.time()
-        timestr = time.strftime("%Y%m%d-%H%M%S")
-        dir_name = f"TensorboardEnv_{self.alg_name}_{self.env_name}_{timestr}_{uuid.uuid4()}"
-        path = os.path.join(self.log_path, dir_name)
+        timestr = time.strftime("%Y-%m-%d_%H-%M-%S")
+        for i in count():
+            dir_name = f"{self.alg_name}_{self.env_name}_{tag}_{timestr}"
+            if i != 0:
+                dir_name += f'_{i}'
+            path = os.path.join(self.log_path, dir_name)
+            if not os.path.exists(path):
+                break
         self.logger = SummaryWriter(path)
         self.episodes_file = open(os.path.join(path, 'episodes'), 'a')
 

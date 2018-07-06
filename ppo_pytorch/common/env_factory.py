@@ -6,6 +6,7 @@ import gym
 import gym.spaces as spaces
 import numpy as np
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
+from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
 
 from .atari_wrappers import NoopResetEnv, MaxAndSkipEnv, EpisodicLifeEnv, FireResetEnv, ScaledFloatFrame, ClipRewardEnv, \
     FrameStack
@@ -15,8 +16,9 @@ from .sonic_utils import sonic_1_train_levels, sonic_2_train_levels, sonic_3_tra
 
 
 class NamedVecEnv:
-    def __init__(self, env_name):
+    def __init__(self, env_name, dummy=False):
         self.env_name = env_name
+        self.dummy = dummy
         self.subproc_envs = None
         self.num_envs = None
 
@@ -29,7 +31,7 @@ class NamedVecEnv:
         if self.subproc_envs is not None:
             self.subproc_envs.close()
         self.num_envs = num_envs
-        self.subproc_envs = SubprocVecEnv([self.get_env_fn()] * num_envs)
+        self.subproc_envs = (DummyVecEnv if self.dummy else SubprocVecEnv)([self.get_env_fn()] * num_envs)
 
     def step(self, actions):
         return self.subproc_envs.step(actions)
@@ -42,13 +44,14 @@ class NamedVecEnv:
 
 
 class AtariVecEnv(NamedVecEnv):
-    def __init__(self, env_name, episode_life=True, scale=True, clip_rewards=True, frame_stack=True, grayscale=True):
+    def __init__(self, env_name, episode_life=True, scale=True, clip_rewards=True,
+                 frame_stack=True, grayscale=True, dummy=True):
         self.scale = scale
         self.clip_rewards = clip_rewards
         self.episode_life = episode_life
         self.frame_stack = frame_stack
         self.grayscale = grayscale
-        super().__init__(env_name)
+        super().__init__(env_name, dummy)
 
     def get_env_fn(self):
         def make(env_name, episode_life, scale, clip_rewards, frame_stack, grayscale):
