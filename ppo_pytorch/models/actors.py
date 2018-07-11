@@ -8,7 +8,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
-from optfn.learned_norm import LearnedNorm2d
+from optfn.switchable_norm import SwitchableNorm2d, SwitchableNorm1d
+from optfn.auto_norm import AutoNorm
 from torch import autograd
 from torch.autograd import Variable
 
@@ -265,9 +266,10 @@ class CNNActor(Actor):
         self.cnn_hidden_code = cnn_hidden_code
 
         # create convolutional layers
+        switch_norm = self.norm is not None and ('switch' in self.norm or 'auto' in self.norm)
         if cnn_kind == 'normal': # Nature DQN (1,683,456 parameters)
             self.convs = nn.ModuleList([
-                self.make_layer(nn.Conv2d(observation_space.shape[0], 32, 8, 4), allow_norm=False),
+                self.make_layer(nn.Conv2d(observation_space.shape[0], 32, 8, 4), allow_norm=switch_norm),
                 self.make_layer(nn.Conv2d(32, 64, 4, 2)),
                 self.make_layer(nn.Conv2d(64, 64, 3, 1)),
             ])
@@ -275,7 +277,7 @@ class CNNActor(Actor):
         elif cnn_kind == 'large': # custom (2,066,432 parameters)
             nf = 32
             self.convs = nn.ModuleList([
-                self.make_layer(nn.Conv2d(observation_space.shape[0], nf, 4, 2, 0), allow_norm=False),
+                self.make_layer(nn.Conv2d(observation_space.shape[0], nf, 4, 2, 0), allow_norm=switch_norm),
                 self.make_layer(nn.Conv2d(nf, nf * 2, 4, 2, 0, bias=self.norm is None)),
                 self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1, bias=self.norm is None)),
                 self.make_layer(nn.Conv2d(nf * 4, nf * 8, 4, 2, 1, bias=self.norm is None)),
@@ -337,8 +339,10 @@ class CNNActor(Actor):
                 norm_cls = nn.GroupNorm(num_groups=1, num_channels=features)
             if 'batch' in self.norm:
                 norm_cls = nn.BatchNorm1d(features) if is_linear else nn.BatchNorm2d(features)
-            if 'learned' in self.norm and not is_linear:
-                norm_cls = LearnedNorm2d(features, groups=features // 8)
+            if 'switch' in self.norm:
+                norm_cls = SwitchableNorm1d(features) if is_linear else SwitchableNorm2d(features)
+            if 'auto' in self.norm:
+                norm_cls = AutoNorm(features)
             if norm_cls is not None:
                 parts.append(norm_cls)
 

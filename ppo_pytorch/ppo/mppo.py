@@ -84,7 +84,7 @@ class GanG(nn.Module):
             [x.sigmoid() for x in (code_f_gate, code_i_gate, memory_f_gate, memory_i_gate)]
         next_code = code_f_gate * cur_code + code_i_gate * next_code
         next_memory = memory_f_gate * memory + memory_i_gate * next_memory
-        dones, rewards = dones.squeeze(-1), rewards.squeeze(-1)
+        dones, rewards = dones.squeeze(-1).mul(0.5).add_(0.5), rewards.squeeze(-1)
         return next_code, rewards, dones, next_memory
 
 
@@ -217,8 +217,7 @@ class MPPO(PPO):
         # (H, B, ...)
         all_states, all_actions, all_rewards, all_dones = self.replay_buffer.sample(
             rollouts * self.world_train_iters, horizon + 1)
-
-        all_dones = all_dones.astype(np.float32) * 2 - 1
+        all_dones = all_dones.astype(np.float32)
 
         data = [torch.from_numpy(x) for x in (all_states, all_actions, all_rewards, all_dones)]
         if self.device_train.type == 'cuda':
@@ -240,9 +239,11 @@ class MPPO(PPO):
 
                 all_gen_next_hc, all_gen_rewards, all_gen_dones, tau_hc, tau_prob, tau_done, tau_reward, tau_value = \
                     self.run_generator(hidden_codes, states, actions)
+                correct_dones_mask = (all_gen_dones.detach() > 0.5) == (dones[:-1] > 0.5)
+                all_gen_dones[correct_dones_mask] = all_gen_dones[correct_dones_mask].clamp(0, 1)
                 gen_q_loss = huber_quantile_loss(all_gen_next_hc, hidden_codes[1:], tau_hc) + \
-                             0.2 * huber_quantile_loss(all_gen_rewards, rewards[:-1], tau_reward) + \
-                             0.2 * huber_quantile_loss(all_gen_dones, dones[:-1], tau_done)
+                             huber_quantile_loss(all_gen_rewards, rewards[:-1], tau_reward) + \
+                             huber_quantile_loss(all_gen_dones, dones[:-1], tau_done)
 
                 # gen_head = self.model(all_gen_next_hc.view(-1, all_gen_next_hc.shape[-1]), hidden_code_input=True)
                 # # real_head = self.model(hidden_codes[1:].view(-1, hidden_codes.shape[-1]), hidden_code_input=True)
@@ -312,11 +313,13 @@ class MPPO(PPO):
                 .view(world_horizon + 1, -1, *x.shape[1:])
             for x in (data.states, data.actions, data.rewards, data.dones)
         ]
+        dones = dones.float()
 
         real_head = self.model(states.view(-1, *states.shape[2:]))
         hidden_codes = real_head.hidden_code.detach().view(*states.shape[:2], *real_head.hidden_code.shape[1:])
         all_gen_next_hc, all_gen_rewards, all_gen_dones, tau_hc, tau_prob, tau_done, tau_reward, tau_value = \
             self.run_generator(hidden_codes, states, actions)
+        all_gen_dones = (all_gen_dones > 0.5).float()
 
         self._log_gen_errors('1-step', hidden_codes[0], hidden_codes[1], all_gen_next_hc[0],
                              dones[0], all_gen_dones[0], rewards[0], all_gen_rewards[0], actions[1])
@@ -326,7 +329,6 @@ class MPPO(PPO):
 
     def _log_gen_errors(self, tag, real_cur_hidden, real_next_hidden, gen_next_hidden,
                         real_dones, gen_dones, real_rewards, gen_rewards, actions):
-        # dones_mask = ((real_dones < 0) & (gen_dones < 0)).float()
         head_real = self.model(real_next_hidden, hidden_code_input=True)
         head_gen = self.model(gen_next_hidden, hidden_code_input=True)
         real_values, real_probs = head_real.state_values, head_real.probs
