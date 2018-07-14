@@ -162,7 +162,7 @@ class FCActor(Actor):
     """
 
     def __init__(self, observation_space: gym.Space, action_space: gym.Space, head_factory: Callable,
-                 hidden_sizes=(128, 128), activation=nn.ReLU, hidden_code_type='last', **kwargs):
+                 hidden_sizes=(128, 128), activation=nn.Tanh, hidden_code_type='input', dual_net=False, **kwargs):
         """
         Args:
             observation_space: Env's observation space
@@ -175,8 +175,15 @@ class FCActor(Actor):
         self.hidden_sizes = hidden_sizes
         self.activation = activation
         self.hidden_code_type = hidden_code_type
+        self.dual_net = dual_net
 
         obs_len = int(np.product(observation_space.shape))
+
+        if dual_net:
+            self.value_net = FCActor(observation_space, action_space, head_factory,
+                                     hidden_sizes, activation, hidden_code_type, dual_net=False, **kwargs)
+        else:
+            self.value_net = None
 
         self.hidden_code_size = obs_len if hidden_code_type == 'input' else \
             (self.pd.prob_vector_len if hidden_code_type == 'probs' else hidden_sizes[-1])
@@ -238,6 +245,8 @@ class FCActor(Actor):
         elif self.hidden_code_type == 'probs':
             hidden_code = head.probs
         head.hidden_code = hidden_code
+        if self.dual_net:
+            head.state_values = self.value_net(input, hidden_code_input=hidden_code_input).state_values
         return head
 
 

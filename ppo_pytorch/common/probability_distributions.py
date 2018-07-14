@@ -57,7 +57,7 @@ def make_pd(space: gym.Space):
         return CategoricalPd(space.n)
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
-        return DiagGaussianPd(space.shape[0])
+        return MultivecGaussianPd(space.shape[0], 16)
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     else:
@@ -106,7 +106,10 @@ class ProbabilityDistribution:
 
     def sample(self, prob):
         """Sample action from probabilities"""
-        pass
+        return self.sample_with_random(prob, None)[0]
+
+    def sample_with_random(self, prob, rand):
+        raise NotImplementedError()
 
     def to_inputs(self, action):
         """Convert actions to neural network input vector. For example, class number to one-hot vector."""
@@ -268,24 +271,22 @@ class DiagGaussianPd(ProbabilityDistribution):
         mean = prob[..., :self.d]
         logstd = prob[..., self.d:]
         logvar = logstd * 2
-        kld = logvar - mean.pow(2) - logvar.exp()
+        kld = logvar #- logvar.exp()# - mean.pow(2)
         return kld.mean(-1)
         # ent = logstd#.sign() * logstd.abs().add(1e-6).sqrt() #- mean ** 2 #+ .5 * math.log(2.0 * math.pi * math.e)
         # # ent[ent > 0] = 0
         # return ent.mean(-1)
 
-    def sample(self, prob, randn=False):
+    def sample_with_random(self, prob, rand):
+        assert rand is None or torch.is_tensor(rand)
         mean = prob[..., :self.d]
         logstd = prob[..., self.d:]
         std = torch.exp(logstd)
-        if randn is None:
-            randn = torch.randn_like(mean)
-        sample = mean + std * randn
+        if rand is None:
+            rand = torch.randn_like(mean)
+        sample = mean + std * rand
         # sample = sample / sample.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
-        if randn is False:
-            return sample
-        else:
-            return sample, randn
+        return sample, rand
 
     @property
     def mean_div(self):
@@ -315,11 +316,13 @@ class FixedStdGaussianPd(ProbabilityDistribution):
 
     def neglogp(self, x, prob):
         mean = prob[..., :self.d]
-        var = self.std * self.std
-        logvar = math.log(var)
+        std = self.std
+        logstd = math.log(self.std)
         assert x.shape == mean.shape
-        nll = 0.5 * ((x - mean) ** 2 / var + math.log(2 * math.pi) + logvar)
-        return nll.sum(-1)
+        nll = 0.5 * ((x - mean) / std).pow(2) + \
+              0.5 * math.log(2.0 * math.pi) * self.d + \
+              logstd
+        return nll.mean(-1)
 
     def kl(self, prob1, prob2):
         mean1 = prob1[..., :self.d]
@@ -328,13 +331,13 @@ class FixedStdGaussianPd(ProbabilityDistribution):
         logstd2 = math.log(self.std)
         std1 = math.exp(logstd1)
         std2 = math.exp(logstd2)
-        kl = logstd2 - logstd1 + (square(std1) + square(mean1 - mean2)) / (2.0 * square(std2)) - 0.5
-        return kl.sum(-1)
+        kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
+        return kl.mean(-1)
 
     def entropy(self, prob):
-        logvar = prob.new(prob.shape[-1]).fill_(math.log(self.std * self.std))
-        ent = 0.5 * (math.log(2 * math.pi * math.e) + logvar)
-        return ent
+        # logvar = prob.new(prob.shape[-1]).fill_(math.log(self.std * self.std))
+        # ent = 0.5 * (math.log(2 * math.pi * math.e) + logvar)
+        return prob.new_zeros(prob.shape[:-1])
 
     def sample(self, prob):
         mean = prob[..., :self.d]
@@ -393,11 +396,13 @@ class MultivecGaussianPd(ProbabilityDistribution):
 
     def entropy(self, prob):
         vecs = prob.contiguous().view(*prob.shape[:-1], self.d, self.num_vec)
-        logvar = vecs.var(-1).add(self.eps).log()
-        ent = logvar
+        var = vecs.var(-1)
+        logvar = var.add(self.eps).log()
+        ent = logvar #- var
         return ent.mean(-1)
 
-    def sample(self, prob, rand=None):
+    def sample_with_random(self, prob, rand):
+        assert rand is None or torch.is_tensor(rand)
         vecs = prob.contiguous().view(-1, self.d, self.num_vec)
         if rand is None:
             rand = torch.randint(self.num_vec, size=(vecs.shape[0],)).long()
@@ -405,8 +410,9 @@ class MultivecGaussianPd(ProbabilityDistribution):
             rand = rand.contiguous().view(-1)
         range = torch.arange(vecs.shape[0]).long()
         sample = vecs[range, :, rand]
-        sample = sample / sample.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
-        return sample.view(*prob.shape[:-1], self.d), rand.view(prob.shape[:-1])
+        # sample = sample / sample.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
+        sample, rand = sample.view(*prob.shape[:-1], self.d), rand.view(prob.shape[:-1])
+        return sample, rand
 
     @property
     def init_column_norm(self):

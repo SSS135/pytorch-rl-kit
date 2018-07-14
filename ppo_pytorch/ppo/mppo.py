@@ -159,27 +159,26 @@ class ReplayBuffer:
 
 class MPPO(PPO):
     def __init__(self, *args,
-                 density_buffer_size=2 * 1024,
-                 per_actor_replay_buffer_size=4 * 1024,
-                 world_gen_optim_factory=partial(GAdam, lr=1e-3, betas=(0.9, 0.95), amsgrad=True, amaxgrad=True,
-                                                 amsgrad_decay=0.05, weight_decay=1e-5),
+                 # density_buffer_size=2 * 1024,
+                 per_actor_replay_buffer_size=2 * 1024,
+                 world_gen_optim_factory=partial(GAdam, lr=1e-3, betas=(0.9, 0.95), amsgrad_decay=0.05, weight_decay=1e-5),
                  world_train_iters=32,
                  world_train_rollouts=32,
                  world_train_horizon=8,
-                 began_gamma=0.5,
+                 # began_gamma=0.5,
                  **kwargs):
         super().__init__(*args, **kwargs)
         # assert world_batch_size % world_train_horizon == 0 and \
         #        (world_train_rollouts * world_train_horizon) % world_batch_size == 0
         assert per_actor_replay_buffer_size * self.num_actors >= world_train_iters * world_train_rollouts * (world_train_horizon + 1)
 
-        self.density_buffer_size = density_buffer_size
+        # self.density_buffer_size = density_buffer_size
         self.per_actor_replay_buffer_size = per_actor_replay_buffer_size
         self.world_gen_optim_factory = world_gen_optim_factory
         self.world_train_iters = world_train_iters
         self.world_train_rollouts = world_train_rollouts
         self.world_train_horizon = world_train_horizon
-        self.began_gamma = began_gamma
+        # self.began_gamma = began_gamma
 
         self.world_gen = GanG(self.model.hidden_code_size, self.model.pd)
         self.memory_init_model = self.model_factory(self.observation_space, self.action_space)
@@ -191,13 +190,13 @@ class MPPO(PPO):
         self.replay_buffer = ReplayBuffer(per_actor_replay_buffer_size)
 
     def _ppo_update(self, data):
+        super()._ppo_update(data)
         self._update_replay_buffer(data)
         min_buf_size = self.world_train_iters * self.world_train_rollouts * (self.world_train_horizon + 1)
         if len(self.replay_buffer) >= min_buf_size or len(self.replay_buffer) == self.per_actor_replay_buffer_size * self.num_actors:
             self._train_world()
         if self._do_log:
             self._test_world(data)
-        return super()._ppo_update(data)
 
     def _update_replay_buffer(self, data):
         # H x B x *

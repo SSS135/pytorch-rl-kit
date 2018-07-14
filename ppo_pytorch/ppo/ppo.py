@@ -12,6 +12,7 @@ import torch.optim as optim
 from optfn.opt_clip import opt_clip
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
+import math
 
 from ..common.gae import calc_advantages, calc_returns
 from ..common.probability_distributions import DiagGaussianPd
@@ -32,6 +33,46 @@ from ..models import FCActorCritic
 #     x = torch.max(x, min) if isinstance(min, Variable) else x.clamp(min=min)
 #     x = torch.min(x, max) if isinstance(max, Variable) else x.clamp(max=max)
 #     return x
+
+
+def pseudo_huber_loss(pred, target, reduce=True):
+    loss = ((target - pred) ** 2 + 1).sqrt() - 1
+    return loss.mean() if reduce else loss
+
+
+def barron_loss(pred, target, alpha, c, reduce=True):
+    assert isinstance(alpha, float) or isinstance(alpha, int)
+    assert isinstance(c, float) or isinstance(c, int)
+
+    mse = (target - pred).div_(c).pow_(2)
+    if alpha == 2:
+        loss = 0.5 * mse
+    elif alpha == 0:
+        loss = torch.log(0.5 * mse + 1)
+    elif alpha == -math.inf:
+        loss = 1 - torch.exp(-0.5 * mse)
+    else:
+        scale = abs(2 - alpha) / alpha
+        inner = mse / abs(2 - alpha) + 1
+        loss = scale * (inner ** (alpha / 2) - 1)
+    return loss.mean() if reduce else loss
+
+
+def barron_loss_derivative(x, alpha, c):
+    assert isinstance(alpha, float) or isinstance(alpha, int)
+    assert isinstance(c, float) or isinstance(c, int)
+
+    if alpha == 2:
+        return x / c ** 2
+    elif alpha == 0:
+        return 2 * x / (x ** 2 + 2 * c ** 2)
+    elif alpha == -math.inf:
+        return x / c ** 2 * torch.exp(-0.5 * (x / c) ** 2)
+    else:
+        scale = x / c ** 2
+        inner = (x / c) ** 2 / abs(2 - alpha) + 1
+        return scale * inner ** (alpha / 2 - 1)
+
 
 
 # used to store env step data for training
@@ -55,7 +96,8 @@ class PPO(RLBase):
                  model_factory=FCActorCritic,
                  optimizer_factory=partial(optim.Adam, lr=3e-4),
                  value_loss_scale=1.0,
-                 entropy_bonus=0.01,
+                 entropy_loss_scale=0.01,
+                 entropy_reward_scale=0.0,
                  constraint='clip',
                  policy_clip=0.1,
                  value_clip=0.1,
@@ -90,7 +132,7 @@ class PPO(RLBase):
             optimizer_factory (Callable[[List[nn.Parameter]], optim.Optimizer]):
                 Callable object receiving `model.parameters()` and returning model optimizer
             value_loss_scale (float): Multiplier for state-value loss
-            entropy_bonus (float): Entropy bonus
+            entropy_loss_scale (float): Entropy bonus
             constraint (str):
                 None - No constraint
                 'clip' - PPO clipping
@@ -111,7 +153,7 @@ class PPO(RLBase):
         self.advantage_discount = advantage_discount
         self.policy_clip = policy_clip
         self.value_clip = value_clip
-        self.entropy_bonus = entropy_bonus
+        self.entropy_loss_scale = entropy_loss_scale
         self.horizon = horizon
         self.ppo_iters = ppo_iters
         self.batch_size = batch_size
@@ -129,6 +171,7 @@ class PPO(RLBase):
         self.model_save_tag = model_save_tag
         self.kl_target = kl_target
         self.kl_scale = kl_scale
+        self.entropy_reward_scale = entropy_reward_scale
 
         assert len(set(self.constraint) - {'clip', 'kl', 'opt'}) == 0
         assert not image_observation or \
@@ -146,6 +189,7 @@ class PPO(RLBase):
         self.entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
         self.last_model_save_frame = 0
         self.grad_norms = dict()
+        self.value_norm_mean_std = (0, 1)
 
     @property
     def learning_rate(self):
@@ -159,7 +203,7 @@ class PPO(RLBase):
         # move network to cuda or cpu
         torch.set_grad_enabled(False)
 
-        self.model = self.model.to(self.device_eval).eval()
+        self.model = self.model.to(self.device_eval)
 
         # convert observations to tensors
         if self.image_observation:
@@ -175,6 +219,7 @@ class PPO(RLBase):
         self.append_to_sample(self.sample, states, rewards, dones, actions, probs, values)
 
         if len(self.sample.rewards) >= self.horizon:
+            self._pre_train()
             self._train()
 
         torch.set_grad_enabled(True)
@@ -184,7 +229,7 @@ class PPO(RLBase):
     def _take_step(self, states, dones):
         return self.model(states)
 
-    def _train(self):
+    def _pre_train(self):
         self._check_log()
 
         # update clipping and learning rate decay schedulers
@@ -195,6 +240,7 @@ class PPO(RLBase):
         if self.entropy_decay is not None:
             self.entropy_decay.step(self.frame)
 
+    def _train(self):
         data = self._process_sample(self.sample)
         self._log_training_data(data)
         self._ppo_update(data)
@@ -244,7 +290,7 @@ class PPO(RLBase):
         return Sample([], [], [], [], [], [])
 
     def _process_sample(self, sample, pd=None, reward_discount=None, advantage_discount=None,
-                        reward_scale=None, mean_norm=False):
+                        reward_scale=None, mean_norm=True):
         if pd is None:
             pd = self.model.pd
         if reward_discount is None:
@@ -254,21 +300,26 @@ class PPO(RLBase):
         if reward_scale is None:
             reward_scale = self.reward_scale
 
+        value_norm_mean, value_norm_std = self.value_norm_mean_std
+
         # convert list to numpy array
         # (seq, num_actors, ...)
         rewards = torch.tensor(sample.rewards, dtype=torch.float)
-        values_old = torch.tensor(sample.values, dtype=torch.float)
+        values_old = torch.tensor(sample.values, dtype=torch.float) * value_norm_std + value_norm_mean
         dones = torch.tensor(sample.dones, dtype=torch.float)
+        probs_old = torch.tensor(sample.probs[:-1], dtype=torch.float)
+
+        entropy = pd.entropy(probs_old) * rewards.pow(2).mean().sqrt()
+        rewards += self.entropy_reward_scale * entropy
 
         rewards, returns, advantages = self._process_rewards(
             rewards, values_old, dones, reward_discount, advantage_discount, reward_scale, mean_norm=mean_norm)
 
         # convert data to Tensors
-        probs_old = torch.tensor(sample.probs[:-1], dtype=torch.float)
         actions = torch.tensor(sample.actions[:-1], dtype=pd.dtype)
-        values_old = torch.tensor(sample.values[:-1], dtype=torch.float).reshape(-1)
-        dones = dones.reshape(-1)
+        values_old = values_old[:-1].reshape(-1)
         states = torch.cat(sample.states[:-1], dim=0) if sample.states is not None else None
+        dones = dones.reshape(-1)
         returns = returns.reshape(-1)
         advantages = advantages.reshape(-1)
         rewards = rewards.reshape(-1)
@@ -284,16 +335,30 @@ class PPO(RLBase):
         returns = calc_returns(norm_rewards, values, dones, reward_discount)
         advantages = calc_advantages(norm_rewards, values, dones, reward_discount, advantage_discount)
         if mean_norm:
-            advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-2)
+            advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-3)
         else:
-            advantages = advantages / max(advantages.pow(2).mean().sqrt(), 1e-2)
+            advantages = advantages / max(advantages.pow(2).mean().sqrt(), 1e-3)
+        advantages = barron_loss_derivative(advantages, 1.5, 1)
+        # advantages = advantages / (1 + advantages ** 2).sqrt()
+        # advantages = advantages.clamp(-1, 1)
         # advantages = advantages.sign() * advantages.abs() ** 0.5
 
         return norm_rewards, returns, advantages
 
-    def _ppo_update(self, data):
+    def _ppo_update(self, data: TrainingData):
         # move model to cuda or cpu
         self.model = self.model.to(self.device_train).train()
+
+        ret_mean, ret_std = data.returns.mean().item(), max(1e-5, data.returns.std().item())
+        prev_norm_mean, prev_norm_std = self.value_norm_mean_std
+        self.value_norm_mean_std = ret_mean, ret_std
+
+        self.model.head.scale_state_value(prev_norm_std)
+        self.model.head.shift_state_value(prev_norm_mean - ret_mean)
+        self.model.head.scale_state_value(1 / ret_std)
+
+        data = data._replace(values_old=(data.values_old - ret_mean) / ret_std,
+                             returns=(data.returns - ret_mean) / ret_std)
 
         data = (data.states.pin_memory() if self.device_train.type == 'cuda' else data.states,
                 data.probs_old, data.values_old, data.actions, data.advantages, data.returns)
@@ -310,10 +375,11 @@ class PPO(RLBase):
 
                 with torch.enable_grad():
                     actor_out = self.model(st)
-                    probs_prev = actor_out.probs
-                    values_prev = actor_out.state_values
+                    probs = actor_out.probs
+                    values = actor_out.state_values
+                    # values, vo, ret = [(x - ret_mean) / ret_std for x in (values, vo, ret)]
                     # get loss
-                    loss, kl = self._get_ppo_loss(probs_prev, po, values_prev, vo, ac, adv, ret)
+                    loss, kl = self._get_ppo_loss(probs, po, values, vo, ac, adv, ret)
                     loss = loss.mean()
 
                 # optimize
@@ -371,15 +437,15 @@ class PPO(RLBase):
 
         # value loss
         v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
-        vf_clip_loss = F.smooth_l1_loss(v_pred_clipped, returns, reduce=False)
-        vf_nonclip_loss = F.smooth_l1_loss(values, returns, reduce=False)
+        vf_clip_loss = barron_loss(v_pred_clipped, returns, 1.5, 1, reduce=False)
+        vf_nonclip_loss = barron_loss(values, returns, 1.5, 1, reduce=False)
         loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)
 
         # entropy bonus for better exploration
         entropy = pd.entropy(probs)
         # entropy_old = pd.entropy(probs_old)
 
-        loss_ent = -self.entropy_bonus * entropy
+        loss_ent = -self.entropy_loss_scale * entropy
         # loss_ent[(entropy > entropy_old + self.entropy_bonus).detach()] = 0
 
         kl = pd.kl(probs_old, probs)

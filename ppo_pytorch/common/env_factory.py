@@ -16,7 +16,7 @@ from .sonic_utils import sonic_1_train_levels, sonic_2_train_levels, sonic_3_tra
 
 
 class NamedVecEnv:
-    def __init__(self, env_name, dummy=False):
+    def __init__(self, env_name, dummy=True):
         self.env_name = env_name
         self.dummy = dummy
         self.subproc_envs = None

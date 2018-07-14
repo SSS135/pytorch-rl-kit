@@ -27,13 +27,16 @@ def create_fc_kwargs(learning_decay_frames=5e5, **kwargs):
         image_observation=False,
         cuda_eval=False,
         cuda_train=False,
+    )
+    schedulers = dict(
         lr_scheduler_factory=partial(
             DecayLR, start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=False),
         clip_decay_factory=partial(
             ValueDecay, start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=False),
         entropy_decay_factory=partial(
             ValueDecay, start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=True, temp=2),
-    )
+    ) if learning_decay_frames is not None else dict()
+    defaults.update(schedulers)
     defaults.update(kwargs)
     return defaults
 
@@ -88,13 +91,16 @@ def create_atari_kwargs(learning_decay_frames=10e6, **kwargs):
         image_observation=True,
         cuda_eval=True,
         cuda_train=True,
+    )
+    schedulers = dict(
         lr_scheduler_factory=partial(
             DecayLR, start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=False),
         clip_decay_factory=partial(
             ValueDecay, start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=False),
         entropy_decay_factory=partial(
             ValueDecay, start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=True, temp=2),
-    )
+    ) if learning_decay_frames is not None else dict()
+    defaults.update(schedulers)
     defaults.update(kwargs)
     return defaults
 
