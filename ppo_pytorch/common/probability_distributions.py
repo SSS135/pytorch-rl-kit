@@ -11,53 +11,13 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 
 
-def log_softmax(prob):
-    """Same as `torch.nn.functional.log_softmax`, but accepts Tensors as well as Variables"""
-    logp = F.log_softmax(prob if isinstance(prob, Variable) else Variable(prob), dim=-1)
-    if not isinstance(prob, Variable):
-        logp = logp.data
-    return logp
-
-
-def log_sigmoid(prob):
-    """Same as `torch.nn.functional.logsigmoid`, but accepts Tensors as well as Variables"""
-    logp = F.logsigmoid(prob if isinstance(prob, Variable) else Variable(prob))
-    if not isinstance(prob, Variable):
-        logp = logp.data
-    return logp
-
-
-def softmax(prob):
-    """Same as `torch.nn.functional.softmax`, but accepts Tensors as well as Variables"""
-    logp = F.softmax(prob if isinstance(prob, Variable) else Variable(prob), dim=-1)
-    if not isinstance(prob, Variable):
-        logp = logp.data
-    return logp
-
-
-def sigmoid(prob):
-    """Same as `torch.nn.functional.sigmoid`, but accepts Tensors as well as Variables"""
-    v = F.sigmoid(prob if isinstance(prob, Variable) else Variable(prob))
-    if not isinstance(prob, Variable):
-        v = v.data
-    return v
-
-
-def sigmoid_cross_entropy_with_logits(logits, labels):
-    return torch.max(logits, 0)[0] - logits * labels + torch.log(1 + torch.exp(-logits.abs()))
-
-
-def square(x):
-    return x * x
-
-
 def make_pd(space: gym.Space):
     """Create `ProbabilityDistribution` from gym.Space"""
     if isinstance(space, gym.spaces.Discrete):
         return CategoricalPd(space.n)
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
-        return MultivecGaussianPd(space.shape[0], 16)
+        return DiagGaussianPd(space.shape[0])
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     else:
@@ -149,12 +109,12 @@ class CategoricalPd(ProbabilityDistribution):
         return torch.int64
 
     def neglogp(self, a, prob):
-        logp = log_softmax(prob)
+        logp = F.log_softmax(prob, dim=-1)
         return -logp.gather(dim=-1, index=a.unsqueeze(-1) if a.dim() == 1 else a).squeeze(-1)
 
     def kl(self, prob0, prob1):
-        logp0 = log_softmax(prob0)
-        logp1 = log_softmax(prob1)
+        logp0 = F.log_softmax(prob0, dim=-1)
+        logp1 = F.log_softmax(prob1, dim=-1)
         return (logp0.exp() * (logp0 - logp1)).sum(dim=-1)
 
     def entropy(self, prob):
@@ -165,7 +125,7 @@ class CategoricalPd(ProbabilityDistribution):
         return torch.sum(po * (torch.log(z) - a), dim=-1)
 
     def sample(self, prob):
-        return softmax(prob).multinomial(1)
+        return F.softmax(prob, dim=-1).multinomial(1)
 
     def to_inputs(self, action):
         with torch.no_grad():
@@ -200,7 +160,7 @@ class BernoulliPd(ProbabilityDistribution):
         return nlp
 
     def kl(self, prob0, prob1):
-        ps = sigmoid(prob0)
+        ps = F.sigmoid(prob0)
         kl = F.binary_cross_entropy_with_logits(prob1, ps, reduce=False).sum(-1) - \
              F.binary_cross_entropy_with_logits(prob0, ps, reduce=False).sum(-1)
         return kl
@@ -257,15 +217,6 @@ class DiagGaussianPd(ProbabilityDistribution):
         std2 = torch.exp(logstd2)
         kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
         return kl.mean(-1)
-
-    # def kl(self, prob1, prob2):
-    #     mean1 = prob1[..., :self.d]
-    #     logstd1 = prob1[..., self.d:]
-    #     mean2 = prob2[..., :self.d]
-    #     logstd2 = prob2[..., self.d:]
-    #     def rmse(a, b):
-    #         return (a - b).pow(2).mean(-1).add(1e-6).sqrt()
-    #     return (rmse(mean1, mean2) + rmse(logstd1, logstd2)) / 10
 
     def entropy(self, prob):
         mean = prob[..., :self.d]
@@ -391,7 +342,7 @@ class MultivecGaussianPd(ProbabilityDistribution):
         std2 = var2.sqrt()
         logstd1 = std1.log()
         logstd2 = std2.log()
-        kl = logstd2 - logstd1 + (square(std1) + square(mean1 - mean2)) / (2.0 * square(std2)) - 0.5
+        kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
         return kl.mean(-1)
 
     def entropy(self, prob):
@@ -417,6 +368,68 @@ class MultivecGaussianPd(ProbabilityDistribution):
     @property
     def init_column_norm(self):
         return math.sqrt(self.d)
+
+
+class DiagGaussianMixturePd(ProbabilityDistribution):
+    def __init__(self, d, num_mixtures=4, eps=1e-6):
+        self.d = d
+        self.num_mixtures = num_mixtures
+        self.eps = eps
+        self._gpd = DiagGaussianPd(d)
+        self._cpd = CategoricalPd(num_mixtures)
+
+    @property
+    def prob_vector_len(self):
+        return self.d * 2 * self.num_mixtures + self.num_mixtures
+
+    @property
+    def action_vector_len(self):
+        return self.d
+
+    @property
+    def input_vector_len(self):
+        return self.d
+
+    @property
+    def dtype(self):
+        return torch.float
+
+    def neglogp(self, x, prob):
+        logw, gaussians = self._split_prob(prob)
+        nll = self._gpd.neglogp(x.unsqueeze(-2), gaussians) - F.log_softmax(logw, -1)
+        reduce_w = F.softmax(-nll.detach(), -1)
+        cp = nll.data.clone()
+        nll.mul_(reduce_w)
+        nll.data.copy_(cp)
+        return nll.sum(-1)
+
+    def kl(self, prob1, prob2):
+        logw1, gaussians1 = self._split_prob(prob1)
+        logw2, gaussians2 = self._split_prob(prob2)
+        kl = self._gpd.kl(gaussians1, gaussians2).mean(-1) + self._cpd.kl(logw1, logw2)
+        return kl
+
+    def entropy(self, prob):
+        logw, gaussians = self._split_prob(prob)
+        ent = self._gpd.entropy(gaussians).mean(-1) + self._cpd.entropy(logw)
+        return ent
+
+    def sample(self, prob):
+        logw, gaussians = self._split_prob(prob)
+        mixture_idx = self._cpd.sample(logw)
+        rep = *((gaussians.dim() - 1) * [1]), gaussians.shape[-1]
+        index = mixture_idx.unsqueeze(-1).repeat(rep)
+        selected = gaussians.gather(dim=-2, index=index).squeeze(-2)
+        return self._gpd.sample(selected)
+
+    @property
+    def init_column_norm(self):
+        return math.sqrt(self.d)
+
+    def _split_prob(self, prob):
+        logw, gaussians = prob.split([self.num_mixtures, self.d * 2 * self.num_mixtures], dim=-1)
+        gaussians = gaussians.contiguous().view(*gaussians.shape[:-1], self.num_mixtures, self.d * 2)
+        return logw, gaussians
 
 
 class StaticTransactionPd(ProbabilityDistribution):

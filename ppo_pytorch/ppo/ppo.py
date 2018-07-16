@@ -13,6 +13,7 @@ from optfn.opt_clip import opt_clip
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 import math
+from optfn.grad_running_norm import GradRunningNorm
 
 from ..common.gae import calc_advantages, calc_returns
 from ..common.probability_distributions import DiagGaussianPd
@@ -98,7 +99,7 @@ class PPO(RLBase):
                  value_loss_scale=1.0,
                  entropy_loss_scale=0.01,
                  entropy_reward_scale=0.0,
-                 constraint='clip',
+                 constraint=('kl', 'clip'),
                  policy_clip=0.1,
                  value_clip=0.1,
                  kl_target=0.01,
@@ -189,7 +190,7 @@ class PPO(RLBase):
         self.entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
         self.last_model_save_frame = 0
         self.grad_norms = dict()
-        self.value_norm_mean_std = (0, 1)
+        # self.value_norm_mean_std = (0, 1)
 
     @property
     def learning_rate(self):
@@ -300,12 +301,12 @@ class PPO(RLBase):
         if reward_scale is None:
             reward_scale = self.reward_scale
 
-        value_norm_mean, value_norm_std = self.value_norm_mean_std
+        # value_norm_mean, value_norm_std = self.value_norm_mean_std
 
         # convert list to numpy array
         # (seq, num_actors, ...)
         rewards = torch.tensor(sample.rewards, dtype=torch.float)
-        values_old = torch.tensor(sample.values, dtype=torch.float) * value_norm_std + value_norm_mean
+        values_old = torch.tensor(sample.values, dtype=torch.float) #* value_norm_std + value_norm_mean
         dones = torch.tensor(sample.dones, dtype=torch.float)
         probs_old = torch.tensor(sample.probs[:-1], dtype=torch.float)
 
@@ -349,16 +350,16 @@ class PPO(RLBase):
         # move model to cuda or cpu
         self.model = self.model.to(self.device_train).train()
 
-        ret_mean, ret_std = data.returns.mean().item(), max(1e-5, data.returns.std().item())
-        prev_norm_mean, prev_norm_std = self.value_norm_mean_std
-        self.value_norm_mean_std = ret_mean, ret_std
+        # ret_mean, ret_std = data.returns.mean().item(), max(1e-5, data.returns.std().item())
+        # prev_norm_mean, prev_norm_std = self.value_norm_mean_std
+        # self.value_norm_mean_std = ret_mean, ret_std
+        #
+        # self.model.head.scale_state_value(prev_norm_std)
+        # self.model.head.shift_state_value(prev_norm_mean - ret_mean)
+        # self.model.head.scale_state_value(1 / ret_std)
 
-        self.model.head.scale_state_value(prev_norm_std)
-        self.model.head.shift_state_value(prev_norm_mean - ret_mean)
-        self.model.head.scale_state_value(1 / ret_std)
-
-        data = data._replace(values_old=(data.values_old - ret_mean) / ret_std,
-                             returns=(data.returns - ret_mean) / ret_std)
+        # data = data._replace(values_old=(data.values_old - ret_mean) / ret_std,
+        #                      returns=(data.returns - ret_mean) / ret_std)
 
         data = (data.states.pin_memory() if self.device_train.type == 'cuda' else data.states,
                 data.probs_old, data.values_old, data.actions, data.advantages, data.returns)

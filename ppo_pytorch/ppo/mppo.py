@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 from optfn.gadam import GAdam
 from optfn.spectral_norm import SpectralNorm
+import torch.nn.functional as F
+from torch.nn.utils import clip_grad_norm_
 
 from .ppo import PPO
 
@@ -161,7 +163,7 @@ class MPPO(PPO):
     def __init__(self, *args,
                  # density_buffer_size=2 * 1024,
                  per_actor_replay_buffer_size=2 * 1024,
-                 world_gen_optim_factory=partial(GAdam, lr=1e-3, betas=(0.9, 0.95), amsgrad_decay=0.05, weight_decay=1e-5),
+                 world_gen_optim_factory=partial(GAdam, lr=1e-3, betas=(0.9, 0.95), amsgrad_decay=0.05),
                  world_train_iters=32,
                  world_train_rollouts=32,
                  world_train_horizon=8,
@@ -190,11 +192,12 @@ class MPPO(PPO):
         self.replay_buffer = ReplayBuffer(per_actor_replay_buffer_size)
 
     def _ppo_update(self, data):
-        super()._ppo_update(data)
+        # super()._ppo_update(data)
         self._update_replay_buffer(data)
         min_buf_size = self.world_train_iters * self.world_train_rollouts * (self.world_train_horizon + 1)
         if len(self.replay_buffer) >= min_buf_size or len(self.replay_buffer) == self.per_actor_replay_buffer_size * self.num_actors:
             self._train_world()
+            self._hallucinate_train_policy()
         if self._do_log:
             self._test_world(data)
 
@@ -272,18 +275,73 @@ class MPPO(PPO):
         if self._do_log:
             self.logger.add_scalar('gen loss', gen_q_loss, self.frame)
 
+    def _hallucinate_train_policy(self):
+        self.world_gen = self.world_gen.to(self.device_train).train()
+        self.model = self.model.to(self.device_train).train()
+        self.memory_init_model = self.memory_init_model.to(self.device_train).train()
+
+        horizon = 1  # np.random.randint(2, 8)
+        batch_states = 256  # 512 // horizon
+        mc_rollouts = 1
+        iters = 16
+
+        # (H, B, ...)
+        all_states, _, _, _ = self.replay_buffer.sample(batch_states * iters, 1)
+        # all_dones = all_dones.astype(np.float32)
+
+        all_states = torch.from_numpy(all_states)
+        if self.device_train.type == 'cuda':
+            all_states = all_states.pin_memory()
+
+        for train_iter in range(iters):
+            slc = (slice(None), slice(train_iter * batch_states, (train_iter + 1) * batch_states))
+            # (H, B, ...)
+            states = all_states[slc].to(self.device_train).squeeze(0)
+            with torch.enable_grad():
+                head_out = self.model(states)
+                probs = head_out.probs.repeat(mc_rollouts, 1)
+                hidden_code = head_out.hidden_code.repeat(mc_rollouts, 1)
+                state_values = head_out.state_values.repeat(mc_rollouts)
+            actions = self.model.pd.sample(probs)
+            init_state, tau, _ = self.get_generator_init_params(horizon, hidden_code, states.repeat(mc_rollouts, 1))
+            gen_next_code, gen_rewards, gen_dones, gen_memory = self.world_gen(
+                hidden_code, actions, None, tau[0], init_state)
+            gen_head_out = self.model(gen_next_code, hidden_code_input=True)
+            target_state_values = self.reward_discount * gen_dones.lt(0.5).float() * gen_head_out.state_values + \
+                                  self.reward_scale * gen_rewards
+            # target_state_values = target_state_values.view(mc_rollouts, batch_states).mean(0)
+            advantages = target_state_values - state_values
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-6)
+
+            with torch.enable_grad():
+                value_loss = F.smooth_l1_loss(state_values, target_state_values)
+                logp = self.model.pd.logp(actions, probs)
+                policy_loss = -advantages * logp
+                loss = value_loss.mean() + policy_loss.mean()
+            loss.backward()
+            if self.grad_clip_norm is not None:
+                clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+
+    def get_generator_init_params(self, horizon, init_hidden_codes, init_states):
+        prob_len = self.model.pd.prob_vector_len
+        hc_len = init_hidden_codes.shape[-1]
+        tau = init_hidden_codes.new_empty((horizon, init_hidden_codes.shape[0], hc_len + 2 + prob_len + 1)).uniform_()
+        tau_hc, tau_prob, tau_done, tau_reward, tau_value = tau.split([hc_len, prob_len, 1, 1, 1], -1)
+        tau_done, tau_reward, tau_value = [x.squeeze(-1) for x in (tau_done, tau_reward, tau_value)]
+        init_state = self.memory_init_model(init_states, only_hidden_code_output=True).hidden_code
+        return init_state, tau, (tau_hc, tau_prob, tau_done, tau_reward, tau_value)
+
     def run_generator(self, hidden_codes, states, actions):
+        horizon = hidden_codes.shape[0] - 1
+        init_state, tau, (tau_hc, tau_prob, tau_done, tau_reward, tau_value) = \
+            self.get_generator_init_params(horizon, hidden_codes[0], states[0])
         all_gen_next_hc = []
         all_gen_rewards = []
         all_gen_dones = []
-        prob_len = self.model.pd.prob_vector_len
-        hc_len = hidden_codes.shape[2]
-        tau = hidden_codes.new_empty((hidden_codes.shape[0] - 1, hidden_codes.shape[1], hc_len + 2 + prob_len + 1)).uniform_()
-        tau_hc, tau_prob, tau_done, tau_reward, tau_value = tau.split([hc_len, prob_len, 1, 1, 1], -1)
-        tau_done, tau_reward, tau_value = [x.squeeze(-1) for x in (tau_done, tau_reward, tau_value)]
-        init_state = self.memory_init_model(states[0], only_hidden_code_output=True).hidden_code
         gen_memory = None
-        for i in range(hidden_codes.shape[0] - 1):
+        for i in range(horizon):
             gen_next_code, gen_rewards, gen_dones, gen_memory = self.world_gen(
                 hidden_codes[0] if i == 0 else all_gen_next_hc[-1], actions[i],
                 gen_memory, tau[i], init_state if i == 0 else None)

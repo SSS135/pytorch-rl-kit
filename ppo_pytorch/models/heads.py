@@ -99,9 +99,9 @@ class ActorCriticHead(HeadBase):
         probs = x[..., 1:]
         return HeadOutput(probs=probs, state_values=values)
 
-    def shift_state_value(self, shift):
-        self.linear.bias.data[0:1] += shift
-
-    def scale_state_value(self, scale):
-        self.linear.bias.data[0:1] *= scale
-        self.linear.weight.data[0:1] *= scale
+    # def shift_state_value(self, shift):
+    #     self.linear.bias.data[0:1] += shift
+    #
+    # def scale_state_value(self, scale):
+    #     self.linear.bias.data[0:1] *= scale
+    #     self.linear.weight.data[0:1] *= scale
