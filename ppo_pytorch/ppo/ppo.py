@@ -14,11 +14,12 @@ from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 import math
 from optfn.grad_running_norm import GradRunningNorm
+from ..models.heads import actor_critic_head_factory
 
 from ..common.gae import calc_advantages, calc_returns
 from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
-from ..models import FCActorCritic
+from ..models import FCActor
 
 # def lerp(start, end, weight):
 #     """
@@ -94,7 +95,7 @@ class PPO(RLBase):
                  horizon=64,
                  ppo_iters=10,
                  batch_size=64,
-                 model_factory=FCActorCritic,
+                 model_factory=FCActor,
                  optimizer_factory=partial(optim.Adam, lr=3e-4),
                  value_loss_scale=1.0,
                  entropy_loss_scale=0.01,
@@ -180,8 +181,7 @@ class PPO(RLBase):
 
         self.sample = self.create_new_sample()
 
-        self.model = model_factory(observation_space, action_space)
-        # self.model.apply(partial(apply_weight_norm, norm=weight_rescale))
+        self.model = model_factory(observation_space, action_space, actor_critic_head_factory)
         if model_init_path is not None:
             self.model.load_state_dict(torch.load(model_init_path))
         self.optimizer = optimizer_factory(self.model.parameters())
@@ -216,7 +216,7 @@ class PPO(RLBase):
         ac_out = self._take_step(states.to(self.device_eval), dones)
         actions = self.model.pd.sample(ac_out.probs).cpu().numpy()
 
-        probs, values = ac_out.probs.cpu().numpy(), ac_out.state_values.cpu().numpy()
+        probs, values = ac_out.probs.cpu().numpy(), ac_out.state_value.cpu().numpy()
         self.append_to_sample(self.sample, states, rewards, dones, actions, probs, values)
 
         if len(self.sample.rewards) >= self.horizon:
@@ -377,7 +377,7 @@ class PPO(RLBase):
                 with torch.enable_grad():
                     actor_out = self.model(st)
                     probs = actor_out.probs
-                    values = actor_out.state_values
+                    values = actor_out.state_value
                     # values, vo, ret = [(x - ret_mean) / ret_std for x in (values, vo, ret)]
                     # get loss
                     loss, kl = self._get_ppo_loss(probs, po, values, vo, ac, adv, ret)
@@ -429,7 +429,8 @@ class PPO(RLBase):
 
         if 'clip' in self.constraint:
             unclipped_policy_loss = ratio * advantages
-            clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
+            wpclip = advantages.abs() * policy_clip
+            clipped_ratio = torch.min(torch.max(ratio, -wpclip), wpclip) # ratio.clamp(-policy_clip, policy_clip)
             clipped_policy_loss = clipped_ratio * advantages
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
         else:

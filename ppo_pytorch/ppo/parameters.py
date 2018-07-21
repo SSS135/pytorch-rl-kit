@@ -3,7 +3,7 @@ from functools import partial
 import torch.optim as optim
 
 from ..common import DecayLR, ValueDecay
-from ..models import FCActorCritic, CNNActorCritic
+from ..models import FCActor, CNNActor
 
 
 def create_fc_kwargs(learning_decay_frames=5e5, **kwargs):
@@ -23,7 +23,7 @@ def create_fc_kwargs(learning_decay_frames=5e5, **kwargs):
         ppo_iters=6,
         horizon=64,
         batch_size=128,
-        model_factory=FCActorCritic,
+        model_factory=FCActor,
         image_observation=False,
         cuda_eval=False,
         cuda_train=False,
@@ -58,7 +58,7 @@ def create_hqrnn_kwargs(**kwargs):
         ppo_iters=6,
         horizon=128,
         batch_size=256,
-        model_factory=FCActorCritic,
+        model_factory=FCActor,
         image_observation=False,
         cuda_eval=True,
         cuda_train=True,
@@ -87,7 +87,7 @@ def create_atari_kwargs(learning_decay_frames=10e6, **kwargs):
         grad_clip_norm=3,
         horizon=128,
         batch_size=32 * 8,
-        model_factory=CNNActorCritic,
+        model_factory=CNNActor,
         image_observation=True,
         cuda_eval=True,
         cuda_train=True,

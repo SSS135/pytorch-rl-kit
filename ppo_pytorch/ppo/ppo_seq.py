@@ -24,7 +24,7 @@ class PPO_Seq(PPO_QRNN):
             self._rnn_data.memory.append(next_mem.data.clone().fill_(0))
         self._rnn_data.memory.append(next_mem.data)
         self._rnn_data.dones.append(dones.data[0])
-        return HeadOutput(ac_out.probs.squeeze(0), ac_out.state_values.squeeze(0))
+        return HeadOutput(ac_out.probs.squeeze(0), ac_out.state_value.squeeze(0))
 
     def _ppo_update(self, data):
         last_mem = self._rnn_data.memory[-self.eval_seq_len:]

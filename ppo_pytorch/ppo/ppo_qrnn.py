@@ -5,7 +5,7 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 
 from .ppo import PPO, TrainingData
-from ..models import QRNNActorCritic
+from ..models import QRNNActor
 from ..models.heads import HeadOutput
 from ..models.utils import image_to_float
 
@@ -14,7 +14,7 @@ RNNData = namedtuple('RNNData', 'memory, dones')
 
 class PPO_QRNN(PPO):
     def __init__(self, observation_space, action_space,
-                 model_factory=QRNNActorCritic,
+                 model_factory=QRNNActor,
                  *args, **kwargs):
         super().__init__(observation_space, action_space, model_factory=model_factory, *args, **kwargs)
         self._rnn_data = RNNData([], [])
@@ -49,7 +49,7 @@ class PPO_QRNN(PPO):
         self._rnn_data.memory.append(next_mem)
         self._rnn_data.dones.append(dones[0])
 
-        return HeadOutput(ac_out.probs.squeeze(0), ac_out.state_values.squeeze(0))
+        return HeadOutput(ac_out.probs.squeeze(0), ac_out.state_value.squeeze(0))
 
     def _ppo_update(self, data):
         self.model.train()
@@ -112,9 +112,9 @@ class PPO_QRNN(PPO):
                     # (actors * steps, probs)
                     probs = actor_out.probs.transpose(0, 1).contiguous().view(-1, actor_out.probs.shape[2])
                     # (actors * steps)
-                    state_values = actor_out.state_values.transpose(0, 1).contiguous().view(-1)
+                    state_value = actor_out.state_value.transpose(0, 1).contiguous().view(-1)
                     # get loss
-                    loss, kl = self._get_ppo_loss(probs, po, state_values, vo, ac, adv, ret)
+                    loss, kl = self._get_ppo_loss(probs, po, state_value, vo, ac, adv, ret)
                     # loss_vat = get_vat_loss(
                     #     lambda x: self.model(x.view_as(st), mem, done)[0].probs.view_as(probs),
                     #     st.view(-1, *st.shape[2:]),

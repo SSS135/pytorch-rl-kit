@@ -8,14 +8,14 @@ from torch.nn.utils import clip_grad_norm_
 from .ppo import Sample
 from .ppo_qrnn import PPO_QRNN
 from ..common.probability_distributions import DiagGaussianPd
-from ..models import QRNNActorCritic
+from ..models import QRNNActor
 
 RNNData = namedtuple('RNNData', 'memory, dones, action_l2, randn_l2, cur_l1, target_l1, probs_l2, values_l2')
 
 
 class PPO_HQRNN(PPO_QRNN):
     def __init__(self, observation_space, action_space, *args,
-                 model_factory=QRNNActorCritic,
+                 model_factory=QRNNActor,
                  reward_discount_l2=0.99,
                  advantage_discount_l2=0.95,
                  reward_scale_l2=1.0,
@@ -38,9 +38,9 @@ class PPO_HQRNN(PPO_QRNN):
         head_l1, head_l2, action_l2, randn_l2, cur_l1, target_l1, next_mem = self.model(states, mem, dones)
 
         head_l1.probs = head_l1.probs.squeeze(0)
-        head_l1.state_values = head_l1.state_values.squeeze(0)
+        head_l1.state_value = head_l1.state_value.squeeze(0)
         head_l2.probs = head_l2.probs.squeeze(0)
-        head_l2.state_values = head_l2.state_values.squeeze(0)
+        head_l2.state_value = head_l2.state_value.squeeze(0)
 
         if len(self._rnn_data.memory) == 0:
             self._rnn_data.memory.append(next_mem.data.clone().fill_(0))
@@ -51,7 +51,7 @@ class PPO_HQRNN(PPO_QRNN):
         self._rnn_data.cur_l1.append(cur_l1.data[0])
         self._rnn_data.target_l1.append(target_l1.data[0])
         self._rnn_data.probs_l2.append(head_l2.probs.data)
-        self._rnn_data.values_l2.append(head_l2.state_values.data)
+        self._rnn_data.values_l2.append(head_l2.state_value.data)
 
         return head_l1
 
@@ -180,7 +180,7 @@ class PPO_HQRNN(PPO_QRNN):
                     probs_l1, probs_l2 = [h.probs.transpose(0, 1).contiguous().view(-1, h.probs.shape[2])
                                           for h in (actor_out_l1, actor_out_l2)]
                     # (actors * steps)
-                    state_values_l1, state_values_l2 = [h.state_values.transpose(0, 1).contiguous().view(-1)
+                    state_value_l1, state_value_l2 = [h.state_value.transpose(0, 1).contiguous().view(-1)
                                                         for h in (actor_out_l1, actor_out_l2)]
 
                     if hasattr(self.model.h_pd, 'cur'):
@@ -194,9 +194,9 @@ class PPO_HQRNN(PPO_QRNN):
                         self.model.h_pd.randn = r_l2
 
                     # get loss
-                    loss_l1, kl_l1 = self._get_ppo_loss(probs_l1, po_l1, state_values_l1, vo_l1, ac_l1, adv_l1, ret_l1,
+                    loss_l1, kl_l1 = self._get_ppo_loss(probs_l1, po_l1, state_value_l1, vo_l1, ac_l1, adv_l1, ret_l1,
                                                         self.model.pd, tag='')
-                    loss_l2, kl_l2 = self._get_ppo_loss(probs_l2, po_l2, state_values_l2, vo_l2, ac_l2, adv_l2, ret_l2,
+                    loss_l2, kl_l2 = self._get_ppo_loss(probs_l2, po_l2, state_value_l2, vo_l2, ac_l2, adv_l2, ret_l2,
                                                         self.model.h_pd, tag=' l2')
                     loss = loss_l1.mean() + loss_l2.view(num_actors, -1)[:, :-1].mean()
 

@@ -9,8 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from optfn.temporal_group_norm import TemporalGroupNorm
 
-from .actors import Actor, CNNActor
-from .heads import ActorCriticHead
+from .actors import Actor
+from .cnn_actors import CNNActor
 from .utils import image_to_float
 from ..common.probability_distributions import make_pd, MultivecGaussianPd, BernoulliPd
 
@@ -23,9 +23,9 @@ class Sega_CNNSeqActor(CNNActor):
         nf = 32
         in_c = self.observation_space.shape[0]
         self.convs = nn.ModuleList([
-            self.make_layer(nn.Conv2d(in_c,   nf,     8, 4, 0, bias=self.norm is None)),
-            self.make_layer(nn.Conv2d(nf,     nf * 2, 6, 3, 0, bias=self.norm is None)),
-            self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 0, bias=self.norm is None)),
+            self._make_layer(nn.Conv2d(in_c, nf, 8, 4, 0, bias=self.norm is None)),
+            self._make_layer(nn.Conv2d(nf, nf * 2, 6, 3, 0, bias=self.norm is None)),
+            self._make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 0, bias=self.norm is None)),
         ])
         layer_norm = self.norm is not None and 'layer' in self.norm
         self.seq_conv = nn.Sequential(
@@ -80,10 +80,10 @@ class Sega_CNNHSeqActor(CNNActor):
         nf = 32
         in_c = self.observation_space.shape[0]
         self.convs = nn.ModuleList([
-            self.make_layer(nn.Conv2d(in_c,   nf,     8, 4, 0, bias=self.norm is None)),
-            self.make_layer(nn.Conv2d(nf,     nf * 2, 6, 3, 0, bias=self.norm is None)),
-            self.make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 0, bias=self.norm is None)),
-            self.make_layer(nn.Conv2d(nf * 4, nf * 8, 3, 1, 0, bias=self.norm is None)),
+            self._make_layer(nn.Conv2d(in_c, nf, 8, 4, 0, bias=self.norm is None)),
+            self._make_layer(nn.Conv2d(nf, nf * 2, 6, 3, 0, bias=self.norm is None)),
+            self._make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 0, bias=self.norm is None)),
+            self._make_layer(nn.Conv2d(nf * 4, nf * 8, 3, 1, 0, bias=self.norm is None)),
         ])
         self.l1_seq_conv = nn.Sequential(
             nn.ReplicationPad1d((3, 0)),
@@ -213,7 +213,7 @@ class HSeqActor(Actor):
         head_l1 = self.head(preact_l1)
 
         next_memory = torch.cat([next_memory_l1, next_memory_l2], 0)
-        # head_l1.state_values = head_l1.state_values * 0
+        # head_l1.state_value = head_l1.state_value * 0
 
         return head_l1, head_l2, action_l2, cur_l1, target_l1, next_memory
 

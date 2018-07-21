@@ -50,7 +50,7 @@ def apply_weight_norm(m, norm=weight_norm):
         norm(m)
 
 
-def normalized_columns_initializer(weights, norm=1.0):
+def normalized_columns_initializer_(weights, norm=1.0):
     """
     Initialization makes layer output have approximately zero mean and `norm` norm.
     Args:

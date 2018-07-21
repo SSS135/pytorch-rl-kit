@@ -9,14 +9,14 @@ from optfn.qrnn import DenseQRNN
 from optfn.temporal_group_norm import TemporalGroupNorm
 from torch.autograd import Variable
 
-from .actors import Actor, CNNActor
-from .heads import ActorCriticHead
+from .actors import Actor
+from .cnn_actors import CNNActor
 from .utils import image_to_float
 from ..common.probability_distributions import make_pd, BernoulliPd, DiagGaussianPd
 
 
 class QRNNActor(Actor):
-    def __init__(self, observation_space: gym.Space, action_space: gym.Space, head_factory: Callable,
+    def __init__(self, observation_space: gym.Space, action_space: gym.Space, *args,
                  qrnn_hidden_size=128, qrnn_layers=3, **kwargs):
         """
         Args:
@@ -26,12 +26,12 @@ class QRNNActor(Actor):
             hidden_sizes: List of hidden layers sizes
             activation: Activation function
         """
-        super().__init__(observation_space, action_space, **kwargs)
-        self.qrnn_hidden_size = qrnn_hidden_size
+        super().__init__(observation_space, action_space, *args, **kwargs)
+        self.qrnn_hidden_size = self.hidden_code_size = qrnn_hidden_size
         self.qrnn_layers = qrnn_layers
         obs_len = int(np.product(observation_space.shape))
         self.qrnn = DenseQRNN(obs_len, qrnn_hidden_size, qrnn_layers, norm=self.norm)
-        self.head = head_factory(qrnn_hidden_size, self.pd)
+        self._init_heads()
         self.reset_weights()
 
     def forward(self, input, memory, done_flags):
@@ -65,8 +65,8 @@ class CNN_QRNNActor(CNNActor):
         # self.linear = self.make_layer(nn.Linear(1024, 512))
         self.qrnn = DenseQRNN(self.linear[0].in_features, qrnn_hidden_size, qrnn_layers, norm=qrnn_norm)
         del self.linear
-        self.head = self.head_factory(qrnn_hidden_size, self.pd)
         self.hidden_code_size = qrnn_hidden_size
+        self._init_heads()
         self.reset_weights()
 
     def forward(self, input, memory, done_flags):
@@ -179,7 +179,7 @@ class Sega_CNN_HQRNNActor(CNN_QRNNActor):
         preact_l1 = self.act_l1(state_vec_l1, target_l2)
 
         head_l1 = self.head(preact_l1)
-        # head_l1.state_values = 0 * head_l1.state_values
+        # head_l1.state_value = 0 * head_l1.state_value
 
         next_memory = Variable(input.new(2, input.shape[1], 2))
 
@@ -270,6 +270,6 @@ class HQRNNActor(QRNNActor):
         head_l1 = self.head(hidden_l1)
 
         next_memory = torch.cat([next_memory_l1, next_memory_l2], 0)
-        # head_l1.state_values = head_l1.state_values * 0
+        # head_l1.state_value = head_l1.state_value * 0
 
         return head_l1, head_l2, action_l2, randn_l2, input_emb_l2, target_l1, next_memory

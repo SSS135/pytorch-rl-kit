@@ -5,7 +5,7 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 
 from .ppo import PPO, TrainingData
-from ..models import QRNNActorCritic
+from ..models import QRNNActor
 from ..models.heads import HeadOutput
 from ..models.utils import image_to_float
 from .mppo import ReplayBuffer

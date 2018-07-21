@@ -237,26 +237,26 @@ class MPPO(PPO):
             # quentile
             with torch.enable_grad():
                 real_head = self.model(states.view(-1, *states.shape[2:]))
-                hidden_codes = real_head.hidden_code.detach().view(*states.shape[:2], *real_head.hidden_code.shape[1:])
+                hidden_code = real_head.hidden_code.detach().view(*states.shape[:2], *real_head.hidden_code.shape[1:])
 
                 all_gen_next_hc, all_gen_rewards, all_gen_dones, tau_hc, tau_prob, tau_done, tau_reward, tau_value = \
-                    self.run_generator(hidden_codes, states, actions)
+                    self.run_generator(hidden_code, states, actions)
                 correct_dones_mask = (all_gen_dones.detach() > 0.5) == (dones[:-1] > 0.5)
                 all_gen_dones[correct_dones_mask] = all_gen_dones[correct_dones_mask].clamp(0, 1)
-                gen_q_loss = huber_quantile_loss(all_gen_next_hc, hidden_codes[1:], tau_hc) + \
+                gen_q_loss = huber_quantile_loss(all_gen_next_hc, hidden_code[1:], tau_hc) + \
                              huber_quantile_loss(all_gen_rewards, rewards[:-1], tau_reward) + \
                              huber_quantile_loss(all_gen_dones, dones[:-1], tau_done)
 
                 # gen_head = self.model(all_gen_next_hc.view(-1, all_gen_next_hc.shape[-1]), hidden_code_input=True)
-                # # real_head = self.model(hidden_codes[1:].view(-1, hidden_codes.shape[-1]), hidden_code_input=True)
+                # # real_head = self.model(hidden_code[1:].view(-1, hidden_code.shape[-1]), hidden_code_input=True)
                 # real_probs = real_head.probs.detach().view(-1, states.shape[1], *real_head.probs.shape[1:])
                 # gen_probs = gen_head.probs.view(-1, states.shape[1], *gen_head.probs.shape[1:])
-                # real_values = real_head.state_values.detach().view(-1, states.shape[1])
-                # gen_values = gen_head.state_values.view(-1, states.shape[1])
+                # real_values = real_head.state_value.detach().view(-1, states.shape[1])
+                # gen_values = gen_head.state_value.view(-1, states.shape[1])
                 # head_q_loss = huber_quantile_loss(gen_probs, real_probs[1:], tau_prob) + \
                 #               huber_quantile_loss(gen_values, real_values[1:], tau_value)
 
-                # gen_mse_loss = (all_gen_hidden_codes - hidden_codes[1:]).pow(2).mean(-1)
+                # gen_mse_loss = (all_gen_hidden_code - hidden_code[1:]).pow(2).mean(-1)
                                # (all_gen_rewards - rewards[:-1]).pow(2) + \
                                # (all_gen_dones - dones[:-1]).pow(2)
 
@@ -301,20 +301,20 @@ class MPPO(PPO):
                 head_out = self.model(states)
                 probs = head_out.probs.repeat(mc_rollouts, 1)
                 hidden_code = head_out.hidden_code.repeat(mc_rollouts, 1)
-                state_values = head_out.state_values.repeat(mc_rollouts)
+                state_value = head_out.state_value.repeat(mc_rollouts)
             actions = self.model.pd.sample(probs)
             init_state, tau, _ = self.get_generator_init_params(horizon, hidden_code, states.repeat(mc_rollouts, 1))
             gen_next_code, gen_rewards, gen_dones, gen_memory = self.world_gen(
                 hidden_code, actions, None, tau[0], init_state)
             gen_head_out = self.model(gen_next_code, hidden_code_input=True)
-            target_state_values = self.reward_discount * gen_dones.lt(0.5).float() * gen_head_out.state_values + \
+            target_state_value = self.reward_discount * gen_dones.lt(0.5).float() * gen_head_out.state_value + \
                                   self.reward_scale * gen_rewards
-            # target_state_values = target_state_values.view(mc_rollouts, batch_states).mean(0)
-            advantages = target_state_values - state_values
+            # target_state_value = target_state_value.view(mc_rollouts, batch_states).mean(0)
+            advantages = target_state_value - state_value
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-6)
 
             with torch.enable_grad():
-                value_loss = F.smooth_l1_loss(state_values, target_state_values)
+                value_loss = F.smooth_l1_loss(state_value, target_state_value)
                 logp = self.model.pd.logp(actions, probs)
                 policy_loss = -advantages * logp
                 loss = value_loss.mean() + policy_loss.mean()
@@ -324,26 +324,26 @@ class MPPO(PPO):
             self.optimizer.step()
             self.optimizer.zero_grad()
 
-    def get_generator_init_params(self, horizon, init_hidden_codes, init_states):
+    def get_generator_init_params(self, horizon, init_hidden_code, init_states):
         prob_len = self.model.pd.prob_vector_len
-        hc_len = init_hidden_codes.shape[-1]
-        tau = init_hidden_codes.new_empty((horizon, init_hidden_codes.shape[0], hc_len + 2 + prob_len + 1)).uniform_()
+        hc_len = init_hidden_code.shape[-1]
+        tau = init_hidden_code.new_empty((horizon, init_hidden_code.shape[0], hc_len + 2 + prob_len + 1)).uniform_()
         tau_hc, tau_prob, tau_done, tau_reward, tau_value = tau.split([hc_len, prob_len, 1, 1, 1], -1)
         tau_done, tau_reward, tau_value = [x.squeeze(-1) for x in (tau_done, tau_reward, tau_value)]
         init_state = self.memory_init_model(init_states, only_hidden_code_output=True).hidden_code
         return init_state, tau, (tau_hc, tau_prob, tau_done, tau_reward, tau_value)
 
-    def run_generator(self, hidden_codes, states, actions):
-        horizon = hidden_codes.shape[0] - 1
+    def run_generator(self, hidden_code, states, actions):
+        horizon = hidden_code.shape[0] - 1
         init_state, tau, (tau_hc, tau_prob, tau_done, tau_reward, tau_value) = \
-            self.get_generator_init_params(horizon, hidden_codes[0], states[0])
+            self.get_generator_init_params(horizon, hidden_code[0], states[0])
         all_gen_next_hc = []
         all_gen_rewards = []
         all_gen_dones = []
         gen_memory = None
         for i in range(horizon):
             gen_next_code, gen_rewards, gen_dones, gen_memory = self.world_gen(
-                hidden_codes[0] if i == 0 else all_gen_next_hc[-1], actions[i],
+                hidden_code[0] if i == 0 else all_gen_next_hc[-1], actions[i],
                 gen_memory, tau[i], init_state if i == 0 else None)
             all_gen_next_hc.append(gen_next_code)
             all_gen_rewards.append(gen_rewards)
@@ -373,23 +373,23 @@ class MPPO(PPO):
         dones = dones.float()
 
         real_head = self.model(states.view(-1, *states.shape[2:]))
-        hidden_codes = real_head.hidden_code.detach().view(*states.shape[:2], *real_head.hidden_code.shape[1:])
+        hidden_code = real_head.hidden_code.detach().view(*states.shape[:2], *real_head.hidden_code.shape[1:])
         all_gen_next_hc, all_gen_rewards, all_gen_dones, tau_hc, tau_prob, tau_done, tau_reward, tau_value = \
-            self.run_generator(hidden_codes, states, actions)
+            self.run_generator(hidden_code, states, actions)
         all_gen_dones = (all_gen_dones > 0.5).float()
 
-        self._log_gen_errors('1-step', hidden_codes[0], hidden_codes[1], all_gen_next_hc[0],
+        self._log_gen_errors('1-step', hidden_code[0], hidden_code[1], all_gen_next_hc[0],
                              dones[0], all_gen_dones[0], rewards[0], all_gen_rewards[0], actions[1])
         l = all_gen_rewards.shape[0] - 1
-        self._log_gen_errors(f'full-step', hidden_codes[l], hidden_codes[l + 1], all_gen_next_hc[l],
+        self._log_gen_errors(f'full-step', hidden_code[l], hidden_code[l + 1], all_gen_next_hc[l],
                              dones[l], all_gen_dones[l], rewards[l], all_gen_rewards[l], actions[l + 1])
 
     def _log_gen_errors(self, tag, real_cur_hidden, real_next_hidden, gen_next_hidden,
                         real_dones, gen_dones, real_rewards, gen_rewards, actions):
         head_real = self.model(real_next_hidden, hidden_code_input=True)
         head_gen = self.model(gen_next_hidden, hidden_code_input=True)
-        real_values, real_probs = head_real.state_values, head_real.probs
-        gen_values, gen_probs = head_gen.state_values, head_gen.probs
+        real_values, real_probs = head_real.state_value, head_real.probs
+        gen_values, gen_probs = head_gen.state_value, head_gen.probs
         rmse = lambda a, b: (a - b).abs().mean().item()
         state_norm_rmse = rmse(gen_next_hidden, real_next_hidden) / max(0.01, rmse(real_cur_hidden, real_next_hidden))
         self.logger.add_scalar(f'gen {tag} raw prob err', rmse(real_probs, gen_probs), self.frame)
