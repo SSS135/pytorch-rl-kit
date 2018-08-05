@@ -8,8 +8,9 @@ from optfn.gadam import GAdam
 from optfn.spectral_norm import SpectralNorm
 import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
+import random
 
-from .ppo import PPO
+from .ppo import PPO, barron_loss
 
 
 def spectral_init(module, gain=nn.init.calculate_gain('leaky_relu', 0.1), n_power_iterations=1):
@@ -167,6 +168,9 @@ class MPPO(PPO):
                  world_train_iters=32,
                  world_train_rollouts=32,
                  world_train_horizon=8,
+                 hall_horizon=4,
+                 hall_mc_rollout=4,
+                 target_net_smooth=0.95,
                  # began_gamma=0.5,
                  **kwargs):
         super().__init__(*args, **kwargs)
@@ -180,12 +184,16 @@ class MPPO(PPO):
         self.world_train_iters = world_train_iters
         self.world_train_rollouts = world_train_rollouts
         self.world_train_horizon = world_train_horizon
+        self.hall_horizon = hall_horizon
+        self.hall_mc_rollout = hall_mc_rollout
+        self.target_net_smooth = target_net_smooth
         # self.began_gamma = began_gamma
 
         self.world_gen = GanG(self.model.hidden_code_size, self.model.pd)
-        self.memory_init_model = self.model_factory(self.observation_space, self.action_space)
-        for src, dst in zip(self.model.parameters(), self.memory_init_model.parameters()):
-            dst.data.copy_(src.data)
+        self.memory_init_model = self.model_factory(self.observation_space, self.action_space, self.head_factory)
+        self.target_net = self.model_factory(self.observation_space, self.action_space, self.head_factory)
+        self._lerp_to_model(self.memory_init_model, 1)
+        self._lerp_to_model(self.target_net, 1)
         self.world_gen_optim = world_gen_optim_factory(
             chain(self.world_gen.parameters(), self.memory_init_model.parameters()))
         # self.density_buffer = deque(maxlen=density_buffer_size)
@@ -247,27 +255,27 @@ class MPPO(PPO):
                              huber_quantile_loss(all_gen_rewards, rewards[:-1], tau_reward) + \
                              huber_quantile_loss(all_gen_dones, dones[:-1], tau_done)
 
-                # gen_head = self.model(all_gen_next_hc.view(-1, all_gen_next_hc.shape[-1]), hidden_code_input=True)
-                # # real_head = self.model(hidden_code[1:].view(-1, hidden_code.shape[-1]), hidden_code_input=True)
-                # real_probs = real_head.probs.detach().view(-1, states.shape[1], *real_head.probs.shape[1:])
-                # gen_probs = gen_head.probs.view(-1, states.shape[1], *gen_head.probs.shape[1:])
-                # real_values = real_head.state_value.detach().view(-1, states.shape[1])
-                # gen_values = gen_head.state_value.view(-1, states.shape[1])
-                # head_q_loss = huber_quantile_loss(gen_probs, real_probs[1:], tau_prob) + \
-                #               huber_quantile_loss(gen_values, real_values[1:], tau_value)
+                gen_head = self.model(all_gen_next_hc.view(-1, all_gen_next_hc.shape[-1]), hidden_code_input=True)
+                # real_head = self.model(hidden_code[1:].view(-1, hidden_code.shape[-1]), hidden_code_input=True)
+                real_probs = real_head.probs.detach().view(-1, states.shape[1], *real_head.probs.shape[1:])
+                gen_probs = gen_head.probs.view(-1, states.shape[1], *gen_head.probs.shape[1:])
+                real_values = real_head.state_value.detach().view(-1, states.shape[1])
+                gen_values = gen_head.state_value.view(-1, states.shape[1])
+                head_q_loss = huber_quantile_loss(gen_probs, real_probs[1:], tau_prob) + \
+                              huber_quantile_loss(gen_values, real_values[1:], tau_value)
 
-                # gen_mse_loss = (all_gen_hidden_code - hidden_code[1:]).pow(2).mean(-1)
-                               # (all_gen_rewards - rewards[:-1]).pow(2) + \
-                               # (all_gen_dones - dones[:-1]).pow(2)
+                # gen_mse_loss = (all_gen_next_hc - hidden_code[1:]).pow(2).mean(-1) + \
+                #                (all_gen_rewards - rewards[:-1]).pow(2) + \
+                #                (all_gen_dones - dones[:-1]).pow(2)
 
-                dones_shift = dones[:-1].clone()
-                dones_shift[1:] = dones[:-2]
-                dones_shift[0] = 0
-                gen_q_loss = gen_q_loss.mul(1 - dones_shift).mean()
+                # dones_shift = dones[:-1].clone()
+                # dones_shift[1:] = dones[:-2]
+                # dones_shift[0] = 0
+                # gen_q_loss = gen_q_loss.mul(1 - dones_shift).mean()
 
-                gen_q_loss = gen_q_loss.mean() #+ 0.2 * head_q_loss.mean() #+ head_mse_loss.mean()
+                gen_q_loss = gen_q_loss.mean() + 0.2 * head_q_loss.mean() #+ 0.2 * gen_mse_loss.mean()
             gen_q_loss.backward()
-            # torch.nn.utils.clip_grad_norm_(self.world_gen.parameters(), 20)
+            torch.nn.utils.clip_grad_norm_(self.world_gen.parameters(), 20)
             self.optimizer.zero_grad()
             self.world_gen_optim.step()
             self.world_gen_optim.zero_grad()
@@ -279,11 +287,12 @@ class MPPO(PPO):
         self.world_gen = self.world_gen.to(self.device_train).train()
         self.model = self.model.to(self.device_train).train()
         self.memory_init_model = self.memory_init_model.to(self.device_train).train()
+        self.target_net = self.target_net.to(self.device_train).train()
 
-        horizon = 1  # np.random.randint(2, 8)
-        batch_states = 256  # 512 // horizon
-        mc_rollouts = 1
-        iters = 16
+        horizon = self.hall_horizon  # np.random.randint(2, 8)
+        batch_states = self.batch_size  # 512 // horizon
+        mc_rollouts = self.hall_mc_rollout
+        iters = self.ppo_iters
 
         # (H, B, ...)
         all_states, _, _, _ = self.replay_buffer.sample(batch_states * iters, 1)
@@ -293,30 +302,60 @@ class MPPO(PPO):
         if self.device_train.type == 'cuda':
             all_states = all_states.pin_memory()
 
+        self._lerp_to_model(self.target_net, 1 - self.target_net_smooth)
+
         for train_iter in range(iters):
             slc = (slice(None), slice(train_iter * batch_states, (train_iter + 1) * batch_states))
             # (H, B, ...)
-            states = all_states[slc].to(self.device_train).squeeze(0)
+            init_states = all_states[slc].to(self.device_train).squeeze(0)
             with torch.enable_grad():
-                head_out = self.model(states)
-                probs = head_out.probs.repeat(mc_rollouts, 1)
-                hidden_code = head_out.hidden_code.repeat(mc_rollouts, 1)
-                state_value = head_out.state_value.repeat(mc_rollouts)
-            actions = self.model.pd.sample(probs)
-            init_state, tau, _ = self.get_generator_init_params(horizon, hidden_code, states.repeat(mc_rollouts, 1))
-            gen_next_code, gen_rewards, gen_dones, gen_memory = self.world_gen(
-                hidden_code, actions, None, tau[0], init_state)
-            gen_head_out = self.model(gen_next_code, hidden_code_input=True)
-            target_state_value = self.reward_discount * gen_dones.lt(0.5).float() * gen_head_out.state_value + \
-                                  self.reward_scale * gen_rewards
-            # target_state_value = target_state_value.view(mc_rollouts, batch_states).mean(0)
-            advantages = target_state_value - state_value
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-6)
+                cur_hc = self.model(init_states, only_hidden_code_output=True).hidden_code.repeat(mc_rollouts, 1)
+            init_mem, tau, _ = self.get_generator_init_params(init_states.repeat(mc_rollouts, 1),
+                                                              horizon, batch_states * mc_rollouts)
+
+            # (horizon, num_actors)
+            all_rewards = []
+            all_dones = []
+            all_values = []
+            all_probs = []
+            all_actions = []
+            all_target_values = []
+            cur_mem = None
+            for h in range(horizon + 1):
+                with torch.enable_grad():
+                    head_out = self.model(cur_hc, hidden_code_input=True)
+                    actions = self.model.pd.sample(head_out.probs)
+                    all_values.append(head_out.state_value)
+                target_head_out = self.target_net(cur_hc, hidden_code_input=True)
+                all_target_values.append(target_head_out.state_value)
+                if h != horizon:
+                    cur_hc, gen_rewards, gen_dones, cur_mem = self.world_gen(
+                        cur_hc, actions, cur_mem, tau[h], init_mem if h == 0 else None)
+                    all_actions.append(actions)
+                    all_probs.append(head_out.probs)
+                    all_rewards.append(gen_rewards)
+                    all_dones.append(gen_dones)
 
             with torch.enable_grad():
-                value_loss = F.smooth_l1_loss(state_value, target_state_value)
-                logp = self.model.pd.logp(actions, probs)
-                policy_loss = -advantages * logp
+                all_rewards = torch.stack(all_rewards, 0)
+                all_dones = torch.stack(all_dones, 0).gt_(0.5)
+                all_values = torch.stack(all_values, 0)
+                all_probs = torch.stack(all_probs, 0)
+                all_actions = torch.stack(all_actions, 0)
+                all_target_values = torch.stack(all_target_values, 0)
+
+                rewards, returns, advantages = self._process_rewards(
+                    all_rewards, all_target_values, all_dones,
+                    self.reward_discount, self.advantage_discount, self.reward_scale, True)
+
+                rewards, returns, advantages, all_values = [x[0].contiguous().view(-1) for x in
+                                                            (rewards, returns, advantages, all_values)]
+                all_probs, all_actions = [x[0].contiguous().view(-1, x.shape[-1]) for x in (all_probs, all_actions)]
+
+            # with torch.enable_grad():
+                value_loss = barron_loss(all_values, returns.detach(), 1.5, 1, reduce=False)
+                logp = self.model.pd.logp(all_actions.detach(), all_probs)
+                policy_loss = -advantages.detach() * logp
                 loss = value_loss.mean() + policy_loss.mean()
             loss.backward()
             if self.grad_clip_norm is not None:
@@ -324,19 +363,20 @@ class MPPO(PPO):
             self.optimizer.step()
             self.optimizer.zero_grad()
 
-    def get_generator_init_params(self, horizon, init_hidden_code, init_states):
+    def get_generator_init_params(self, init_states, horizon, num_actors):
         prob_len = self.model.pd.prob_vector_len
-        hc_len = init_hidden_code.shape[-1]
-        tau = init_hidden_code.new_empty((horizon, init_hidden_code.shape[0], hc_len + 2 + prob_len + 1)).uniform_()
+        hc_len = self.model.hidden_code_size
+        tau = torch.zeros((horizon, num_actors, hc_len + 2 + prob_len + 1),
+                          dtype=torch.float32, device=self.device_train).uniform_()
         tau_hc, tau_prob, tau_done, tau_reward, tau_value = tau.split([hc_len, prob_len, 1, 1, 1], -1)
         tau_done, tau_reward, tau_value = [x.squeeze(-1) for x in (tau_done, tau_reward, tau_value)]
-        init_state = self.memory_init_model(init_states, only_hidden_code_output=True).hidden_code
-        return init_state, tau, (tau_hc, tau_prob, tau_done, tau_reward, tau_value)
+        init_mem = self.memory_init_model(init_states, only_hidden_code_output=True).hidden_code
+        return init_mem, tau, (tau_hc, tau_prob, tau_done, tau_reward, tau_value)
 
     def run_generator(self, hidden_code, states, actions):
         horizon = hidden_code.shape[0] - 1
         init_state, tau, (tau_hc, tau_prob, tau_done, tau_reward, tau_value) = \
-            self.get_generator_init_params(horizon, hidden_code[0], states[0])
+            self.get_generator_init_params(states[0], horizon, hidden_code.shape[1])
         all_gen_next_hc = []
         all_gen_rewards = []
         all_gen_dones = []
@@ -383,6 +423,10 @@ class MPPO(PPO):
         l = all_gen_rewards.shape[0] - 1
         self._log_gen_errors(f'full-step', hidden_code[l], hidden_code[l + 1], all_gen_next_hc[l],
                              dones[l], all_gen_dones[l], rewards[l], all_gen_rewards[l], actions[l + 1])
+
+    def _lerp_to_model(self, slow_model, t):
+        for src, dst in zip(self.model.parameters(), slow_model.parameters()):
+            dst.data.lerp_(src.data, t)
 
     def _log_gen_errors(self, tag, real_cur_hidden, real_next_hidden, gen_next_hidden,
                         real_dones, gen_dones, real_rewards, gen_rewards, actions):

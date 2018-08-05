@@ -4,14 +4,6 @@ from .utils import normalized_columns_initializer_
 from ..common.probability_distributions import ProbabilityDistribution, CategoricalPd
 
 
-def actor_critic_head_factory(hidden_size, pd):
-    return dict(probs=PolicyHead(hidden_size, pd), state_value=StateValueHead(hidden_size))
-
-
-def action_values_head_factory(hidden_size, pd):
-    return dict(action_values=ActionValuesHead(hidden_size, pd))
-
-
 class HeadOutput(dict):
     """
     Output of `HeadBase`. Different heads may fill different arguments.

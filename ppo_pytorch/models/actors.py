@@ -111,8 +111,8 @@ class Actor(nn.Module):
         heads = {name: head(hidden_code) for name, head in self.heads.items()}
         return HeadOutput(hidden_code=hidden_code, **heads)
 
-    def _init_heads(self):
-        self.heads = self.head_factory(self.hidden_code_size, self.pd)
+    def _init_heads(self, hc_size):
+        self.heads = self.head_factory(hc_size, self.pd)
         for name, head in self.heads.items():
             self.add_module("head_" + name, head)
 
@@ -122,7 +122,7 @@ class FCActor(Actor):
     Fully connected network.
     """
 
-    def __init__(self, observation_space: gym.Space, action_space: gym.Space, *args,
+    def __init__(self, observation_space: gym.Space, action_space: gym.Space, head_factory, *args,
                  hidden_sizes=(128, 128), activation=nn.Tanh, hidden_code_type='input', **kwargs):
         """
         Args:
@@ -131,13 +131,13 @@ class FCActor(Actor):
             hidden_sizes: List of hidden layers sizes
             activation: Activation function
         """
-        super().__init__(observation_space, action_space, *args, **kwargs)
+        super().__init__(observation_space, action_space, head_factory, *args, **kwargs)
         self.hidden_sizes = hidden_sizes
         self.activation = activation
         self.hidden_code_type = hidden_code_type
         obs_len = int(np.product(observation_space.shape))
         self.hidden_code_size = obs_len if hidden_code_type == 'input' else hidden_sizes[-1]
-        self._init_heads()
+        self._init_heads(hidden_sizes[-1])
         self.linear = self._create_fc(obs_len, None, hidden_sizes, activation, self.norm)
         self.reset_weights()
 
@@ -179,6 +179,4 @@ class FCActor(Actor):
         if self.hidden_code_type == 'input':
             hidden_code = input
         head.hidden_code = hidden_code
-        if self.dual_net:
-            head.state_value = self.value_net(input, hidden_code_input=hidden_code_input).state_value
         return head

@@ -31,7 +31,7 @@ class QRNNActor(Actor):
         self.qrnn_layers = qrnn_layers
         obs_len = int(np.product(observation_space.shape))
         self.qrnn = DenseQRNN(obs_len, qrnn_hidden_size, qrnn_layers, norm=self.norm)
-        self._init_heads()
+        self._init_heads(self.hidden_code_size)
         self.reset_weights()
 
     def forward(self, input, memory, done_flags):
@@ -66,7 +66,7 @@ class CNN_QRNNActor(CNNActor):
         self.qrnn = DenseQRNN(self.linear[0].in_features, qrnn_hidden_size, qrnn_layers, norm=qrnn_norm)
         del self.linear
         self.hidden_code_size = qrnn_hidden_size
-        self._init_heads()
+        self._init_heads(self.hidden_code_size)
         self.reset_weights()
 
     def forward(self, input, memory, done_flags):

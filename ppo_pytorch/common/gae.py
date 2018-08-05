@@ -13,7 +13,7 @@ def calc_advantages(rewards, values, dones, reward_discount, advantage_discount)
 
     Returns: GAE advantages
     """
-    assert len(rewards) == len(values) - 1
+    assert len(rewards) == len(values) - 1 == len(dones)
 
     gae = 0
     gaes = torch.zeros_like(rewards)
@@ -37,7 +37,7 @@ def calc_returns(rewards, values, dones, reward_discount):
     Returns: Temporal difference returns
 
     """
-    assert len(rewards) == len(values) - 1
+    assert len(rewards) == len(values) - 1 == len(dones)
 
     R = values[-1]
     returns = torch.zeros_like(rewards)

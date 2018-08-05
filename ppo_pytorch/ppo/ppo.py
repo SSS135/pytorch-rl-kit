@@ -14,7 +14,7 @@ from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 import math
 from optfn.grad_running_norm import GradRunningNorm
-from ..models.heads import actor_critic_head_factory
+from ..models.heads import PolicyHead, StateValueHead
 
 from ..common.gae import calc_advantages, calc_returns
 from ..common.probability_distributions import DiagGaussianPd
@@ -38,6 +38,7 @@ from ..models import FCActor
 
 
 def pseudo_huber_loss(pred, target, reduce=True):
+    assert pred.shape == target.shape
     loss = ((target - pred) ** 2 + 1).sqrt() - 1
     return loss.mean() if reduce else loss
 
@@ -45,6 +46,7 @@ def pseudo_huber_loss(pred, target, reduce=True):
 def barron_loss(pred, target, alpha, c, reduce=True):
     assert isinstance(alpha, float) or isinstance(alpha, int)
     assert isinstance(c, float) or isinstance(c, int)
+    assert pred.shape == target.shape
 
     mse = (target - pred).div_(c).pow_(2)
     if alpha == 2:
@@ -109,7 +111,7 @@ class PPO(RLBase):
                  cuda_train=False,
                  grad_clip_norm=2,
                  reward_scale=1.0,
-                 image_observation=True,
+                 image_observation=False,
                  lr_scheduler_factory=None,
                  clip_decay_factory=None,
                  entropy_decay_factory=None,
@@ -181,7 +183,7 @@ class PPO(RLBase):
 
         self.sample = self.create_new_sample()
 
-        self.model = model_factory(observation_space, action_space, actor_critic_head_factory)
+        self.model = model_factory(observation_space, action_space, self.head_factory)
         if model_init_path is not None:
             self.model.load_state_dict(torch.load(model_init_path))
         self.optimizer = optimizer_factory(self.model.parameters())
@@ -191,6 +193,9 @@ class PPO(RLBase):
         self.last_model_save_frame = 0
         self.grad_norms = dict()
         # self.value_norm_mean_std = (0, 1)
+
+    def head_factory(self, hidden_size, pd):
+        return dict(probs=PolicyHead(hidden_size, pd), state_value=StateValueHead(hidden_size))
 
     @property
     def learning_rate(self):
@@ -202,6 +207,7 @@ class PPO(RLBase):
 
     def _step(self, prev_states, rewards, dones, cur_states) -> np.ndarray:
         # move network to cuda or cpu
+        orig_grad_enabled = torch.is_grad_enabled()
         torch.set_grad_enabled(False)
 
         self.model = self.model.to(self.device_eval)
@@ -223,7 +229,7 @@ class PPO(RLBase):
             self._pre_train()
             self._train()
 
-        torch.set_grad_enabled(True)
+        torch.set_grad_enabled(orig_grad_enabled)
 
         return actions
 

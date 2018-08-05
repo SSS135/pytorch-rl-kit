@@ -58,11 +58,7 @@ class ProbabilityDistribution:
 
     def logp(self, a, prob):
         """Log probability"""
-        return -self.neglogp(a, prob)
-
-    def neglogp(self, a, prob):
-        """Negative log probability"""
-        return -self.logp(a, prob)
+        raise NotImplementedError
 
     def sample(self, prob):
         """Sample action from probabilities"""
@@ -108,9 +104,9 @@ class CategoricalPd(ProbabilityDistribution):
     def dtype(self):
         return torch.int64
 
-    def neglogp(self, a, prob):
+    def logp(self, a, prob):
         logp = F.log_softmax(prob, dim=-1)
-        return -logp.gather(dim=-1, index=a.unsqueeze(-1) if a.dim() == 1 else a).squeeze(-1)
+        return logp.gather(dim=-1, index=a.unsqueeze(-1) if a.dim() == 1 else a).squeeze(-1)
 
     def kl(self, prob0, prob1):
         logp0 = F.log_softmax(prob0, dim=-1)
@@ -119,7 +115,7 @@ class CategoricalPd(ProbabilityDistribution):
 
     def entropy(self, prob):
         a = prob - prob.max(dim=-1, keepdim=True)[0]
-        ea = torch.exp(a)
+        ea = a.exp()
         z = ea.sum(dim=-1, keepdim=True)
         po = ea / z
         return torch.sum(po * (torch.log(z) - a), dim=-1)
@@ -155,9 +151,9 @@ class BernoulliPd(ProbabilityDistribution):
     def dtype(self):
         return torch.int64
 
-    def neglogp(self, a, logits):
-        nlp = F.binary_cross_entropy_with_logits(logits, a, reduce=False).sum(-1)
-        return nlp
+    def logp(self, a, logits):
+        logp = -F.binary_cross_entropy_with_logits(logits, a, reduce=False).sum(-1)
+        return logp
 
     def kl(self, prob0, prob1):
         ps = F.sigmoid(prob0)
@@ -199,14 +195,14 @@ class DiagGaussianPd(ProbabilityDistribution):
     def dtype(self):
         return torch.float
 
-    def neglogp(self, x, prob):
+    def logp(self, x, prob):
         mean = prob[..., :self.d]
         logstd = prob[..., self.d:]
         std = torch.exp(logstd)
         nll = 0.5 * ((x - mean) / std).pow(2) + \
               0.5 * math.log(2.0 * math.pi) * self.d + \
               logstd
-        return nll.mean(-1)
+        return -nll.mean(-1)
 
     def kl(self, prob1, prob2):
         mean1 = prob1[..., :self.d]
@@ -265,7 +261,7 @@ class FixedStdGaussianPd(ProbabilityDistribution):
     def dtype(self):
         return torch.float
 
-    def neglogp(self, x, prob):
+    def logp(self, x, prob):
         mean = prob[..., :self.d]
         std = self.std
         logstd = math.log(self.std)
@@ -273,7 +269,7 @@ class FixedStdGaussianPd(ProbabilityDistribution):
         nll = 0.5 * ((x - mean) / std).pow(2) + \
               0.5 * math.log(2.0 * math.pi) * self.d + \
               logstd
-        return nll.mean(-1)
+        return -nll.mean(-1)
 
     def kl(self, prob1, prob2):
         mean1 = prob1[..., :self.d]
@@ -321,7 +317,7 @@ class MultivecGaussianPd(ProbabilityDistribution):
     def dtype(self):
         return torch.float
 
-    def neglogp(self, x, prob):
+    def logp(self, x, prob):
         vecs = prob.contiguous().view(*prob.shape[:-1], self.d, self.num_vec)
         std = vecs.var(-1).add(self.eps).sqrt()
         logstd = std.log()
@@ -329,7 +325,7 @@ class MultivecGaussianPd(ProbabilityDistribution):
         nll = 0.5 * ((x - mean) / std).pow(2) + \
               0.5 * math.log(2.0 * math.pi) * self.d + \
               logstd
-        return nll.mean(-1)
+        return -nll.mean(-1)
 
     def kl(self, prob1, prob2):
         vecs1 = prob1.contiguous().view(*prob1.shape[:-1], self.d, self.num_vec)
@@ -370,66 +366,66 @@ class MultivecGaussianPd(ProbabilityDistribution):
         return math.sqrt(self.d)
 
 
-class DiagGaussianMixturePd(ProbabilityDistribution):
-    def __init__(self, d, num_mixtures=4, eps=1e-6):
-        self.d = d
-        self.num_mixtures = num_mixtures
-        self.eps = eps
-        self._gpd = DiagGaussianPd(d)
-        self._cpd = CategoricalPd(num_mixtures)
-
-    @property
-    def prob_vector_len(self):
-        return self.d * 2 * self.num_mixtures + self.num_mixtures
-
-    @property
-    def action_vector_len(self):
-        return self.d
-
-    @property
-    def input_vector_len(self):
-        return self.d
-
-    @property
-    def dtype(self):
-        return torch.float
-
-    def neglogp(self, x, prob):
-        logw, gaussians = self._split_prob(prob)
-        nll = self._gpd.neglogp(x.unsqueeze(-2), gaussians) - F.log_softmax(logw, -1)
-        reduce_w = F.softmax(-nll.detach(), -1)
-        cp = nll.data.clone()
-        nll.mul_(reduce_w)
-        nll.data.copy_(cp)
-        return nll.sum(-1)
-
-    def kl(self, prob1, prob2):
-        logw1, gaussians1 = self._split_prob(prob1)
-        logw2, gaussians2 = self._split_prob(prob2)
-        kl = self._gpd.kl(gaussians1, gaussians2).mean(-1) + self._cpd.kl(logw1, logw2)
-        return kl
-
-    def entropy(self, prob):
-        logw, gaussians = self._split_prob(prob)
-        ent = self._gpd.entropy(gaussians).mean(-1) + self._cpd.entropy(logw)
-        return ent
-
-    def sample(self, prob):
-        logw, gaussians = self._split_prob(prob)
-        mixture_idx = self._cpd.sample(logw)
-        rep = *((gaussians.dim() - 1) * [1]), gaussians.shape[-1]
-        index = mixture_idx.unsqueeze(-1).repeat(rep)
-        selected = gaussians.gather(dim=-2, index=index).squeeze(-2)
-        return self._gpd.sample(selected)
-
-    @property
-    def init_column_norm(self):
-        return math.sqrt(self.d)
-
-    def _split_prob(self, prob):
-        logw, gaussians = prob.split([self.num_mixtures, self.d * 2 * self.num_mixtures], dim=-1)
-        gaussians = gaussians.contiguous().view(*gaussians.shape[:-1], self.num_mixtures, self.d * 2)
-        return logw, gaussians
+# class DiagGaussianMixturePd(ProbabilityDistribution):
+#     def __init__(self, d, num_mixtures=4, eps=1e-6):
+#         self.d = d
+#         self.num_mixtures = num_mixtures
+#         self.eps = eps
+#         self._gpd = DiagGaussianPd(d)
+#         self._cpd = CategoricalPd(num_mixtures)
+#
+#     @property
+#     def prob_vector_len(self):
+#         return self.d * 2 * self.num_mixtures + self.num_mixtures
+#
+#     @property
+#     def action_vector_len(self):
+#         return self.d
+#
+#     @property
+#     def input_vector_len(self):
+#         return self.d
+#
+#     @property
+#     def dtype(self):
+#         return torch.float
+#
+#     def neglogp(self, x, prob):
+#         logw, gaussians = self._split_prob(prob)
+#         nll = self._gpd.neglogp(x.unsqueeze(-2), gaussians) - F.log_softmax(logw, -1)
+#         reduce_w = F.softmax(-nll.detach(), -1)
+#         cp = nll.data.clone()
+#         nll.mul_(reduce_w)
+#         nll.data.copy_(cp)
+#         return nll.sum(-1)
+#
+#     def kl(self, prob1, prob2):
+#         logw1, gaussians1 = self._split_prob(prob1)
+#         logw2, gaussians2 = self._split_prob(prob2)
+#         kl = self._gpd.kl(gaussians1, gaussians2).mean(-1) + self._cpd.kl(logw1, logw2)
+#         return kl
+#
+#     def entropy(self, prob):
+#         logw, gaussians = self._split_prob(prob)
+#         ent = self._gpd.entropy(gaussians).mean(-1) + self._cpd.entropy(logw)
+#         return ent
+#
+#     def sample(self, prob):
+#         logw, gaussians = self._split_prob(prob)
+#         mixture_idx = self._cpd.sample(logw)
+#         rep = *((gaussians.dim() - 1) * [1]), gaussians.shape[-1]
+#         index = mixture_idx.unsqueeze(-1).repeat(rep)
+#         selected = gaussians.gather(dim=-2, index=index).squeeze(-2)
+#         return self._gpd.sample(selected)
+#
+#     @property
+#     def init_column_norm(self):
+#         return math.sqrt(self.d)
+#
+#     def _split_prob(self, prob):
+#         logw, gaussians = prob.split([self.num_mixtures, self.d * 2 * self.num_mixtures], dim=-1)
+#         gaussians = gaussians.contiguous().view(*gaussians.shape[:-1], self.num_mixtures, self.d * 2)
+#         return logw, gaussians
 
 
 class StaticTransactionPd(ProbabilityDistribution):

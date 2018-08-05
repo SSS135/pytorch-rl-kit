@@ -52,8 +52,7 @@ class CNNActor(Actor):
             action_space: Env's action space
             head_factory: Function which accept (hidden vector size, `ProbabilityDistribution`) and return `HeadBase`
             cnn_kind: Type of cnn.
-                'small' - small CNN from arxiv DQN paper (Mnih et al. 2013)
-                'large' - bigger CNN from Nature DQN paper (Mnih et al. 2015)
+                'normal' - CNN from Nature DQN paper (Mnih et al. 2015)
                 'custom' - largest CNN of custom structure
             cnn_activation: Activation function
         """
@@ -68,8 +67,8 @@ class CNNActor(Actor):
         if cnn_kind == 'normal': # Nature DQN (1,683,456 parameters)
             self.convs = nn.ModuleList([
                 self._make_layer(nn.Conv2d(observation_space.shape[0], 32, 8, 4), allow_norm=switch_norm),
-                self._make_layer(nn.Conv2d(32, 64, 4, 2)),
-                self._make_layer(nn.Conv2d(64, 64, 3, 1)),
+                self._make_layer(nn.Conv2d(32, 64, 4, 2, bias=self.norm is None)),
+                self._make_layer(nn.Conv2d(64, 64, 3, 1, bias=self.norm is None)),
             ])
             self.linear = self._make_layer(nn.Linear(3136, 512))
         elif cnn_kind == 'large': # custom (2,066,432 parameters)
@@ -100,7 +99,7 @@ class CNNActor(Actor):
 
         # create head
         self.hidden_code_size = self.linear[0].in_features if cnn_hidden_code else self.linear[0].out_features
-        self._init_heads()
+        self._init_heads(self.hidden_code_size)
 
         self.reset_weights()
 
