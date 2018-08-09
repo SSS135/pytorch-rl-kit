@@ -190,8 +190,10 @@ class MPPO(PPO):
         # self.began_gamma = began_gamma
 
         self.world_gen = GanG(self.model.hidden_code_size, self.model.pd)
-        self.memory_init_model = self.model_factory(self.observation_space, self.action_space, self.head_factory)
-        self.target_net = self.model_factory(self.observation_space, self.action_space, self.head_factory)
+        self.memory_init_model = self.model_factory(
+            self.observation_space, self.action_space, self.head_factory, hidden_code_type=self.hidden_code_type)
+        self.target_net = self.model_factory(
+            self.observation_space, self.action_space, self.head_factory, hidden_code_type=self.hidden_code_type)
         self._lerp_to_model(self.memory_init_model, 1)
         self._lerp_to_model(self.target_net, 1)
         self.world_gen_optim = world_gen_optim_factory(
@@ -344,15 +346,18 @@ class MPPO(PPO):
                 all_actions = torch.stack(all_actions, 0)
                 all_target_values = torch.stack(all_target_values, 0)
 
-                rewards, returns, advantages = self._process_rewards(
-                    all_rewards, all_target_values, all_dones,
-                    self.reward_discount, self.advantage_discount, self.reward_scale, True)
+            entropy = self.model.pd.entropy(all_probs) * all_rewards.pow(2).mean().sqrt()
+            all_rewards += self.entropy_reward_scale * entropy
 
+            rewards, returns, advantages = self._process_rewards(
+                all_rewards, all_target_values, all_dones,
+                self.reward_discount, self.advantage_discount, self.reward_scale, True)
+
+            with torch.enable_grad():
                 rewards, returns, advantages, all_values = [x[0].contiguous().view(-1) for x in
                                                             (rewards, returns, advantages, all_values)]
                 all_probs, all_actions = [x[0].contiguous().view(-1, x.shape[-1]) for x in (all_probs, all_actions)]
 
-            # with torch.enable_grad():
                 value_loss = barron_loss(all_values, returns.detach(), 1.5, 1, reduce=False)
                 logp = self.model.pd.logp(all_actions.detach(), all_probs)
                 policy_loss = -advantages.detach() * logp

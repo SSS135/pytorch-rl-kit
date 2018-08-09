@@ -111,6 +111,7 @@ class PPO(RLBase):
                  cuda_train=False,
                  grad_clip_norm=2,
                  reward_scale=1.0,
+                 hidden_code_type: 'input' or 'first' or 'last'='input',
                  image_observation=False,
                  lr_scheduler_factory=None,
                  clip_decay_factory=None,
@@ -176,6 +177,7 @@ class PPO(RLBase):
         self.kl_target = kl_target
         self.kl_scale = kl_scale
         self.entropy_reward_scale = entropy_reward_scale
+        self.hidden_code_type = hidden_code_type
 
         assert len(set(self.constraint) - {'clip', 'kl', 'opt'}) == 0
         assert not image_observation or \
@@ -183,7 +185,7 @@ class PPO(RLBase):
 
         self.sample = self.create_new_sample()
 
-        self.model = model_factory(observation_space, action_space, self.head_factory)
+        self.model = model_factory(observation_space, action_space, self.head_factory, hidden_code_type=hidden_code_type)
         if model_init_path is not None:
             self.model.load_state_dict(torch.load(model_init_path))
         self.optimizer = optimizer_factory(self.model.parameters())
