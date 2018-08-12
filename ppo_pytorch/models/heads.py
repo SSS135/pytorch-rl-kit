@@ -52,7 +52,7 @@ class ActionValuesHead(HeadBase):
         self.reset_weights()
 
     def reset_weights(self):
-        normalized_columns_initializer_(self.linear.weight.data, 0.01)
+        normalized_columns_initializer_(self.linear.weight.data, 1.0)
         self.linear.bias.data.fill_(0)
 
     def forward(self, x):
@@ -83,7 +83,7 @@ class PolicyHead(HeadBase):
 
     def reset_weights(self):
         normalized_columns_initializer_(self.linear.weight.data, self.pd.init_column_norm)
-        self.linear.bias.data[0] = 0
+        self.linear.bias.data.fill_(0)
 
     def forward(self, x):
         return self.linear(x)
@@ -105,8 +105,8 @@ class StateValueHead(HeadBase):
         self.reset_weights()
 
     def reset_weights(self):
-        normalized_columns_initializer_(self.linear.weight.data, 0.01)
-        self.linear.bias.data[0] = 0
+        normalized_columns_initializer_(self.linear.weight.data, 1.0)
+        self.linear.bias.data.fill_(0)
 
     def forward(self, x):
         return self.linear(x).squeeze(-1)

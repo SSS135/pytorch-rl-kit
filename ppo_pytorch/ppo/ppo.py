@@ -86,11 +86,6 @@ TrainingData = namedtuple('TrainingData', 'states, probs_old, values_old, action
 
 
 class PPO(RLBase):
-    """Single threaded implementation of Proximal Policy Optimization Algorithms
-
-    https://arxiv.org/pdf/1707.06347.pdf
-    """
-
     def __init__(self, observation_space, action_space,
                  reward_discount=0.99,
                  advantage_discount=0.95,
@@ -123,6 +118,9 @@ class PPO(RLBase):
                  model_save_tag='ppo_model',
                  **kwargs):
         """
+        Single threaded implementation of Proximal Policy Optimization Algorithms
+        https://arxiv.org/pdf/1707.06347.pdf
+
         Args:
             observation_space (gym.Space): Environment's observation space
             action_space (gym.Space): Environment's action space
@@ -438,7 +436,8 @@ class PPO(RLBase):
         if 'clip' in self.constraint:
             unclipped_policy_loss = ratio * advantages
             wpclip = advantages.abs() * policy_clip
-            clipped_ratio = torch.min(torch.max(ratio, -wpclip), wpclip) # ratio.clamp(-policy_clip, policy_clip)
+            clipped_ratio = torch.min(torch.max(ratio, -wpclip), wpclip)
+            # clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
             clipped_policy_loss = clipped_ratio * advantages
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
         else:

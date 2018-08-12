@@ -30,8 +30,8 @@ def weights_init(m, init_alg=init.xavier_uniform_, gain=1):
     layer_2d = classname.find('2d') != -1
     if (conv or linear) and hasattr(m, 'weight'):
         init_alg(m.weight, gain)
-        if m.bias is not None:
-            m.bias.data.fill_(0)
+        # if m.bias is not None:
+        #     m.bias.data.fill_(0)
     # if norm and hasattr(m, 'weight') and m.weight is not None:
     #     m.weight.data.normal_(1, 0.01)
     #     # if layer_2d:
@@ -57,7 +57,7 @@ def normalized_columns_initializer_(weights, norm=1.0):
         weights: `nn.Linear` weights
         norm: Scale of output vector.
     """
-    out = torch.nn.init.orthogonal_(weights)
+    out = torch.randn(weights.size())
     out *= norm / out.norm(2, dim=1, keepdim=True)
     weights.copy_(out)
 

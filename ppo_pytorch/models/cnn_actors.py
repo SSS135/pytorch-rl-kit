@@ -45,7 +45,7 @@ class CNNActor(Actor):
     Convolution network.
     """
     def __init__(self, observation_space, action_space, head_factory, cnn_kind='large', *args,
-                 cnn_activation=nn.ReLU, linear_activation=nn.ReLU, cnn_hidden_code=False, **kwargs):
+                 cnn_activation=nn.ReLU, linear_activation=nn.ReLU, cnn_hidden_code=False, hidden_code_type='input', **kwargs):
         """
         Args:
             observation_space: Env's observation space
@@ -130,7 +130,7 @@ class CNNActor(Actor):
         return nn.Sequential(*parts)
 
     def _extract_features(self, input):
-        x = input * 2 - 1
+        x = input # * 2 - 1
         for i, layer in enumerate(self.convs):
             # run conv layer
             x = layer(x)
