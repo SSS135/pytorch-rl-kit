@@ -1,6 +1,5 @@
 import os
 import time
-import uuid
 from collections import deque, namedtuple
 from itertools import count
 

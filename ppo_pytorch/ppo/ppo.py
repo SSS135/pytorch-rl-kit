@@ -1,3 +1,4 @@
+import math
 import pprint
 from collections import namedtuple
 from functools import partial
@@ -12,71 +13,13 @@ import torch.optim as optim
 from optfn.opt_clip import opt_clip
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
-import math
-from optfn.grad_running_norm import GradRunningNorm
-from ..models.heads import PolicyHead, StateValueHead
 
+from ..common.barron_loss import barron_loss, barron_loss_derivative
 from ..common.gae import calc_advantages, calc_returns
 from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
 from ..models import FCActor
-
-# def lerp(start, end, weight):
-#     """
-#     Same as torch.lerp, but tensors allowed at `weight`
-#     """
-#     return start + (end - start) * weight
-
-
-# def clamp(x, min, max):
-#     """
-#     Same as torch.clamp, but tensors allowed at `min` and `max`
-#     """
-#     x = torch.max(x, min) if isinstance(min, Variable) else x.clamp(min=min)
-#     x = torch.min(x, max) if isinstance(max, Variable) else x.clamp(max=max)
-#     return x
-
-
-def pseudo_huber_loss(pred, target, reduce=True):
-    assert pred.shape == target.shape
-    loss = ((target - pred) ** 2 + 1).sqrt() - 1
-    return loss.mean() if reduce else loss
-
-
-def barron_loss(pred, target, alpha, c, reduce=True):
-    assert isinstance(alpha, float) or isinstance(alpha, int)
-    assert isinstance(c, float) or isinstance(c, int)
-    assert pred.shape == target.shape
-
-    mse = (target - pred).div_(c).pow_(2)
-    if alpha == 2:
-        loss = 0.5 * mse
-    elif alpha == 0:
-        loss = torch.log(0.5 * mse + 1)
-    elif alpha == -math.inf:
-        loss = 1 - torch.exp(-0.5 * mse)
-    else:
-        scale = abs(2 - alpha) / alpha
-        inner = mse / abs(2 - alpha) + 1
-        loss = scale * (inner ** (alpha / 2) - 1)
-    return loss.mean() if reduce else loss
-
-
-def barron_loss_derivative(x, alpha, c):
-    assert isinstance(alpha, float) or isinstance(alpha, int)
-    assert isinstance(c, float) or isinstance(c, int)
-
-    if alpha == 2:
-        return x / c ** 2
-    elif alpha == 0:
-        return 2 * x / (x ** 2 + 2 * c ** 2)
-    elif alpha == -math.inf:
-        return x / c ** 2 * torch.exp(-0.5 * (x / c) ** 2)
-    else:
-        scale = x / c ** 2
-        inner = (x / c) ** 2 / abs(2 - alpha) + 1
-        return scale * inner ** (alpha / 2 - 1)
-
+from ..models.heads import PolicyHead, StateValueHead
 
 
 # used to store env step data for training
@@ -192,6 +135,7 @@ class PPO(RLBase):
         self.entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
         self.last_model_save_frame = 0
         self.grad_norms = dict()
+        print(self.model)
         # self.value_norm_mean_std = (0, 1)
 
     def head_factory(self, hidden_size, pd):
@@ -433,19 +377,21 @@ class PPO(RLBase):
         logp = pd.logp(actions, probs)
         ratio = logp - logp_old.detach()
 
+        unclipped_policy_loss = ratio * advantages
         if 'clip' in self.constraint:
-            unclipped_policy_loss = ratio * advantages
-            wpclip = advantages.abs() * policy_clip
-            clipped_ratio = torch.min(torch.max(ratio, -wpclip), wpclip)
+            pclip = advantages.abs() * policy_clip
+            clipped_ratio = torch.min(torch.max(ratio, -pclip), pclip)
             # clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
             clipped_policy_loss = clipped_ratio * advantages
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
         else:
             # unclipped loss
-            loss_clip = -logp * advantages
+            loss_clip = -unclipped_policy_loss
 
         # value loss
-        v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
+        # v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
+        vclip = advantages.abs() * value_clip
+        v_pred_clipped = values_old + torch.min(torch.max(values - values_old, -vclip), vclip)
         vf_clip_loss = barron_loss(v_pred_clipped, returns, 1.5, 1, reduce=False)
         vf_nonclip_loss = barron_loss(values, returns, 1.5, 1, reduce=False)
         loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)

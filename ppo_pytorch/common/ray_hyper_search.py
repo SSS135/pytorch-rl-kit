@@ -1,6 +1,4 @@
-from .rl_base import RLBase
-import ray
-from ray.tune import Trainable, TrainingResult, register_trainable, run_experiments, Experiment
+from ray.tune import Trainable
 
 
 class RLBaseTrainable(Trainable):

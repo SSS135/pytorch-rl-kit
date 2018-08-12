@@ -4,18 +4,12 @@ from typing import Optional, List, Callable, Dict
 
 import gym.spaces
 import numpy as np
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.nn.init as init
-from optfn.switchable_norm import SwitchableNorm2d, SwitchableNorm1d
-from optfn.auto_norm import AutoNorm
-from torch import autograd
-from torch.autograd import Variable
 
 from .heads import HeadBase, HeadOutput
-from .utils import weights_init, make_conv_heatmap, image_to_float
-from ..common.make_grid import make_grid
+from .norm_factory import NormFactory
+from .utils import weights_init
 from ..common.probability_distributions import make_pd, ProbabilityDistribution
 
 
@@ -26,14 +20,14 @@ class Actor(nn.Module):
 
     def __init__(self, observation_space: gym.Space, action_space: gym.Space,
                  head_factory: Callable[[int, ProbabilityDistribution], Dict[str, HeadBase]],
-                 norm: str = None, weight_init=init.orthogonal_, weight_init_gain=math.sqrt(2)):
+                 norm: NormFactory = None, weight_init=init.orthogonal_, weight_init_gain=math.sqrt(2)):
         """
         Args:
             observation_space: Observation space
             action_space: Action space
             head_factory: Function which accepts [hidden vector size, `ProbabilityDistribution`]
                 and returns dict[head name, `HeadBase`]
-            norm: Normalization type. Supported normalization types depend on `Actor` implementation.
+            norm: Normalization type
             weight_init: Weight initialization function
             weight_init_gain: Gain for `weight_init`
         """
@@ -73,7 +67,7 @@ class Actor(nn.Module):
 
     @staticmethod
     def _create_fc(in_size: int, out_size: Optional[int], hidden_sizes: List[int],
-                   activation: Callable, norm: str = None):
+                   activation: Callable, norm: NormFactory = None):
         """
         Create fully connected network
         Args:
@@ -81,25 +75,19 @@ class Actor(nn.Module):
             out_size: Optional. Output vector size. Additional layer is appended if not None.
             hidden_sizes: Width of hidden layers.
             activation: Activation function
-            norm: Used normalization technique. Valid values are (None, 'layer', 'group', 'batch')
+            norm: Used normalization technique
 
         Returns: `nn.Sequential` of layers. Each layer is also `nn.Sequential` containing (linear, [norm], activation).
             If `out_size` is not None, last layer is just linear transformation, without norm or activation.
 
         """
-        assert norm in (None, 'layer', 'batch', 'group')
         seq = []
         for i in range(len(hidden_sizes)):
             n_in = in_size if i == 0 else hidden_sizes[i - 1]
             n_out = hidden_sizes[i]
-            layer = [nn.Linear(n_in, n_out)]
-            if i != 0:
-                if norm == 'group':
-                    layer.append(nn.GroupNorm(n_out // 16, n_out))
-                elif norm == 'layer':
-                    layer.append(nn.LayerNorm(n_out))
-                elif norm == 'batch':
-                    layer.append(nn.BatchNorm1d(n_out, momentum=0.01))
+            layer = [nn.Linear(n_in, n_out, bias=norm is None or not norm.disable_bias)]
+            if norm is not None and norm.allow_fc and (norm.allow_after_first_layer or i != 0):
+                layer.append(norm.create_fc_norm(n_out, i == 0))
             layer.append(activation())
             seq.append(nn.Sequential(*layer))
         if out_size is not None:

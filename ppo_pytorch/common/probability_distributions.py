@@ -8,7 +8,6 @@ import numpy as np
 import torch
 import torch.distributions
 import torch.nn.functional as F
-from torch.autograd import Variable
 
 
 def make_pd(space: gym.Space):
