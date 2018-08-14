@@ -135,7 +135,6 @@ class PPO(RLBase):
         self.entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
         self.last_model_save_frame = 0
         self.grad_norms = dict()
-        print(self.model)
         # self.value_norm_mean_std = (0, 1)
 
     def head_factory(self, hidden_size, pd):
@@ -442,6 +441,7 @@ class PPO(RLBase):
 
     def _log_set(self):
         self.logger.add_text('PPO', pprint.pformat(self._init_args))
+        self.logger.add_text('Model', self.model)
 
     def drop_collected_steps(self):
         self.sample = Sample(states=[], probs=[], values=[], actions=[], rewards=[], dones=[])
