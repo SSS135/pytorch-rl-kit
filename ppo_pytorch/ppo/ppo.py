@@ -441,7 +441,7 @@ class PPO(RLBase):
 
     def _log_set(self):
         self.logger.add_text('PPO', pprint.pformat(self._init_args))
-        self.logger.add_text('Model', self.model)
+        self.logger.add_text('Model', str(self.model))
 
     def drop_collected_steps(self):
         self.sample = Sample(states=[], probs=[], values=[], actions=[], rewards=[], dones=[])

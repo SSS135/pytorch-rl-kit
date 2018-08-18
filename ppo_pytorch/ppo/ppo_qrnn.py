@@ -49,7 +49,7 @@ class PPO_QRNN(PPO):
         self._rnn_data.memory.append(next_mem)
         self._rnn_data.dones.append(dones[0])
 
-        return HeadOutput(ac_out.probs.squeeze(0), ac_out.state_value.squeeze(0))
+        return HeadOutput(probs=ac_out.probs.squeeze(0), state_value=ac_out.state_value.squeeze(0))
 
     def _ppo_update(self, data):
         self.model.train()

@@ -76,7 +76,7 @@ class CNN_QRNNActor(CNNActor):
         x = x.view(seq_len, batch_len, -1)
         x, next_memory = self.qrnn(x, memory, done_flags)
 
-        head = self.head(x)
+        head = self._run_heads(x)
         head.hidden_code = x
 
         if self.do_log:
