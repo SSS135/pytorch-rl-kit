@@ -35,7 +35,7 @@ class CNNActor(Actor):
     """
     Convolution network.
     """
-    def __init__(self, observation_space, action_space, head_factory, cnn_kind='large', *args,
+    def __init__(self, observation_space, action_space, head_factory, cnn_kind='normal', *args,
                  cnn_activation=nn.ReLU, linear_activation=nn.ReLU, cnn_hidden_code=False, hidden_code_type='input', **kwargs):
         """
         Args:

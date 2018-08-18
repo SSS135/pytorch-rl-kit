@@ -1,13 +1,14 @@
 import sys
 
-from setuptools import setup
+from setuptools import setup, find_packages
 
 if sys.version_info.major != 3:
     print("This Python is only compatible with Python 3, but you are running "
           "Python {}. The installation will likely fail.".format(sys.version_info.major))
 
 setup(name='ppo_pytorch',
-      packages=['ppo_pytorch'],
+      packages=[package for package in find_packages()
+                if package.startswith('ppo_pytorch')],
       install_requires=[
           'gym[mujoco,atari,classic_control]',
           'scipy',

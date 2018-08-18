@@ -4,8 +4,8 @@ import argparse
 from functools import partial
 
 import torch
-from .ppo_pytorch.ppo import PPO, create_atari_kwargs, create_fc_kwargs
-from .ppo_pytorch.common import GymWrapper, AtariVecEnv, SimpleVecEnv
+from .ppo import PPO, create_atari_kwargs, create_fc_kwargs
+from .common import GymWrapper, AtariVecEnv, SimpleVecEnv
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PPO runner')
