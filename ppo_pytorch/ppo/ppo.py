@@ -10,7 +10,7 @@ import torch
 import torch.autograd
 import torch.nn.functional as F
 import torch.optim as optim
-from optfn.opt_clip import opt_clip
+from ..common.opt_clip import opt_clip
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 
@@ -22,9 +22,9 @@ from ..models import FCActor
 from ..models.heads import PolicyHead, StateValueHead
 
 
-# used to store env step data for training
+# Used to store env step data for training
 Sample = namedtuple('Sample', 'states, rewards, dones, probs, values, actions')
-# preprocessed steps for use in in PPO training loop
+# Preprocessed steps for use in in PPO training loop. Produced from multiple `Sample`.
 TrainingData = namedtuple('TrainingData', 'states, probs_old, values_old, actions, advantages, returns, dones, rewards')
 
 
@@ -49,27 +49,43 @@ class PPO(RLBase):
                  cuda_train=False,
                  grad_clip_norm=2,
                  reward_scale=1.0,
+                 barron_alpha_c=(1.5, 1),
+                 advantage_scaled_clip=True,
                  hidden_code_type: 'input' or 'first' or 'last'='input',
                  image_observation=False,
                  lr_scheduler_factory=None,
                  clip_decay_factory=None,
                  entropy_decay_factory=None,
                  model_save_folder=None,
+                 model_save_tag='ppo_model',
                  model_save_interval=None,
                  model_init_path=None,
                  save_intermediate_models=False,
-                 model_save_tag='ppo_model',
                  **kwargs):
         """
         Single threaded implementation of Proximal Policy Optimization Algorithms
         https://arxiv.org/pdf/1707.06347.pdf
+
+        Tis implementation have several differences from PPO paper.
+        1)  State-value is optimized with Barron loss. Advantages are scaled using Barron loss derivative.
+            To use MSE loss for state-value and unscaled advantages set `barron_alpha_c` to (2, 1).
+            A More General Robust Loss Function https://arxiv.org/abs/1701.03077
+        2)  Policy / value clip constraint is multiplied by abs(advantages).
+            This will make constraint different for each element in batch.
+            Set `advantage_scaled_clip` to false to disable.
+        3)  KL Divergence penalty implementation is different.
+            When `kl` < `kl_target` it is not applied.
+            When `kl` > `kl_target` it is scaled quadratically based on abs(`kl` - `kl_target`)
+                and policy and entropy maximization objectives are disabled.
+        4)  New constraint type which clips raw network output vector instead of action log probs.
+            See 'opt' in `constraint` documentation.
+        4)  Several different constraints could be applied at same time.
 
         Args:
             observation_space (gym.Space): Environment's observation space
             action_space (gym.Space): Environment's action space
             reward_discount (float): Value function discount factor
             advantage_discount (float): Global Advantage Estimation discount factor
-            num_actors (int): Number of parallel environments (evaluation batch size)
             horizon (int): Training will happen each `horizon` * `num_actors` steps
             ppo_iters (int): Number training passes for each state
             batch_size (int): Training batch size
@@ -78,20 +94,43 @@ class PPO(RLBase):
             optimizer_factory (Callable[[List[nn.Parameter]], optim.Optimizer]):
                 Callable object receiving `model.parameters()` and returning model optimizer
             value_loss_scale (float): Multiplier for state-value loss
-            entropy_loss_scale (float): Entropy bonus
-            constraint (str):
-                None - No constraint
-                'clip' - PPO clipping
-                'clip_mod' - Modified PPO clipping. May be better for large clip factors.
+            entropy_loss_scale (float): Entropy maximization loss bonus (typically 0 to 0.01)
+            entropy_reward_scale (float): Scale for additional reward based on entropy (typically 0 to 0.5)
+            constraint tuple[str]: Policy optimization constraint. State value always uses 'clip' constraint.
+                Tuple could contain zero or more of these values:
+                'clip' - PPO clipping. Implementation is somewhat different from PPO paper.
+                    Controlled by `policy_clip` and `value_clip`,
+                'kl' - KL Divergence based constraint, implementation is very different from PPO paper.
+                    Controlled by `kl_target` and `kl_scale`
+                'opt' - clip raw action probs and state-value.
+                    Controlled by `policy_clip` and `value_clip`,
             policy_clip (float): policy clip strength
             value_clip (float): State-value clip strength
+            kl_target (float): Desired KL Divergence for 'kl' policy penalty (typically 0.001 to 0.03)
+            kl_scale (float): KL penalty multiplier
             cuda_eval (bool): Use CUDA for environment steps
             cuda_train (bool): Use CUDA for training steps
-            grad_clip_norm (float): Max norm for gradient clipping
-            log_time_interval (float): Tensorboard logging interval in seconds.
-            learning_decay_frames (int): Learning rate, clip strength, entropy bonus
-                will decrease to 0 after `learning_decay_frames`
+            grad_clip_norm (float or None): Max norm for gradient clipping (typically 0.5 to 40)
             reward_scale (float): Scale factor for environment's rewards
+            barron_alpha_c (float, float): Coefficients 'alpha' and 'c' for loss function proposed in
+                A More General Robust Loss Function https://arxiv.org/abs/1701.03077
+                Default (1, 1.5) will give something in between MSE and pseudo Huber.
+            advantage_scaled_clip (bool): Whether to multiply `policy_clip` and `value_clip` by abs(advantages)
+            hidden_code_type (str): Model hidden code type. Not used in PPO.
+                Valid values are 'input' or 'first' or 'last'
+            image_observation (bool): Memory optimization for image-based states
+            lr_scheduler_factory (Callable[DecayLR]): Learning rate scheduler factory.
+            clip_decay_factory (Callable[ValueDecay]): Policy / value clip scheduler factory.
+            entropy_decay_factory (Callable[ValueDecay]): `entropy_loss_scale` scheduler factory.
+            model_save_folder (str): Directory where models will be saved.
+            model_save_tag (str): Tag is added to name of saved model. Used to save different models in one folder.
+            model_save_interval (int): Interval in frames between model saves.
+                Set to None to disable model saving.
+            model_init_path (str): Path to model file to init from.
+            save_intermediate_models (bool): If True, model saved at each `model_save_interval` frame
+                is saved alongside new model. Otherwise it is overwritten by new model.
+            num_actors (int): Number of parallel environments
+            log_time_interval (float): Tensorboard logging interval in seconds
         """
         super().__init__(observation_space, action_space, **kwargs)
         self._init_args = locals()
@@ -119,6 +158,8 @@ class PPO(RLBase):
         self.kl_scale = kl_scale
         self.entropy_reward_scale = entropy_reward_scale
         self.hidden_code_type = hidden_code_type
+        self.barron_alpha_c = barron_alpha_c
+        self.advantage_scaled_clip = advantage_scaled_clip
 
         assert len(set(self.constraint) - {'clip', 'kl', 'opt'}) == 0
         assert not image_observation or \
@@ -250,8 +291,6 @@ class PPO(RLBase):
         if reward_scale is None:
             reward_scale = self.reward_scale
 
-        # value_norm_mean, value_norm_std = self.value_norm_mean_std
-
         # convert list to numpy array
         # (seq, num_actors, ...)
         rewards = torch.tensor(sample.rewards, dtype=torch.float)
@@ -288,27 +327,13 @@ class PPO(RLBase):
             advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-3)
         else:
             advantages = advantages / max(advantages.pow(2).mean().sqrt(), 1e-3)
-        advantages = barron_loss_derivative(advantages, 1.5, 1)
-        # advantages = advantages / (1 + advantages ** 2).sqrt()
-        # advantages = advantages.clamp(-1, 1)
-        # advantages = advantages.sign() * advantages.abs() ** 0.5
+        advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
 
         return norm_rewards, returns, advantages
 
     def _ppo_update(self, data: TrainingData):
         # move model to cuda or cpu
         self.model = self.model.to(self.device_train).train()
-
-        # ret_mean, ret_std = data.returns.mean().item(), max(1e-5, data.returns.std().item())
-        # prev_norm_mean, prev_norm_std = self.value_norm_mean_std
-        # self.value_norm_mean_std = ret_mean, ret_std
-        #
-        # self.model.head.scale_state_value(prev_norm_std)
-        # self.model.head.shift_state_value(prev_norm_mean - ret_mean)
-        # self.model.head.scale_state_value(1 / ret_std)
-
-        # data = data._replace(values_old=(data.values_old - ret_mean) / ret_std,
-        #                      returns=(data.returns - ret_mean) / ret_std)
 
         data = (data.states.pin_memory() if self.device_train.type == 'cuda' else data.states,
                 data.probs_old, data.values_old, data.actions, data.advantages, data.returns)
@@ -378,9 +403,11 @@ class PPO(RLBase):
 
         unclipped_policy_loss = ratio * advantages
         if 'clip' in self.constraint:
-            pclip = advantages.abs() * policy_clip
-            clipped_ratio = torch.min(torch.max(ratio, -pclip), pclip)
-            # clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
+            if self.advantage_scaled_clip:
+                pclip = advantages.abs() * policy_clip
+                clipped_ratio = torch.min(torch.max(ratio, -pclip), pclip)
+            else:
+                clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
             clipped_policy_loss = clipped_ratio * advantages
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
         else:
@@ -388,11 +415,13 @@ class PPO(RLBase):
             loss_clip = -unclipped_policy_loss
 
         # value loss
-        # v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
-        vclip = advantages.abs() * value_clip
-        v_pred_clipped = values_old + torch.min(torch.max(values - values_old, -vclip), vclip)
-        vf_clip_loss = barron_loss(v_pred_clipped, returns, 1.5, 1, reduce=False)
-        vf_nonclip_loss = barron_loss(values, returns, 1.5, 1, reduce=False)
+        if self.advantage_scaled_clip:
+            vclip = advantages.abs() * value_clip
+            v_pred_clipped = values_old + torch.min(torch.max(values - values_old, -vclip), vclip)
+        else:
+            v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
+        vf_clip_loss = barron_loss(v_pred_clipped, returns, *self.barron_alpha_c, reduce=False)
+        vf_nonclip_loss = barron_loss(values, returns, *self.barron_alpha_c, reduce=False)
         loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)
 
         # entropy bonus for better exploration
