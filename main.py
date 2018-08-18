@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 
 import argparse
+from functools import partial
 
 import torch
-from ppo_pytorch import ppo
-from ppo_pytorch.common.rl_alg_test import rl_alg_test
+from .ppo_pytorch.ppo import PPO, create_atari_kwargs, create_fc_kwargs
+from .ppo_pytorch.common import GymWrapper, AtariVecEnv, SimpleVecEnv
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PPO runner')
@@ -36,22 +37,24 @@ if __name__ == '__main__':
         args.cuda = None
 
     # parameters for `PPO` class
-    alg_params = ppo.create_cnn_kwargs() if args.atari else ppo.create_fc_kwargs()
-    # parameters for `GymWrapper` class
-    wrap_params = dict(
-        atari_preprocessing=args.atari,
-        log_time_interval=25 if args.atari else 5,
-        log_path=args.tensorboard_path,
-    )
+    alg_params = create_atari_kwargs() if args.atari else create_fc_kwargs()
 
     if args.steps is not None:
         alg_params['learning_decay_frames'] = args.steps
     if args.cuda is not None:
         alg_params.update(dict(cuda_eval=args.cuda, cuda_train=args.cuda))
 
+    rl_alg_factory = partial(PPO, **alg_params)
+    env_factory = partial(AtariVecEnv, args.env_name) if args.atari else partial(SimpleVecEnv, args.env_name)
+    gym_wrap = GymWrapper(
+        rl_alg_factory,
+        env_factory,
+        log_time_interval=30 if args.atari else 5,
+        log_path=args.tensorboard_path,
+    )
+
     print('Training on {} for {} steps, CUDA {}'.format(
         args.env_name, int(alg_params['learning_decay_frames']),
         'enabled' if alg_params['cuda_train'] else 'disabled'))
 
-    rl_alg_test(dict(), wrap_params, ppo.PPO, alg_params, args.env_name, use_worker_id=False,
-                num_processes=1, iters=1, frames=alg_params['learning_decay_frames'])
+    gym_wrap.train(alg_params['learning_decay_frames'])

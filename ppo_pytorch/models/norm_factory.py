@@ -39,7 +39,7 @@ class GroupNormFactory(NormFactory):
         self.group_size = group_size
 
     def _fc_factory(self, num_features):
-        return nn.GroupNorm(num_features // self.group_size, num_features)
+        return nn.GroupNorm(max(1, num_features // self.group_size), num_features)
 
     _cnn_factory = _fc_factory
 

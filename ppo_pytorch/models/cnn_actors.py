@@ -114,8 +114,8 @@ class CNNActor(Actor):
         parts.append(self.linear_activation() if is_linear else self.cnn_activation())
         return nn.Sequential(*parts)
 
-    def _extract_features(self, input):
-        x = input # * 2 - 1
+    def _extract_features(self, x):
+        #x = input - input.median() # * 2 - 1
         for i, layer in enumerate(self.convs):
             # run conv layer
             x = layer(x)
