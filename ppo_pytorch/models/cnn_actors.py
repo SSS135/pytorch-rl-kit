@@ -36,7 +36,7 @@ class CNNActor(Actor):
     Convolution network.
     """
     def __init__(self, observation_space, action_space, head_factory, cnn_kind='normal', *args,
-                 cnn_activation=nn.ReLU, linear_activation=nn.ReLU, cnn_hidden_code=False, hidden_code_type='input', **kwargs):
+                 cnn_activation=nn.ReLU, fc_activation=nn.ReLU, cnn_hidden_code=False, hidden_code_type='input', **kwargs):
         """
         Args:
             observation_space: Env's observation space
@@ -49,7 +49,7 @@ class CNNActor(Actor):
         """
         super().__init__(observation_space, action_space, head_factory, *args, **kwargs)
         self.cnn_activation = cnn_activation
-        self.linear_activation = linear_activation
+        self.linear_activation = fc_activation
         self.cnn_kind = cnn_kind
         self.cnn_hidden_code = cnn_hidden_code
 
@@ -94,11 +94,11 @@ class CNNActor(Actor):
         self.reset_weights()
 
     def _make_fc_layer(self, in_features, out_features, first_layer=False):
-        bias = self.norm is None or not self.norm.disable_bias
+        bias = self.norm is None or not self.norm.disable_bias or not self.norm.allow_fc
         return self._make_layer(nn.Linear(in_features, out_features, bias=bias), first_layer=first_layer)
 
     def _make_cnn_layer(self, *args, first_layer=False, **kwargs):
-        bias = self.norm is None or not self.norm.disable_bias
+        bias = self.norm is None or not self.norm.disable_bias or not self.norm.allow_cnn
         return self._make_layer(nn.Conv2d(*args, **kwargs, bias=bias), first_layer=first_layer)
 
     def _make_layer(self, transf, first_layer=False):

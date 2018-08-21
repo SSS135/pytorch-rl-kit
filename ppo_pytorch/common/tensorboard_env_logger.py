@@ -1,7 +1,7 @@
 import os
 import time
 from collections import deque, namedtuple
-from itertools import count
+import tempfile
 
 import numpy as np
 
@@ -44,14 +44,9 @@ class TensorboardEnvLogger:
         self.episode = 0
         self.frame = 0
         self.last_log_time = time.time()
-        timestr = time.strftime("%Y-%m-%d_%H-%M-%S")
-        for i in count():
-            dir_name = f"{self.alg_name}_{self.env_name}_{tag}_{timestr}"
-            if i != 0:
-                dir_name += f'_{i}'
-            path = os.path.join(self.log_path, dir_name)
-            if not os.path.exists(path):
-                break
+        timestr = time.strftime('%Y-%m-%d_%H-%M-%S')
+        dir_name = f'{self.alg_name}_{self.env_name}_{tag}_{timestr}_'
+        path = tempfile.mkdtemp('', dir_name, self.log_path)
         self.logger = SummaryWriter(path)
         self.episodes_file = open(os.path.join(path, 'episodes'), 'a')
 
