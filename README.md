@@ -3,12 +3,13 @@
 ## Changes from PPO paper
 
 ####  A More General Robust Loss Function (Barron loss)
+https://arxiv.org/abs/1701.03077
+
 State-value is optimized with Barron loss. Advantages are scaled using Barron loss derivative.
 To use MSE loss for state-value and unscaled advantages set `barron_alpha_c = (2, 1)`.
 
 On average when used with Atari, instead of MSE / Huber loss, it does not change performance much. 
 
-A More General Robust Loss Function https://arxiv.org/abs/1701.03077
 
 #### Policy / value clip constraint is multiplied by `abs(advantages)`
 This will make constraint different for each element in batch.
@@ -25,12 +26,23 @@ I've found this implementation to be much easier to tune than original KL div pe
 
 #### Additional clipping constraint
 New constraint type which clips raw network output vector instead of action log probs.
-See 'opt' in PPO `constraint` documentation.
+See 'opt' in `PPO` `constraint` documentation.
 
 Sometimes it helps with convergence on continuous control tasks when used with `clip` or `kl` constraints.
 
 #### Several different constraints could be applied at same time
-See PPO `constraint` documentation.
+See `PPO` `constraint` documentation.
+
+#### Extra Atari network architectures
+In addition to original network architecture, biggger one is available. See `cnn_kind` in `CNNActor`.
+
+#### Quasi-Recurrent Neural Networks
+https://arxiv.org/abs/1611.01576
+
+See `PPO_QRNN`, `QRNNActor`, `CNN_QRNNActor`. 
+QRNN implementation requires https://github.com/salesforce/pytorch-qrnn. 
+With some effort QRNN could be replaced with another RNN architecture like LSTM or GRU.
+
 
 ## New gym environments
 
