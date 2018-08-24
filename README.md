@@ -46,7 +46,7 @@ With some effort QRNN could be replaced with another RNN architecture like LSTM 
 
 ## New gym environments
 
-When library imported following gym environments are registered:
+When library is imported following gym environments are registered:
 
 Continuous versions of Acrobot and CartPole `AcrobotContinuous-v1`, `CartPoleContinuous-v0`, `CartPoleContinuous-v1`
 
@@ -54,7 +54,7 @@ CartPole with 10000 steps limit `CartPoleContinuous-v2`, `CartPole-v2`
 
 ## Training
 
-Training code does not print any information to console, only available output is TensorBoard logs.
+Training code does not print any information to console. Instead it logs various info to Tensorboard.
 
 #### Classic control
 `CartPole-v1` for 500K steps without CUDA (`--force-cuda` to enable it, won't improve performance)
