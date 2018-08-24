@@ -43,14 +43,14 @@ See `PPO_QRNN`, `QRNNActor`, `CNN_QRNNActor`.
 QRNN implementation requires https://github.com/salesforce/pytorch-qrnn. 
 With some effort QRNN could be replaced with another RNN architecture like LSTM or GRU.
 
+## Installation
 
-## New gym environments
+`pip install git+https://github.com/SSS135/ppo-pytorch`
 
-When library is imported following gym environments are registered:
-
-Continuous versions of Acrobot and CartPole `AcrobotContinuous-v1`, `CartPoleContinuous-v0`, `CartPoleContinuous-v1`
-
-CartPole with 10000 steps limit `CartPoleContinuous-v2`, `CartPole-v2`
+Required packages:
+- PyTorch 0.4.1
+- [tensorboardX](https://github.com/lanpa/tensorboardX)
+- [pytorch-qrnn](https://github.com/salesforce/pytorch-qrnn) (only if using QRNN)
 
 ## Training
 
@@ -59,13 +59,21 @@ Training code does not print any information to console. Instead it logs various
 #### Classic control
 `CartPole-v1` for 500K steps without CUDA (`--force-cuda` to enable it, won't improve performance)
 
-`python main.py --env-name CartPole-v1 --tensorboard-path /tensorboard/output/path`
+`python example.py --env-name CartPole-v1 --tensorboard-path /tensorboard/output/path`
 
 #### Atari
 `PongNoFrameskip-v4` for 10M steps (40M emulator frames) with CUDA
 
-`python main.py --atari --env-name PongNoFrameskip-v4 --steps 10000000 --tensorboard-path /tensorboard/output/path`
+`python example.py --atari --env-name PongNoFrameskip-v4 --steps 10000000 --tensorboard-path /tensorboard/output/path`
 
+
+## New gym environments
+
+When library is imported following gym environments are registered:
+
+Continuous versions of Acrobot and CartPole `AcrobotContinuous-v1`, `CartPoleContinuous-v0`, `CartPoleContinuous-v1`
+
+CartPole with 10000 steps limit `CartPoleContinuous-v2`, `CartPole-v2`
 
 ## Results
 
