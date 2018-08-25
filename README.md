@@ -64,12 +64,12 @@ Training code does not print any information to console. Instead it logs various
 #### Classic control
 `CartPole-v1` for 500K steps without CUDA (`--force-cuda` to enable it, won't improve performance)
 
-`python example.py --env-name CartPole-v1 --tensorboard-path /tensorboard/output/path`
+`python example.py --env-name CartPole-v1 --steps 500_000 --tensorboard-path /tensorboard/output/path`
 
 #### Atari
 `PongNoFrameskip-v4` for 10M steps (40M emulator frames) with CUDA
 
-`python example.py --atari --env-name PongNoFrameskip-v4 --steps 10000000 --tensorboard-path /tensorboard/output/path`
+`python example.py --atari --env-name PongNoFrameskip-v4 --steps 10_000_000 --tensorboard-path /tensorboard/output/path`
 
 
 ## New gym environments
