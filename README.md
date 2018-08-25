@@ -33,6 +33,10 @@ Sometimes it helps with convergence on continuous control tasks when used with `
 #### Several different constraints could be applied at same time
 See `PPO` `constraint` documentation.
 
+#### Entroy added to reward
+
+Entropy maximization helps in some games. See `entropy_reward_scale` in `PPO`.
+
 #### Extra Atari network architectures
 In addition to original network architecture, biggger one is available. See `cnn_kind` in `CNNActor`.
 
@@ -49,6 +53,7 @@ With some effort QRNN could be replaced with another RNN architecture like LSTM 
 
 Required packages:
 - PyTorch 0.4.1
+- gym
 - [tensorboardX](https://github.com/lanpa/tensorboardX)
 - [pytorch-qrnn](https://github.com/salesforce/pytorch-qrnn) (only if using QRNN)
 
@@ -59,12 +64,12 @@ Training code does not print any information to console. Instead it logs various
 #### Classic control
 `CartPole-v1` for 500K steps without CUDA (`--force-cuda` to enable it, won't improve performance)
 
-`python example.py --env-name CartPole-v1 --tensorboard-path /tensorboard/output/path`
+`python example.py --env-name CartPole-v1 --steps 500_000 --tensorboard-path /tensorboard/output/path`
 
 #### Atari
 `PongNoFrameskip-v4` for 10M steps (40M emulator frames) with CUDA
 
-`python example.py --atari --env-name PongNoFrameskip-v4 --steps 10000000 --tensorboard-path /tensorboard/output/path`
+`python example.py --atari --env-name PongNoFrameskip-v4 --steps 10_000_000 --tensorboard-path /tensorboard/output/path`
 
 
 ## New gym environments
