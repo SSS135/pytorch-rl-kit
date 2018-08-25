@@ -37,7 +37,7 @@ class PPO(RLBase):
                  batch_size=64,
                  model_factory=FCActor,
                  optimizer_factory=partial(optim.Adam, lr=3e-4),
-                 value_loss_scale=1.0,
+                 value_loss_scale=0.5,
                  entropy_loss_scale=0.01,
                  entropy_reward_scale=0.0,
                  constraint=('kl', 'clip'),

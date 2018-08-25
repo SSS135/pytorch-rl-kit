@@ -4,16 +4,16 @@ import argparse
 from functools import partial
 
 import torch
-from .ppo import PPO, create_atari_kwargs, create_fc_kwargs
-from .common import GymWrapper, AtariVecEnv, SimpleVecEnv
+from ppo_pytorch.ppo import PPO, create_atari_kwargs, create_fc_kwargs
+from ppo_pytorch.common import GymWrapper, AtariVecEnv, SimpleVecEnv
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PPO runner')
     parser.add_argument('--tensorboard-path', type=str, metavar='DIR', required=True,
                         help='tensorboard root output folder')
-    parser.add_argument('--env-name', type=str, metavar='ENV', default='CartPole-v1',
+    parser.add_argument('--env-name', type=str, metavar='ENV', required=True,
                         help='gym env name')
-    parser.add_argument('--steps', type=int, metavar='N',
+    parser.add_argument('--steps', type=int, metavar='N', required=True,
                         help='number of executed environment steps across all actors; '
                              'one step is four frames for atari, one frame otherwise')
     parser.add_argument('--atari', action='store_true', default=False,
@@ -37,10 +37,8 @@ if __name__ == '__main__':
         args.cuda = None
 
     # parameters for `PPO` class
-    alg_params = create_atari_kwargs() if args.atari else create_fc_kwargs()
+    alg_params = create_atari_kwargs(args.steps) if args.atari else create_fc_kwargs(args.steps)
 
-    if args.steps is not None:
-        alg_params['learning_decay_frames'] = args.steps
     if args.cuda is not None:
         alg_params.update(dict(cuda_eval=args.cuda, cuda_train=args.cuda))
 
@@ -54,7 +52,7 @@ if __name__ == '__main__':
     )
 
     print('Training on {} for {} steps, CUDA {}'.format(
-        args.env_name, int(alg_params['learning_decay_frames']),
+        args.env_name, int(args.steps),
         'enabled' if alg_params['cuda_train'] else 'disabled'))
 
-    gym_wrap.train(alg_params['learning_decay_frames'])
+    gym_wrap.train(args.steps)
