@@ -33,6 +33,10 @@ Sometimes it helps with convergence on continuous control tasks when used with `
 #### Several different constraints could be applied at same time
 See `PPO` `constraint` documentation.
 
+#### Entroy added to reward
+
+Entropy maximization helps in some games. See `entropy_reward_scale` in `PPO`.
+
 #### Extra Atari network architectures
 In addition to original network architecture, biggger one is available. See `cnn_kind` in `CNNActor`.
 
