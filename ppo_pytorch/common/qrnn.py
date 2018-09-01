@@ -5,6 +5,7 @@ import torch.nn.functional
 from torch import nn
 from torch.autograd import Variable
 from torchqrnn.forget_mult import ForgetMult
+from ..models.norm_factory import NormFactory
 
 
 def drelu(x, dim=1):
@@ -33,7 +34,7 @@ class QRNNLayer(nn.Module):
         - h_n (batch, hidden_size): tensor containing the hidden state for t=seq_len
     """
 
-    def __init__(self, input_size, hidden_size=None, save_prev_x=False, zoneout=0, window=1, output_gate=True, use_cuda=True, norm=None):
+    def __init__(self, input_size, hidden_size=None, save_prev_x=False, zoneout=0, window=1, output_gate=True, use_cuda=True, norm: NormFactory=None):
         super(QRNNLayer, self).__init__()
 
         assert window in [1, 2], "This QRNN implementation currently only handles convolutional window of size 1 or size 2"
@@ -52,14 +53,9 @@ class QRNNLayer(nn.Module):
                                 bias=norm is None)
 
         self.norm = None
-        if norm is not None:
+        if norm is not None and norm.allow_fc:
             nf_mult = 4 if self.output_gate else 3
-            if 'group' in norm:
-                self.norm = nn.GroupNorm(nf_mult * self.hidden_size // 16, nf_mult * self.hidden_size)
-            elif 'layer' in norm:
-                self.norm = nn.LayerNorm(nf_mult * self.hidden_size)
-            elif 'batch' in norm:
-                self.norm = nn.BatchNorm1d(nf_mult * self.hidden_size)
+            self.norm = norm.create_fc_norm(nf_mult * self.hidden_size, False)
 
     def reset(self):
         # If you are saving the previous value of x, you should call this when starting with a new state

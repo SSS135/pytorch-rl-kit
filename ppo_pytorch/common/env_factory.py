@@ -5,8 +5,9 @@ import cv2
 import gym
 import gym.spaces as spaces
 import numpy as np
-from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
+from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
+from.threading_vec_env import ThreadingVecEnv
 
 from .atari_wrappers import NoopResetEnv, MaxAndSkipEnv, EpisodicLifeEnv, FireResetEnv, ScaledFloatFrame, ClipRewardEnv, \
     FrameStack
@@ -31,7 +32,7 @@ class NamedVecEnv:
         if self.subproc_envs is not None:
             self.subproc_envs.close()
         self.num_envs = num_envs
-        self.subproc_envs = (DummyVecEnv if self.dummy else SubprocVecEnv)([self.get_env_fn()] * num_envs)
+        self.subproc_envs = (ThreadingVecEnv if self.dummy else SubprocVecEnv)([self.get_env_fn()] * num_envs)
 
     def step(self, actions):
         return self.subproc_envs.step(actions)

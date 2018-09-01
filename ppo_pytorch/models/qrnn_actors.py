@@ -31,7 +31,8 @@ class QRNNActor(Actor):
 
     def forward(self, input, memory, done_flags):
         x, next_memory = self.qrnn(input, memory, done_flags)
-        head = self.head(x)
+        head = self._run_heads(x)
+        head.hidden_code = x
         return head, next_memory
 
 

@@ -12,7 +12,7 @@ from ..models.utils import image_to_float
 RNNData = namedtuple('RNNData', 'memory, dones')
 
 
-class PPO_QRNN(PPO):
+class PPO_RNN(PPO):
     def __init__(self, observation_space, action_space,
                  model_factory=QRNNActor,
                  *args, **kwargs):
@@ -37,6 +37,7 @@ class PPO_QRNN(PPO):
     def _take_step(self, states, dones):
         self.model.eval()
 
+        # (layers, batch_size, hidden_size)
         mem = self._rnn_data.memory[-1] if len(self._rnn_data.memory) != 0 else None
         dones = torch.zeros(self.num_actors) if dones is None else torch.from_numpy(np.asarray(dones, np.float32))
         dones = dones.unsqueeze(0)

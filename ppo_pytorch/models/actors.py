@@ -20,7 +20,8 @@ class Actor(nn.Module):
 
     def __init__(self, observation_space: gym.Space, action_space: gym.Space,
                  head_factory: Callable[[int, ProbabilityDistribution], Dict[str, HeadBase]],
-                 norm: NormFactory = None, weight_init=init.orthogonal_, weight_init_gain=math.sqrt(2)):
+                 norm: NormFactory = None, weight_init=init.orthogonal_, weight_init_gain=math.sqrt(2),
+                 hidden_code_type='input'):
         """
         Args:
             observation_space: Observation space
