@@ -80,7 +80,7 @@ class TensorboardEnvLogger:
             wrstd = np.std(self.reward_window)
             self.logger.add_scalar('reward mean window by episode', wrmean, self.frame)
             self.logger.add_scalar('reward std window by episode', wrstd, self.frame)
-            self.logger.add_scalar('reward norm std window by episode', wrstd / abs(wrmean), self.frame)
+            self.logger.add_scalar('reward norm std window by episode', wrstd / max(1e-5, abs(wrmean)), self.frame)
             self.logger.add_scalar('episode lengths', self.new_rewards[-1].len, self.new_rewards[-1].episode)
             self.logger.add_scalar('reward by episode', self.new_rewards[-1].reward, self.new_rewards[-1].episode)
             self.logger.add_scalar('reward by frame', self.new_rewards[-1].reward, self.new_rewards[-1].frame)

@@ -122,7 +122,7 @@ class RLBase:
 
         Returns: Observations converted to numpy array
         """
-        assert self.step_type == RLStep.EVAL
+        assert self.step_type == RLStep.EVAL or self.disable_training
         input = np.asarray(input, dtype=np.float32)
         assert input.shape[1:] == self.observation_space.shape, f'{input.shape[1:]} {self.observation_space.shape}'
         self.step_type = RLStep.REWARD
