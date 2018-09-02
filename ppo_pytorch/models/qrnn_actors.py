@@ -10,32 +10,6 @@ from .cnn_actors import CNNActor
 from .utils import image_to_float
 
 
-class QRNNActor(Actor):
-    def __init__(self, observation_space: gym.Space, action_space: gym.Space, *args,
-                 qrnn_hidden_size=128, qrnn_layers=3, **kwargs):
-        """
-        Args:
-            observation_space: Env's observation space
-            action_space: Env's action space
-            head_factory: Function which accept (hidden vector size, `ProbabilityDistribution`) and return `HeadBase`
-            hidden_sizes: List of hidden layers sizes
-            activation: Activation function
-        """
-        super().__init__(observation_space, action_space, *args, **kwargs)
-        self.qrnn_hidden_size = self.hidden_code_size = qrnn_hidden_size
-        self.qrnn_layers = qrnn_layers
-        obs_len = int(np.product(observation_space.shape))
-        self.qrnn = DenseQRNN(obs_len, qrnn_hidden_size, qrnn_layers, norm=self.norm)
-        self._init_heads(self.hidden_code_size)
-        self.reset_weights()
-
-    def forward(self, input, memory, done_flags):
-        x, next_memory = self.qrnn(input, memory, done_flags)
-        head = self._run_heads(x)
-        head.hidden_code = x
-        return head, next_memory
-
-
 class CNN_QRNNActor(CNNActor):
     def __init__(self, *args, qrnn_hidden_size=512, qrnn_layers=2, qrnn_norm=None, **kwargs):
         """

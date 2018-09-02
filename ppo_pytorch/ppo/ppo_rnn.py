@@ -5,7 +5,7 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 
 from .ppo import PPO, TrainingData
-from ..models import QRNNActor
+from ..models import RNNActor
 from ..models.heads import HeadOutput
 from ..models.utils import image_to_float
 
@@ -14,7 +14,7 @@ RNNData = namedtuple('RNNData', 'memory, dones')
 
 class PPO_RNN(PPO):
     def __init__(self, observation_space, action_space,
-                 model_factory=QRNNActor,
+                 model_factory=RNNActor,
                  *args, **kwargs):
         super().__init__(observation_space, action_space, model_factory=model_factory, *args, **kwargs)
         self._rnn_data = RNNData([], [])
