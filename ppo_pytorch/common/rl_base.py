@@ -14,8 +14,12 @@ class RLStep(Enum):
 
 
 class RLBase:
-    def __init__(self, observation_space: gym.Space, action_space: gym.Space,
-                 num_actors=1, log_time_interval: float=None):
+    def __init__(self,
+                 observation_space: gym.Space,
+                 action_space: gym.Space,
+                 num_actors=1,
+                 log_time_interval: float=None,
+                 disable_training=False):
         """
         Base class for all reinforcement learning algorithms. Supports running parallely on multiple envs.
         Args:
@@ -26,10 +30,12 @@ class RLBase:
         self.observation_space = observation_space
         self.action_space = action_space
         self.num_actors = num_actors
+        self.disable_training = disable_training
         self.step_type = RLStep.EVAL
+        self.log_time_interval = log_time_interval
+
         self.cur_states, self.prev_states, self.rewards, self.dones = [None] * 4
         self._logger = None
-        self.log_time_interval = log_time_interval
         self._last_log_time = 0
         self._do_log = False
         self.step = 0

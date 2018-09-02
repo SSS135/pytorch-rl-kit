@@ -45,10 +45,11 @@ class PPO_RNN(PPO):
         states = states.unsqueeze(0)
         ac_out, next_mem = self.model(states, mem, dones)
 
-        if len(self._rnn_data.memory) == 0:
-            self._rnn_data.memory.append(next_mem.clone().fill_(0))
-        self._rnn_data.memory.append(next_mem)
-        self._rnn_data.dones.append(dones[0])
+        if not self.disable_training:
+            if len(self._rnn_data.memory) == 0:
+                self._rnn_data.memory.append(next_mem.clone().fill_(0))
+            self._rnn_data.memory.append(next_mem)
+            self._rnn_data.dones.append(dones[0])
 
         return HeadOutput(probs=ac_out.probs.squeeze(0), state_value=ac_out.state_value.squeeze(0))
 

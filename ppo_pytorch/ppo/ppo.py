@@ -206,12 +206,13 @@ class PPO(RLBase):
         ac_out = self._take_step(states.to(self.device_eval), dones)
         actions = self.model.pd.sample(ac_out.probs).cpu().numpy()
 
-        probs, values = ac_out.probs.cpu().numpy(), ac_out.state_value.cpu().numpy()
-        self.append_to_sample(self.sample, states, rewards, dones, actions, probs, values)
+        if not self.disable_training:
+            probs, values = ac_out.probs.cpu().numpy(), ac_out.state_value.cpu().numpy()
+            self.append_to_sample(self.sample, states, rewards, dones, actions, probs, values)
 
-        if len(self.sample.rewards) >= self.horizon:
-            self._pre_train()
-            self._train()
+            if len(self.sample.rewards) >= self.horizon:
+                self._pre_train()
+                self._train()
 
         torch.set_grad_enabled(orig_grad_enabled)
 
