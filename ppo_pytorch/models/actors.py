@@ -11,7 +11,6 @@ from .heads import HeadBase, HeadOutput
 from .norm_factory import NormFactory
 from .utils import weights_init
 from ..common.probability_distributions import make_pd, ProbabilityDistribution
-from ..common.lstm import DLSTM
 
 
 class Actor(nn.Module):

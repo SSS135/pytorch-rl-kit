@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from .actors import Actor
 from ..common.qrnn import DenseQRNN
-from ..common.lstm import DLSTM, LSTM
+from ..common.lstm import LSTM
 
 
 class RNNActor(Actor):
@@ -28,8 +28,6 @@ class RNNActor(Actor):
         obs_len = int(np.product(observation_space.shape))
         if rnn_kind == 'qrnn':
             self.rnn = DenseQRNN(obs_len, hidden_code_size, num_layers, norm=self.norm)
-        elif rnn_kind == 'dlstm':
-            self.rnn = DLSTM(obs_len, self.hidden_code_size, self.num_layers)
         elif rnn_kind == 'lstm':
             self.rnn = LSTM(obs_len, self.hidden_code_size, self.num_layers)
         self._init_heads(self.hidden_code_size)
