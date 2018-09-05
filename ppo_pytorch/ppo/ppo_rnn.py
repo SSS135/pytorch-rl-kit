@@ -134,8 +134,8 @@ class PPO_RNN(PPO):
                 self.model.set_log(self.logger, False, self.step)
 
             if self._do_log and ppo_iter == self.ppo_iters - 1:
-                self.logger.add_scalar('learning rate', self.learning_rate, self.frame)
-                self.logger.add_scalar('clip mult', self.clip_mult, self.frame)
+                self.logger.add_scalar('learning rate', self._learning_rate, self.frame)
+                self.logger.add_scalar('clip mult', self._clip_mult, self.frame)
                 self.logger.add_scalar('total loss', loss, self.frame)
                 self.logger.add_scalar('kl', kl, self.frame)
 

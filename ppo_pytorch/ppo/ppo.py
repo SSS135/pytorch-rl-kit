@@ -165,11 +165,12 @@ class PPO(RLBase):
         assert not image_observation or \
                isinstance(observation_space, gym.spaces.Box) and len(observation_space.shape) == 3
 
-        self.sample = self.create_new_sample()
+        self.sample = self._create_new_sample()
 
-        self.model = model_factory(observation_space, action_space, self.head_factory, hidden_code_type=hidden_code_type)
-        if model_init_path is not None:
-            self.model.load_state_dict(torch.load(model_init_path))
+        if model_init_path is None:
+            self.model = model_factory(observation_space, action_space, self._head_factory, hidden_code_type=hidden_code_type)
+        else:
+            self.model = torch.load(model_init_path)
         self.optimizer = optimizer_factory(self.model.parameters())
         self.lr_scheduler = lr_scheduler_factory(self.optimizer) if lr_scheduler_factory is not None else None
         self.clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
@@ -178,15 +179,15 @@ class PPO(RLBase):
         self.grad_norms = dict()
         # self.value_norm_mean_std = (0, 1)
 
-    def head_factory(self, hidden_size, pd):
+    def _head_factory(self, hidden_size, pd):
         return dict(probs=PolicyHead(hidden_size, pd), state_value=StateValueHead(hidden_size))
 
     @property
-    def learning_rate(self):
+    def _learning_rate(self):
         return self.optimizer.param_groups[0]['lr']
 
     @property
-    def clip_mult(self):
+    def _clip_mult(self):
         return self.clip_decay.value if self.clip_decay is not None else 1
 
     def _step(self, prev_states, rewards, dones, cur_states) -> np.ndarray:
@@ -208,7 +209,7 @@ class PPO(RLBase):
 
         if not self.disable_training:
             probs, values = ac_out.probs.cpu().numpy(), ac_out.state_value.cpu().numpy()
-            self.append_to_sample(self.sample, states, rewards, dones, actions, probs, values)
+            self._append_to_sample(self.sample, states, rewards, dones, actions, probs, values)
 
             if len(self.sample.rewards) >= self.horizon:
                 self._pre_train()
@@ -236,8 +237,8 @@ class PPO(RLBase):
         data = self._process_sample(self.sample)
         self._log_training_data(data)
         self._ppo_update(data)
-        self.check_save_model()
-        self.sample = self.create_new_sample()
+        self._check_save_model()
+        self.sample = self._create_new_sample()
 
     def _log_training_data(self, data):
         if self._do_log:
@@ -267,7 +268,7 @@ class PPO(RLBase):
                 self.logger.add_histogram(name, param, self.frame)
 
     @staticmethod
-    def append_to_sample(sample, states, rewards, dones, actions, probs, values):
+    def _append_to_sample(sample, states, rewards, dones, actions, probs, values):
         # add step to history
         if len(sample.states) != 0:
             sample.rewards.append(rewards)
@@ -278,7 +279,7 @@ class PPO(RLBase):
         sample.actions.append(actions)
 
     @staticmethod
-    def create_new_sample():
+    def _create_new_sample():
         return Sample([], [], [], [], [], [])
 
     def _process_sample(self, sample, pd=None, reward_discount=None, advantage_discount=None,
@@ -368,8 +369,8 @@ class PPO(RLBase):
                 self.model.set_log(self.logger, False, self.step)
 
             if self._do_log and ppo_iter == self.ppo_iters - 1:
-                self.logger.add_scalar('learning rate', self.learning_rate, self.frame)
-                self.logger.add_scalar('clip mult', self.clip_mult, self.frame)
+                self.logger.add_scalar('learning rate', self._learning_rate, self.frame)
+                self.logger.add_scalar('clip mult', self._clip_mult, self.frame)
                 self.logger.add_scalar('total loss', loss, self.frame)
                 self.logger.add_scalar('kl', kl, self.frame)
 
@@ -389,8 +390,8 @@ class PPO(RLBase):
         # values = value_norm(values)
 
         # clipping factors
-        value_clip = self.value_clip * self.clip_mult
-        policy_clip = self.policy_clip * self.clip_mult
+        value_clip = self.value_clip * self._clip_mult
+        policy_clip = self.policy_clip * self._clip_mult
 
         if 'opt' in self.constraint:
             probs = opt_clip(probs, probs_old, policy_clip)
@@ -476,7 +477,7 @@ class PPO(RLBase):
     def drop_collected_steps(self):
         self.sample = Sample(states=[], probs=[], values=[], actions=[], rewards=[], dones=[])
 
-    def check_save_model(self):
+    def _check_save_model(self):
         if self.model_save_interval is None or \
            self.last_model_save_frame + self.model_save_interval > self.frame:
             return
@@ -484,4 +485,4 @@ class PPO(RLBase):
         name = f'{self.model_save_tag}_{self.frame}' if self.save_intermediate_models else self.model_save_tag
         path = Path(self.model_save_folder) / (name + '.pth')
         print('saving to path', path)
-        torch.save(self.model.state_dict(), path)
+        torch.save(self.model.cpu(), path)
