@@ -179,7 +179,8 @@ class PPO(RLBase):
         self.grad_norms = dict()
         # self.value_norm_mean_std = (0, 1)
 
-    def _head_factory(self, hidden_size, pd):
+    @staticmethod
+    def _head_factory(hidden_size, pd):
         return dict(probs=PolicyHead(hidden_size, pd), state_value=StateValueHead(hidden_size))
 
     @property

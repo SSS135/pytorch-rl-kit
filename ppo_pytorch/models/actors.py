@@ -105,6 +105,14 @@ class Actor(nn.Module):
         for name, head in self.heads.items():
             self.add_module("head_" + name, head)
 
+    def __getstate__(self):
+        d = dict(self.__dict__)
+        d['logger'] = None
+        return d
+
+    def __setstate__(self, d):
+        self.__dict__ = d
+
 
 class FCActor(Actor):
     """
