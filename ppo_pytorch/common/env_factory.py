@@ -5,6 +5,7 @@ import gym
 import gym.spaces as spaces
 import numpy as np
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
+from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
 
 from .threading_vec_env import ThreadingVecEnv
 from .atari_wrappers import NoopResetEnv, MaxAndSkipEnv, EpisodicLifeEnv, FireResetEnv, ScaledFloatFrame, ClipRewardEnv, \
@@ -13,9 +14,11 @@ from .monitor import Monitor
 
 
 class NamedVecEnv:
-    def __init__(self, env_name, dummy=True):
+    vec_env_types = dict(dummy=DummyVecEnv, thread=ThreadingVecEnv, process=SubprocVecEnv)
+
+    def __init__(self, env_name, parallel='thread'):
         self.env_name = env_name
-        self.dummy = dummy
+        self.parallel = parallel
         self.subproc_envs = None
         self.num_envs = None
 
@@ -28,7 +31,7 @@ class NamedVecEnv:
         if self.subproc_envs is not None:
             self.subproc_envs.close()
         self.num_envs = num_envs
-        self.subproc_envs = (ThreadingVecEnv if self.dummy else SubprocVecEnv)([self.get_env_fn()] * num_envs)
+        self.subproc_envs = self.vec_env_types[self.parallel]([self.get_env_fn()] * num_envs)
 
     def step(self, actions):
         return self.subproc_envs.step(actions)
@@ -42,13 +45,13 @@ class NamedVecEnv:
 
 class AtariVecEnv(NamedVecEnv):
     def __init__(self, env_name, episode_life=True, scale=True, clip_rewards=True,
-                 frame_stack=True, grayscale=True, dummy=True):
+                 frame_stack=True, grayscale=True, parallel=True):
         self.scale = scale
         self.clip_rewards = clip_rewards
         self.episode_life = episode_life
         self.frame_stack = frame_stack
         self.grayscale = grayscale
-        super().__init__(env_name, dummy)
+        super().__init__(env_name, parallel)
 
     def get_env_fn(self):
         def make(env_name, episode_life, scale, clip_rewards, frame_stack, grayscale):

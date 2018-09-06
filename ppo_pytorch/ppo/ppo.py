@@ -40,7 +40,7 @@ class PPO(RLBase):
                  value_loss_scale=0.5,
                  entropy_loss_scale=0.01,
                  entropy_reward_scale=0.0,
-                 constraint=('kl', 'clip'),
+                 constraint='clip',
                  policy_clip=0.1,
                  value_clip=0.1,
                  kl_target=0.01,
@@ -177,7 +177,10 @@ class PPO(RLBase):
         self.entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
         self.last_model_save_frame = 0
         self.grad_norms = dict()
-        # self.value_norm_mean_std = (0, 1)
+        self.advantage_norm_mean = 0
+        self.advantage_norm_std = 1
+        self.advantage_norm_rms = 1
+        self.advantage_norm_alpha = 0.9
 
     @staticmethod
     def _head_factory(hidden_size, pd):
@@ -280,11 +283,38 @@ class PPO(RLBase):
         sample.actions.append(actions)
 
     @staticmethod
-    def _create_new_sample():
+    def _create_new_sample() -> Sample:
         return Sample([], [], [], [], [], [])
 
     def _process_sample(self, sample, pd=None, reward_discount=None, advantage_discount=None,
-                        reward_scale=None, mean_norm=True):
+                        reward_scale=None, mean_norm=True, update_adv_norm=True):
+        if pd is None:
+            pd = self.model.pd
+
+        # convert list to numpy array
+        # (seq, num_actors, ...)
+        rewards = torch.tensor(sample.rewards, dtype=torch.float)
+        values_old = torch.tensor(sample.values, dtype=torch.float)
+        dones = torch.tensor(sample.dones, dtype=torch.float)
+        probs_old = torch.tensor(sample.probs[:-1], dtype=torch.float)
+        actions = torch.tensor(sample.actions[:-1], dtype=pd.dtype)
+        if sample.states is not None:
+            if torch.is_tensor(sample.states):
+                states = torch.tensor(sample.states[:-1], dtype=torch.float)
+            else:
+                states = torch.stack(sample.states[:-1], dim=0)
+        else:
+            states = None
+
+        return self._process_sample_tensors(
+            rewards, values_old, dones, probs_old, actions, states,
+            pd, reward_discount, advantage_discount, reward_scale, mean_norm, update_adv_norm)
+
+    def _process_sample_tensors(
+            self, rewards, values_old, dones, probs_old, actions, states,
+            pd=None, reward_discount=None, advantage_discount=None, reward_scale=None,
+            mean_norm=True, update_adv_norm=True):
+
         if pd is None:
             pd = self.model.pd
         if reward_discount is None:
@@ -294,42 +324,41 @@ class PPO(RLBase):
         if reward_scale is None:
             reward_scale = self.reward_scale
 
-        # convert list to numpy array
-        # (seq, num_actors, ...)
-        rewards = torch.tensor(sample.rewards, dtype=torch.float)
-        values_old = torch.tensor(sample.values, dtype=torch.float) #* value_norm_std + value_norm_mean
-        dones = torch.tensor(sample.dones, dtype=torch.float)
-        probs_old = torch.tensor(sample.probs[:-1], dtype=torch.float)
-
         entropy = pd.entropy(probs_old) * rewards.pow(2).mean().sqrt()
         rewards += self.entropy_reward_scale * entropy
 
         rewards, returns, advantages = self._process_rewards(
-            rewards, values_old, dones, reward_discount, advantage_discount, reward_scale, mean_norm=mean_norm)
+            rewards, values_old, dones, reward_discount, advantage_discount, reward_scale,
+            mean_norm=mean_norm, update_norm=update_adv_norm)
 
-        # convert data to Tensors
-        actions = torch.tensor(sample.actions[:-1], dtype=pd.dtype)
+        # flatten
+        states = states.view(-1, *states.shape[2:]) if states is not None else None
         values_old = values_old[:-1].reshape(-1)
-        states = torch.cat(sample.states[:-1], dim=0) if sample.states is not None else None
         dones = dones.reshape(-1)
         returns = returns.reshape(-1)
         advantages = advantages.reshape(-1)
         rewards = rewards.reshape(-1)
-
         probs_old, actions = [v.reshape(-1, v.shape[-1]) for v in (probs_old, actions)]
 
         return TrainingData(states, probs_old, values_old, actions, advantages, returns, dones, rewards)
 
-    def _process_rewards(self, rewards, values, dones, reward_discount, advantage_discount, reward_scale, mean_norm):
+    def _process_rewards(self, rewards, values, dones, reward_discount, advantage_discount, reward_scale, mean_norm, update_norm):
         norm_rewards = reward_scale * rewards
 
         # calculate returns and advantages
         returns = calc_returns(norm_rewards, values, dones, reward_discount)
         advantages = calc_advantages(norm_rewards, values, dones, reward_discount, advantage_discount)
+        if update_norm:
+            self.advantage_norm_mean = self.advantage_norm_alpha * self.advantage_norm_mean + \
+                                       (1 - self.advantage_norm_alpha) * advantages.mean()
+            self.advantage_norm_std = self.advantage_norm_alpha * self.advantage_norm_std + \
+                                      (1 - self.advantage_norm_alpha) * advantages.std()
+            self.advantage_norm_rms = self.advantage_norm_alpha * self.advantage_norm_rms + \
+                                      (1 - self.advantage_norm_alpha) * advantages.pow(2).mean().sqrt()
         if mean_norm:
-            advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-3)
+            advantages = (advantages - self.advantage_norm_mean) / max(self.advantage_norm_std, 1e-3)
         else:
-            advantages = advantages / max(advantages.pow(2).mean().sqrt(), 1e-3)
+            advantages = advantages / max(self.advantage_norm_rms, 1e-3)
         advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
 
         return norm_rewards, returns, advantages
@@ -340,7 +369,7 @@ class PPO(RLBase):
 
         data = (data.states.pin_memory() if self.device_train.type == 'cuda' else data.states,
                 data.probs_old, data.values_old, data.actions, data.advantages, data.returns)
-        batches = max(1, self.num_actors * self.horizon // self.batch_size)
+        batches = max(1, math.ceil(self.num_actors * self.horizon / self.batch_size))
 
         for ppo_iter in range(self.ppo_iters):
             rand_idx = torch.randperm(len(data[0])).to(self.device_train)
@@ -351,21 +380,7 @@ class PPO(RLBase):
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
 
-                with torch.enable_grad():
-                    actor_out = self.model(st)
-                    probs = actor_out.probs
-                    values = actor_out.state_value
-                    # values, vo, ret = [(x - ret_mean) / ret_std for x in (values, vo, ret)]
-                    # get loss
-                    loss, kl = self._get_ppo_loss(probs, po, values, vo, ac, adv, ret)
-                    loss = loss.mean()
-
-                # optimize
-                loss.backward()
-                if self.grad_clip_norm is not None:
-                    clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-                self.optimizer.step()
-                self.optimizer.zero_grad()
+                loss, kl = self._ppo_step(st, po, vo, ac, adv, ret)
 
                 self.model.set_log(self.logger, False, self.step)
 
@@ -374,6 +389,24 @@ class PPO(RLBase):
                 self.logger.add_scalar('clip mult', self._clip_mult, self.frame)
                 self.logger.add_scalar('total loss', loss, self.frame)
                 self.logger.add_scalar('kl', kl, self.frame)
+
+    def _ppo_step(self, states, probs_old, values_old, actions, advantages, returns):
+        with torch.enable_grad():
+            actor_out = self.model(states)
+            probs = actor_out.probs
+            values = actor_out.state_value
+            # get loss
+            loss, kl = self._get_ppo_loss(probs, probs_old, values, values_old, actions, advantages, returns)
+            loss = loss.mean()
+
+        # optimize
+        loss.backward()
+        if self.grad_clip_norm is not None:
+            clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+        self.optimizer.step()
+        self.optimizer.zero_grad()
+
+        return loss, kl
 
     def _get_ppo_loss(self, probs, probs_old, values, values_old, actions, advantages, returns, pd=None, tag=''):
         """
