@@ -79,12 +79,17 @@ class GES(PPO):
         fitness = fitness[:, 0] - fitness[:, 1]
         # (n) vector
         grad = self.es_lr / (2 * self.es_std * self.steps_per_update) * (fitness @ self._noise)
-        print('es grad', grad.pow(2).mean().sqrt(), fitness)
+        # print('es grad', grad.pow(2).mean().sqrt(), fitness)
         weights = list(self.model.state_dict().values())
         w_lens = [w.numel() for w in weights]
         for curw, g, origw in zip(weights, grad.split(w_lens, 0), self._orig_model_weights):
             origw += g.view_as(origw)
             curw.copy_(origw)
+
+        if self._do_log:
+            self.logger.add_scalar('es grad rms', grad.pow(2).mean().sqrt(), self.frame)
+            self.logger.add_scalar('es buffer rms', self._grad_buffer.pow(2).mean().sqrt(), self.frame)
+            self.logger.add_scalar('es fitness rms', fitness.pow(2).mean().sqrt(), self.frame)
 
     def _process_sample_tensors(
             self, rewards, values_old, *args, **kwargs):
@@ -125,7 +130,7 @@ class GES(PPO):
         subspace_noise /= subspace_noise.pow(2).mean().sqrt()
         full_space_noise *= self.es_std * self.es_blend
         subspace_noise *= self.es_std * (1 - self.es_blend)
-        print('noises full', full_space_noise.pow(2).mean().sqrt(), 'ss', subspace_noise.pow(2).mean().sqrt())
+        # print('noises full', full_space_noise.pow(2).mean().sqrt(), 'ss', subspace_noise.pow(2).mean().sqrt())
         noise = full_space_noise + subspace_noise
         return noise
 
@@ -136,7 +141,7 @@ class GES(PPO):
 
     def _update_grad_buffer(self, new_grads):
         new_grads = torch.cat([g.view(-1) for g in new_grads], dim=0)
-        print('ppo grad', new_grads.pow(2).mean().sqrt())
+        # print('ppo grad', new_grads.pow(2).mean().sqrt())
         if self._grad_buffer is None:
             self._grad_buffer = new_grads.new_zeros((self.grad_buffer_len, new_grads.numel()))
         self._grad_buffer[self._grad_buffer_index] = new_grads

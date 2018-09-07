@@ -27,16 +27,13 @@ class CartPoleNondeterministicEnv(CartPoleEnv):
         high = np.array([1, 1])
         self.observation_space = spaces.Box(-high, high)
 
-    def _reset(self, **kwargs):
-        observation = super()._reset(**kwargs)
-        return self._observation(observation)
+    def reset(self, **kwargs):
+        observation = super().reset(**kwargs)
+        return self.observation(observation)
 
-    def _step(self, action):
-        observation, reward, done, info = super()._step(action)
+    def step(self, action):
+        observation, reward, done, info = super().step(action)
         return self.observation(observation), reward, done, info
 
     def observation(self, observation):
-        return self._observation(observation)
-
-    def _observation(self, observation):
         return np.array([observation[0], observation[2]])
