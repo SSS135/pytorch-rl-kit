@@ -516,7 +516,10 @@ class PPO(RLBase):
            self.last_model_save_frame + self.model_save_interval > self.frame:
             return
         self.last_model_save_frame = self.frame
-        name = f'{self.model_save_tag}_{self.frame}' if self.save_intermediate_models else self.model_save_tag
+        if self.save_intermediate_models:
+            name = f'{self.model_save_tag}_{self.actor_index}_{self.frame}'
+        else:
+            name = f'{self.model_save_tag}_{self.actor_index}'
         path = Path(self.model_save_folder) / (name + '.pth')
         print('saving to path', path)
         torch.save(self.model.cpu(), path)

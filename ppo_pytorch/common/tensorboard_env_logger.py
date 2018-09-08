@@ -14,7 +14,7 @@ class TensorboardEnvLogger:
                  env_name,
                  log_path,
                  env_count,
-                 log_time_interval=5,
+                 log_interval=10 * 1024,
                  reward_std_episodes=100,
                  tag='',):
         """
@@ -30,7 +30,7 @@ class TensorboardEnvLogger:
         """
         assert log_path is not None
         from tensorboardX import SummaryWriter  # to remove dependency if not used
-        self.log_time_interval = log_time_interval
+        self.log_interval = log_interval
         self.log_path = log_path
         self.alg_name = alg_name
         self.env_name = env_name
@@ -43,7 +43,7 @@ class TensorboardEnvLogger:
         self.new_rewards_orig = []
         self.episode = 0
         self.frame = 0
-        self.last_log_time = time.time()
+        self.last_log_frame = 0
         timestr = time.strftime('%Y-%m-%d_%H-%M-%S')
         dir_name = f'{self.alg_name}_{self.env_name}_{tag}_{timestr}_'
         path = tempfile.mkdtemp('', dir_name, self.log_path)
@@ -74,8 +74,8 @@ class TensorboardEnvLogger:
                 self.new_rewards_orig.append(Reward(ep_info_orig.reward, ep_info_orig.len, self.episode, self.frame))
 
         if len(self.new_rewards) != 0 and self.logger is not None and \
-           (time.time() > self.last_log_time + self.log_time_interval or force_log):
-            self.last_log_time = time.time()
+           (self.frame >= self.last_log_frame + self.log_interval or force_log):
+            self.last_log_frame += self.log_interval
             wrmean = np.mean(self.reward_window)
             wrstd = np.std(self.reward_window)
             self.logger.add_scalar('reward mean window by episode', wrmean, self.frame)

@@ -18,25 +18,27 @@ class RLBase:
                  observation_space: gym.Space,
                  action_space: gym.Space,
                  num_actors=1,
-                 log_time_interval: float=None,
-                 disable_training=False):
+                 log_interval: float=None,
+                 disable_training=False,
+                 actor_index=0):
         """
         Base class for all reinforcement learning algorithms. Supports running parallely on multiple envs.
         Args:
             observation_space: Env observation space.
             action_space: Env action space.
-            log_time_interval: Logging interval in seconds. None disables logging.
+            log_interval: Logging interval in frames. None disables logging.
         """
         self.observation_space = observation_space
         self.action_space = action_space
         self.num_actors = num_actors
+        self.log_interval = log_interval
         self.disable_training = disable_training
-        self.step_type = RLStep.EVAL
-        self.log_time_interval = log_time_interval
+        self.actor_index = actor_index
 
+        self.step_type = RLStep.EVAL
         self.cur_states, self.prev_states, self.rewards, self.dones = [None] * 4
         self._logger = None
-        self._last_log_time = 0
+        self._last_log_frame = 0
         self._do_log = False
         self.step = 0
 
@@ -109,6 +111,9 @@ class RLBase:
         """
         self.dones = self._check_dones(done)
 
+    def drop_collected_steps(self):
+        pass
+
     def _log_set(self):
         """Called when logger is set or changed"""
         pass
@@ -160,9 +165,9 @@ class RLBase:
 
     def _check_log(self):
         """Check if logging should be enabled for current step."""
-        if self.logger is not None and self.log_time_interval is not None and \
-                                self._last_log_time + self.log_time_interval < time.time():
-            self._last_log_time = time.time()
+        if self.logger is not None and self.log_interval is not None and \
+                self.frame >= self._last_log_frame + self.log_interval:
+            self._last_log_frame += self.log_interval
             self._do_log = True
         else:
             self._do_log = False

@@ -58,10 +58,11 @@ class GES(PPO):
         reward = rewards[0] if rewards is not None else 0
         done = dones[0] if dones is not None else False
 
-        if len(self._es_rewards) != 0:
-            self._es_rewards[-1] += reward * self.reward_scale
-
         actions = super()._step(prev_states, rewards, dones, cur_states)
+
+        if len(self._es_rewards) != 0:
+            ent = self.model.pd.entropy(torch.tensor(self.sample.probs[-1])).item() if len(self.sample.probs) != 0 else 0
+            self._es_rewards[-1] += reward * self.reward_scale + self.entropy_reward_scale * ent
 
         if self._grad_buffer is not None and done:
             if len(self._weights_to_test) == 0:

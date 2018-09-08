@@ -5,7 +5,7 @@ from functools import partial
 
 import torch
 from ppo_pytorch.ppo import PPO, create_atari_kwargs, create_fc_kwargs
-from ppo_pytorch.common import GymWrapper, AtariVecEnv, SimpleVecEnv
+from ppo_pytorch.common import EnvTrainer, AtariVecEnv, SimpleVecEnv
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PPO runner')
@@ -44,7 +44,7 @@ if __name__ == '__main__':
 
     rl_alg_factory = partial(PPO, **alg_params)
     env_factory = partial(AtariVecEnv, args.env_name) if args.atari else partial(SimpleVecEnv, args.env_name)
-    gym_wrap = GymWrapper(
+    gym_wrap = EnvTrainer(
         rl_alg_factory,
         env_factory,
         log_time_interval=30 if args.atari else 5,

@@ -7,11 +7,11 @@ import numpy as np
 from .tensorboard_env_logger import TensorboardEnvLogger
 
 
-class GymWrapper:
+class EnvTrainer:
     def __init__(self,
                  rl_alg_factory: Callable,
                  env_factory: Callable,
-                 log_time_interval=5,
+                 log_interval=10 * 1024,
                  log_path=None,
                  tag=''):
         """
@@ -20,7 +20,7 @@ class GymWrapper:
             rl_alg_factory: RL algorithm factory / type.
             env: Environment factory.
                 Accepted values are environment name, function which returns `gym.Env`, `gym.Env` object
-            log_time_interval: Tensorboard logging interval in seconds.
+            log_interval: Tensorboard logging interval in frames.
             log_path: Tensorboard output directory.
         """
         self._init_args = locals()
@@ -28,7 +28,7 @@ class GymWrapper:
         self.env = env_factory()
         self.frame = 0
 
-        self.rl_alg = rl_alg_factory(self.env.observation_space, self.env.action_space, log_time_interval=log_time_interval)
+        self.rl_alg = rl_alg_factory(self.env.observation_space, self.env.action_space, log_interval=log_interval)
         self.env.set_num_envs(self.rl_alg.num_actors)
         self.states = self.env.reset()
         self.all_rewards = []
@@ -36,8 +36,8 @@ class GymWrapper:
         if log_path is not None:
             env_name = self.env.env_name
             alg_name = type(self.rl_alg).__name__
-            self.logger = TensorboardEnvLogger(alg_name, env_name, log_path, self.env.num_envs, log_time_interval, tag=tag)
-            self.logger.add_text('GymWrapper', pprint.pformat(self._init_args))
+            self.logger = TensorboardEnvLogger(alg_name, env_name, log_path, self.env.num_envs, log_interval, tag=tag)
+            self.logger.add_text('EnvTrainer', pprint.pformat(self._init_args))
             self.rl_alg.logger = self.logger
         else:
             self.logger = None
