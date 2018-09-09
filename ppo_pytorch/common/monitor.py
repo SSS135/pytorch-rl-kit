@@ -54,7 +54,7 @@ class Monitor(gym.Wrapper):
         reward_info = info.get('reward_info')
         if reward_info is not None:
             for k, v in reward_info.items():
-                data[f'aux_{k}'] += v
+                data[k] += v
 
     def _warn_double_wrap(self):
         pass
