@@ -1,7 +1,7 @@
 from typing import List, Any
 
-import numpy as np
 import gym
+import numpy as np
 
 
 class MultiplayerEnv(gym.Env):

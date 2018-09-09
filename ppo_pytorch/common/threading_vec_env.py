@@ -1,8 +1,8 @@
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 from baselines.common.vec_env import VecEnv
-import os
 
 
 class ThreadingVecEnv(VecEnv):

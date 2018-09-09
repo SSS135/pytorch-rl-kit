@@ -1,5 +1,6 @@
-import torch
 import math
+
+import torch
 
 
 def barron_loss(pred, target, alpha, c, reduce=True):

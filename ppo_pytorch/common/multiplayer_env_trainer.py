@@ -1,16 +1,14 @@
+import os
+import os.path
 import pprint
-import random
+import re
 from itertools import count
 from typing import Callable, List
 
 import numpy as np
-import gym
-import os.path
-import os
-import re
 
-from .rl_base import RLBase
 from .env_factory import NamedVecEnv
+from .rl_base import RLBase
 from .tensorboard_env_logger import TensorboardEnvLogger
 
 

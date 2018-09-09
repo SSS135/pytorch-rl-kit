@@ -1,13 +1,6 @@
-import gym
-import gym.spaces
-import numpy as np
-import torch
-import torch.nn as nn
-from ..common.qrnn import DenseQRNN
-
-from .actors import Actor
 from .cnn_actors import CNNActor
 from .utils import image_to_float
+from ..common.qrnn import DenseQRNN
 
 
 class CNN_QRNNActor(CNNActor):

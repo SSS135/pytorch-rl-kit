@@ -1,7 +1,7 @@
 import os
+import tempfile
 import time
 from collections import deque, namedtuple
-import tempfile
 from typing import List
 
 import numpy as np

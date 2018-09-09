@@ -1,8 +1,5 @@
 import torch
 import torch.autograd
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.autograd import Variable
 
 
 class OptClipFunction(torch.autograd.Function):

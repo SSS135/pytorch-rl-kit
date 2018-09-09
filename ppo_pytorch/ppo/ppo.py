@@ -10,17 +10,16 @@ import torch
 import torch.autograd
 import torch.nn.functional as F
 import torch.optim as optim
-from ..common.opt_clip import opt_clip
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 
 from ..common.barron_loss import barron_loss, barron_loss_derivative
 from ..common.gae import calc_advantages, calc_returns
+from ..common.opt_clip import opt_clip
 from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
 from ..models import FCActor
 from ..models.heads import PolicyHead, StateValueHead
-
 
 # Used to store env step data for training
 Sample = namedtuple('Sample', 'states, rewards, dones, probs, values, actions')

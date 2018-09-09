@@ -3,6 +3,7 @@ from multiprocessing.dummy import Pool
 
 import numpy as np
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
+
 from .atari_wrappers import ScaledFloatFrame, FrameStack
 from .env_factory import NamedVecEnv, SimplifyFrame, ChannelTranspose
 from .monitor import Monitor

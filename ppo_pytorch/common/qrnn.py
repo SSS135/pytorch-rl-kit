@@ -5,6 +5,7 @@ import torch.nn.functional
 from torch import nn
 from torch.autograd import Variable
 from torchqrnn.forget_mult import ForgetMult
+
 from ..models.norm_factory import NormFactory
 
 

@@ -1,13 +1,9 @@
-import gym
 import gym.spaces
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 from .actors import Actor
-from ..common.qrnn import DenseQRNN
 from ..common.lstm import LSTM
+from ..common.qrnn import DenseQRNN
 
 
 class RNNActor(Actor):

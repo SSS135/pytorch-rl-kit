@@ -1,8 +1,8 @@
-from collections import namedtuple, defaultdict
-from itertools import count
+from collections import defaultdict
 from typing import List
 
 import gym
+
 from .multiplayer_env import MultiplayerEnv
 
 
