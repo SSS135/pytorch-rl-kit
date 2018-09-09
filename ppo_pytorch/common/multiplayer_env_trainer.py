@@ -47,7 +47,6 @@ class MultiplayerEnvTrainer:
         self.selected_algs: List[RLBase] = None
         self.selected_loggers: List[TensorboardEnvLogger] = None
         self.selection_change_frame: int = None
-        # self.all_rewards: List[List[float]] = []
 
         self.rl_algs: List[RLBase] = []
         self.loggers: List[TensorboardEnvLogger] = []
@@ -85,12 +84,6 @@ class MultiplayerEnvTrainer:
 
         assert self.all_states.shape[0] == all_rewards.shape[0]
 
-        # # process step results
-        # for info in all_infos:
-        #     ep_info = info.get('episode')
-        #     if ep_info is not None:
-        #         self.all_rewards.append(ep_info)
-
         # send all_rewards and done flags to rl alg
         for alg, rewards, infos, logger in zip(self.selected_algs, all_rewards, all_infos, self.selected_loggers):
             alg.reward(rewards)
@@ -101,21 +94,17 @@ class MultiplayerEnvTrainer:
 
     def train(self, max_frames):
         """Train for specified number of frames and return episode info"""
-        # self.all_rewards = []
         for _ in count():
             stop = self.frame + self.env.num_envs >= max_frames
             self.step(stop)
             if stop:
                 break
-        # return self.all_rewards
 
     def _try_update_selection(self):
         if self.selected_algs is not None \
                 and self.selection_change_frame + self.selection_train_frames > self.frame:
             return
         self.selection_change_frame = self.frame
-
-        print('change', self.frame)
 
         if self.selected_algs is not None:
             for alg in self.selected_algs:
