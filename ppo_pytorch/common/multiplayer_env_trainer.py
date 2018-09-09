@@ -118,5 +118,5 @@ class MultiplayerEnvTrainer:
         dir = os.path.dirname(path)
         pattern = f'{os.path.basename(path)}_{index}.*\\.pth'
         files = [os.path.join(dir, f) for f in os.listdir(dir) if re.search(pattern, f) is not None]
-        return max(files, key=lambda x: os.path.getctime(x))
+        return max(files, key=lambda x: os.path.getmtime(x))
 
