@@ -171,6 +171,7 @@ class PPO(RLBase):
             self.model = model_factory(observation_space, action_space, self._head_factory, hidden_code_type=hidden_code_type)
         else:
             self.model = torch.load(model_init_path)
+            print(f'loaded model {model_init_path}')
         self.optimizer = optimizer_factory(self.model.parameters())
         self.lr_scheduler = lr_scheduler_factory(self.optimizer) if lr_scheduler_factory is not None else None
         self.clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
