@@ -9,11 +9,6 @@ from torchqrnn.forget_mult import ForgetMult
 from ..models.norm_factory import NormFactory
 
 
-def drelu(x, dim=1):
-    a, b = x.chunk(2, dim)
-    return a.clamp(min=0) - b.clamp(min=0)
-
-
 class QRNNLayer(nn.Module):
     r"""Applies a single layer Quasi-Recurrent Neural Network (QRNN) to an input sequence.
 
@@ -48,14 +43,14 @@ class QRNNLayer(nn.Module):
         self.output_gate = output_gate
         self.use_cuda = use_cuda
 
+        nf_mult = 3 if self.output_gate else 2
         # One large matmul with concat is faster than N small matmuls and no concat
         self.linear = nn.Linear(self.window * self.input_size,
-                                4 * self.hidden_size if self.output_gate else 3 * self.hidden_size,
+                                nf_mult * self.hidden_size,
                                 bias=norm is None)
 
         self.norm = None
         if norm is not None and norm.allow_fc:
-            nf_mult = 4 if self.output_gate else 3
             self.norm = norm.create_fc_norm(nf_mult * self.hidden_size, False)
 
     def reset(self):
@@ -84,15 +79,13 @@ class QRNNLayer(nn.Module):
         if self.norm is not None:
             Y = self.norm(Y.view(-1, Y.shape[2])).view_as(Y)
         # Convert the tensor back to (batch, seq_len, len([Z, F, O]) * hidden_size)
+        Y = Y.view(seq_len, batch_size, -1)
         if self.output_gate:
-            Y = Y.view(seq_len, batch_size, 4 * self.hidden_size)
-            Z, Y = Y.chunk(2, dim=2)
-            F, O = Y.chunk(2, dim=2)
+            Z, F, O = Y.chunk(3, dim=2)
         else:
-            Y = Y.view(seq_len, batch_size, 2 * self.hidden_size)
-            Z, F = Y[..., :self.hidden_size * 2], Y[..., self.hidden_size * 2:]
+            Z, F = Y.chunk(2, dim=2)
         ###
-        Z = drelu(Z, dim=2)
+        Z = Z.tanh()
         F = F.sigmoid()
 
         # If zoneout is specified, we perform dropout on the forget gates in F
