@@ -1,8 +1,10 @@
 import math
 import pprint
 from collections import namedtuple
+from copy import deepcopy
 from functools import partial
 from pathlib import Path
+from typing import Union
 
 import gym.spaces
 import numpy as np
@@ -18,7 +20,7 @@ from ..common.gae import calc_advantages, calc_returns
 from ..common.opt_clip import opt_clip
 from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
-from ..models import FCActor
+from ..models import FCActor, Actor
 from ..models.heads import PolicyHead, StateValueHead
 
 # Used to store env step data for training
@@ -167,20 +169,15 @@ class PPO(RLBase):
         self.sample = self._create_new_sample()
 
         if model_init_path is None:
-            self.model = model_factory(observation_space, action_space, self._head_factory, hidden_code_type=hidden_code_type)
+            self.model: Actor = model_factory(observation_space, action_space, self._head_factory, hidden_code_type=hidden_code_type)
         else:
-            self.model = torch.load(model_init_path)
+            self.model: Actor = torch.load(model_init_path)
             print(f'loaded model {model_init_path}')
         self.optimizer = optimizer_factory(self.model.parameters())
         self.lr_scheduler = lr_scheduler_factory(self.optimizer) if lr_scheduler_factory is not None else None
         self.clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
         self.entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
         self.last_model_save_frame = 0
-        self.grad_norms = dict()
-        self.advantage_norm_mean = 0
-        self.advantage_norm_std = 1
-        self.advantage_norm_rms = 1
-        self.advantage_norm_alpha = 0.9
 
     @staticmethod
     def _head_factory(hidden_size, pd):
@@ -348,17 +345,10 @@ class PPO(RLBase):
         # calculate returns and advantages
         returns = calc_returns(norm_rewards, values, dones, reward_discount)
         advantages = calc_advantages(norm_rewards, values, dones, reward_discount, advantage_discount)
-        if update_norm:
-            self.advantage_norm_mean = self.advantage_norm_alpha * self.advantage_norm_mean + \
-                                       (1 - self.advantage_norm_alpha) * advantages.mean()
-            self.advantage_norm_std = self.advantage_norm_alpha * self.advantage_norm_std + \
-                                      (1 - self.advantage_norm_alpha) * advantages.std()
-            self.advantage_norm_rms = self.advantage_norm_alpha * self.advantage_norm_rms + \
-                                      (1 - self.advantage_norm_alpha) * advantages.pow(2).mean().sqrt()
         if mean_norm:
-            advantages = (advantages - self.advantage_norm_mean) / max(self.advantage_norm_std, 1e-3)
+            advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-3)
         else:
-            advantages = advantages / max(self.advantage_norm_rms, 1e-3)
+            advantages = advantages / max(advantages.pow(2).mean().sqrt(), 1e-3)
         advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
 
         return norm_rewards, returns, advantages
@@ -367,11 +357,19 @@ class PPO(RLBase):
         # move model to cuda or cpu
         self.model = self.model.to(self.device_train).train()
 
+        old_model = deepcopy(self.model)
+
         data = (data.states.pin_memory() if self.device_train.type == 'cuda' else data.states,
                 data.probs_old, data.values_old, data.actions, data.advantages, data.returns)
         batches = max(1, math.ceil(self.num_actors * self.horizon / self.batch_size))
 
         for ppo_iter in range(self.ppo_iters):
+            # norm_diff = self._norm_diff(old_model, self.model)
+            # max_norm = 1.0
+            # if norm_diff > max_norm:
+            #     for old, new in zip(old_model.state_dict().values(), self.model.state_dict().values()):
+            #         new.data.copy_(old + (new - old) * (max_norm / norm_diff))
+
             rand_idx = torch.randperm(len(data[0])).to(self.device_train)
             for loader_iter in range(batches):
                 # prepare batch data
@@ -384,11 +382,27 @@ class PPO(RLBase):
 
                 self.model.set_log(self.logger, False, self.step)
 
+            for g in self.optimizer.param_groups:
+                g['lr'] *= 0.75
+
             if self._do_log and ppo_iter == self.ppo_iters - 1:
                 self.logger.add_scalar('learning rate', self._learning_rate, self.frame)
                 self.logger.add_scalar('clip mult', self._clip_mult, self.frame)
                 self.logger.add_scalar('total loss', loss, self.frame)
                 self.logger.add_scalar('kl', kl, self.frame)
+                self.logger.add_scalar('param diff norm', self._norm_diff(old_model, self.model), self.frame)
+                self.logger.add_scalar('param diff inf norm', self._norm_diff(old_model, self.model, 'inf'), self.frame)
+
+    def _norm_diff(self, old_model, new_model, norm_type: Union[str, float]=2) -> float:
+        norm = 0
+        for old, new in zip(old_model.state_dict().values(), new_model.state_dict().values()):
+            if norm_type == 'inf':
+                norm = max(norm, (new - old).abs().max())
+            else:
+                norm += (new - old).norm(norm_type) ** norm_type
+        if norm_type != 'inf':
+            norm = norm.item() ** (1. / norm_type)
+        return norm
 
     def _ppo_step(self, states, probs_old, values_old, actions, advantages, returns):
         with torch.enable_grad():
@@ -417,12 +431,6 @@ class PPO(RLBase):
         if pd is None:
             pd = self.model.pd
 
-        # if tag not in self.grad_norms:
-        #     self.grad_norms[tag] = (GradRunningNorm(), GradRunningNorm(self.value_loss_scale))
-        # prob_norm, value_norm = self.grad_norms[tag]
-        # probs = prob_norm(probs)
-        # values = value_norm(values)
-
         # clipping factors
         value_clip = self.value_clip * self._clip_mult
         policy_clip = self.policy_clip * self._clip_mult
@@ -437,18 +445,27 @@ class PPO(RLBase):
         logp = pd.logp(actions, probs)
         ratio = logp - logp_old.detach()
 
-        unclipped_policy_loss = ratio * advantages
+        # for gaussian distribution support
+        logp_adv = advantages
+        while ratio.dim() > logp_adv.dim():
+            logp_adv = logp_adv.unsqueeze(-1)
+
+        unclipped_policy_loss = ratio * logp_adv
         if 'clip' in self.constraint:
             if self.advantage_scaled_clip:
-                pclip = advantages.abs() * policy_clip
+                pclip = logp_adv.abs() * policy_clip
                 clipped_ratio = torch.min(torch.max(ratio, -pclip), pclip)
             else:
                 clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
-            clipped_policy_loss = clipped_ratio * advantages
+            clipped_policy_loss = clipped_ratio * logp_adv
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
         else:
             # unclipped loss
             loss_clip = -unclipped_policy_loss
+
+        # for gaussian distribution support
+        while loss_clip.dim() > advantages.dim():
+            loss_clip = loss_clip.mean(-1)
 
         # value loss
         if self.advantage_scaled_clip:
@@ -523,3 +540,11 @@ class PPO(RLBase):
         path = Path(self.model_save_folder) / (name + '.pth')
         print('saving to path', path)
         torch.save(self.model.cpu(), path)
+
+    def __getstate__(self):
+        d = dict(self.__dict__)
+        d['_logger'] = None
+        return d
+
+    def __setstate__(self, d):
+        self.__dict__ = d

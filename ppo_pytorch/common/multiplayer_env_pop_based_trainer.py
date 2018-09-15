@@ -12,7 +12,7 @@ from .rl_base import RLBase
 from .tensorboard_env_logger import TensorboardEnvLogger
 
 
-class MultiplayerEnvTrainer:
+class MultiplayerEnvPopBasedTrainer:
     def __init__(self,
                  rl_alg_factory: Callable,
                  env_factory: Callable[[], NamedVecEnv],
