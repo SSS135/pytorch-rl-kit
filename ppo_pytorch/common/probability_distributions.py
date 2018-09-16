@@ -266,7 +266,7 @@ class GaussianMixturePd(ProbabilityDistribution):
     def logp(self, x, prob):
         logw, gaussians = self._split_prob(prob)
         logp = self._gpd.logp(x.unsqueeze(-2), gaussians) + F.log_softmax(logw, -1).unsqueeze(-1)
-        return logp.mean(-1)
+        return logp.mean(-2)
 
     def kl(self, prob1, prob2):
         logw1, gaussians1 = self._split_prob(prob1)
@@ -280,17 +280,24 @@ class GaussianMixturePd(ProbabilityDistribution):
         return ent
 
     def sample(self, prob):
-        logw, gaussians = self._split_prob(prob)
+        logw, gaussians = self._split_prob(prob.view(-1, prob.shape[-1]))
         # (..., 1)
         mixture_idx = self._cpd.sample(logw)
         rep = *((gaussians.dim() - 1) * [1]), gaussians.shape[-1]
         index = mixture_idx.unsqueeze(-1).repeat(rep)
         selected = gaussians.gather(dim=-2, index=index).squeeze(-2)
-        return self._gpd.sample(selected)
+        sample = self._gpd.sample(selected)
+        return sample.view(*prob.shape[:-1], sample.shape[-1])
+
+    def mean(self, prob):
+        logw, gaussians = self._split_prob(prob)
+        mean = gaussians[..., :self.d]
+        w = F.softmax(logw, -1).unsqueeze(-1)
+        return (mean * w).sum(-2)
 
     # @property
     # def init_column_norm(self):
-    #     return math.sqrt(self.d)
+    #     return 0.01
 
     def _split_prob(self, prob):
         logw, gaussians = prob.split([self.num_mixtures, self.d * 2 * self.num_mixtures], dim=-1)

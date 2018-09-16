@@ -33,4 +33,4 @@ class AcrobotContinuousEnv(AcrobotEnv):
             self.action_space = spaces.Discrete(3)
         else:
             high = np.array([1])
-            self.action_space = spaces.Box(-high, high)
+            self.action_space = spaces.Box(-high, high, dtype=np.float32)
