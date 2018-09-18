@@ -96,14 +96,19 @@ class Actor(nn.Module):
         seq = nn.Sequential(*seq)
         return seq
 
-    def _run_heads(self, hidden_code):
-        heads = {name: head(hidden_code) for name, head in self.heads.items()}
+    def _run_heads(self, hidden_code, heads=None):
+        heads = self.heads if heads is None else heads
+        heads = {name: head(hidden_code) for name, head in heads.items()}
         return HeadOutput(hidden_code=hidden_code, **heads)
 
     def _init_heads(self, hc_size):
-        self.heads = self.head_factory(hc_size, self.pd)
-        for name, head in self.heads.items():
-            self.add_module("head_" + name, head)
+        self.heads = self._create_heads('heads', hc_size, self.pd, self.head_factory)
+
+    def _create_heads(self, head_name, hc_size, pd, head_factory):
+        heads = head_factory(hc_size, pd)
+        for name, head in heads.items():
+            self.add_module(f'{head_name}_{name}', head)
+        return heads
 
     def __getstate__(self):
         d = dict(self.__dict__)

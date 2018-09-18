@@ -2,12 +2,14 @@
 # https://github.com/openai/baselines/blob/master/baselines/common/distributions.py
 
 import math
+from typing import Tuple, Optional
 
 import gym.spaces
 import numpy as np
 import torch
 import torch.distributions
 import torch.nn.functional as F
+from torch.distributions import Beta, kl_divergence
 
 
 def make_pd(space: gym.Space):
@@ -16,7 +18,7 @@ def make_pd(space: gym.Space):
         return CategoricalPd(space.n)
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
-        return GaussianMixturePd(space.shape[0])
+        return BetaPd(space.shape[0], 1)
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     else:
@@ -63,7 +65,8 @@ class ProbabilityDistribution:
         """Sample action from probabilities"""
         return self.sample_with_random(prob, None)[0]
 
-    def sample_with_random(self, prob, rand):
+    def sample_with_random(self, prob: torch.Tensor, rand: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Sample action with fixed random noise"""
         raise NotImplementedError()
 
     def to_inputs(self, action):
@@ -73,14 +76,6 @@ class ProbabilityDistribution:
     @property
     def init_column_norm(self):
         return 0.01
-
-    # @property
-    # def mean_div(self):
-    #     return 1
-    #
-    # @property
-    # def clip_mult(self):
-    #     return 1
 
 
 class CategoricalPd(ProbabilityDistribution):
@@ -169,10 +164,6 @@ class BernoulliPd(ProbabilityDistribution):
         with torch.no_grad():
             return prob.sigmoid().bernoulli()
 
-    @property
-    def mean_div(self):
-        return self.n
-
 
 class DiagGaussianPd(ProbabilityDistribution):
     def __init__(self, d):
@@ -195,8 +186,7 @@ class DiagGaussianPd(ProbabilityDistribution):
         return torch.float
 
     def logp(self, x, prob):
-        mean = prob[..., :self.d]
-        logstd = prob[..., self.d:]
+        mean, logstd = self.split_probs(prob)
         std = torch.exp(logstd)
         nll = 0.5 * ((x - mean) / std).pow(2) + \
               0.5 * math.log(2.0 * math.pi) * self.d + \
@@ -204,29 +194,22 @@ class DiagGaussianPd(ProbabilityDistribution):
         return -nll
 
     def kl(self, prob1, prob2):
-        mean1 = prob1[..., :self.d]
-        mean2 = prob2[..., :self.d]
-        logstd1 = prob1[..., self.d:]
-        logstd2 = prob2[..., self.d:]
+        mean1, logstd1 = self.split_probs(prob1)
+        mean2, logstd2 = self.split_probs(prob2)
         std1 = torch.exp(logstd1)
         std2 = torch.exp(logstd2)
         kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
         return kl.mean(-1)
 
     def entropy(self, prob):
-        mean = prob[..., :self.d]
-        logstd = prob[..., self.d:]
+        mean, logstd = self.split_probs(prob)
         logvar = logstd * 2
         kld = logvar - logvar.exp() - mean.pow(2)
         return kld.mean(-1)
-        # ent = logstd#.sign() * logstd.abs().add(1e-6).sqrt() #- mean ** 2 #+ .5 * math.log(2.0 * math.pi * math.e)
-        # # ent[ent > 0] = 0
-        # return ent.mean(-1)
 
     def sample_with_random(self, prob, rand):
         assert rand is None or torch.is_tensor(rand)
-        mean = prob[..., :self.d]
-        logstd = prob[..., self.d:]
+        mean, logstd = self.split_probs(prob)
         std = torch.exp(logstd)
         if rand is None:
             rand = torch.randn_like(mean)
@@ -234,9 +217,58 @@ class DiagGaussianPd(ProbabilityDistribution):
         # sample = sample / sample.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
         return sample, rand
 
+    def split_probs(self, probs):
+        mean, logstd = probs.chunk(2, -1)
+        return mean, logstd
+
+
+class BetaPd(ProbabilityDistribution):
+    def __init__(self, d, h):
+        self.d = d
+        self.h = h
+
     @property
-    def mean_div(self):
+    def prob_vector_len(self):
+        return self.d * 2
+
+    @property
+    def action_vector_len(self):
         return self.d
+
+    @property
+    def input_vector_len(self):
+        return self.d
+
+    @property
+    def dtype(self):
+        return torch.float
+
+    def logp(self, x, prob):
+        h = self.h - 1e-3
+        x = x.div_(2 * self.h).add_(0.5)
+        beta = self._beta(prob)
+        logp = beta.log_prob(x)
+        return logp
+
+    def kl(self, prob1, prob2):
+        beta1 = self._beta(prob1)
+        beta2 = self._beta(prob2)
+        kl = kl_divergence(beta1, beta2)
+        return kl
+
+    def entropy(self, prob):
+        beta = self._beta(prob)
+        ent = beta.entropy().sum(-1)
+        return ent
+
+    def sample(self, prob):
+        beta = self._beta(prob)
+        sample = 2 * self.h * (beta.sample() - 0.5)
+        return sample
+
+    def _beta(self, prob):
+        prob = 1 + F.softplus(prob)
+        return Beta(*prob.chunk(2, -1))
 
 
 class GaussianMixturePd(ProbabilityDistribution):
@@ -271,12 +303,12 @@ class GaussianMixturePd(ProbabilityDistribution):
     def kl(self, prob1, prob2):
         logw1, gaussians1 = self._split_prob(prob1)
         logw2, gaussians2 = self._split_prob(prob2)
-        kl = self._gpd.kl(gaussians1, gaussians2).mean(-1) + self._cpd.kl(logw1, logw2)
+        kl = self._gpd.kl(gaussians1, gaussians2) + self._cpd.kl(logw1, logw2)
         return kl
 
     def entropy(self, prob):
         logw, gaussians = self._split_prob(prob)
-        ent = self._gpd.entropy(gaussians).mean(-1) + self._cpd.entropy(logw)
+        ent = self._gpd.entropy(gaussians) + self._cpd.entropy(logw)
         return ent
 
     def sample(self, prob):
@@ -288,6 +320,7 @@ class GaussianMixturePd(ProbabilityDistribution):
         selected = gaussians.gather(dim=-2, index=index).squeeze(-2)
         sample = self._gpd.sample(selected)
         return sample.view(*prob.shape[:-1], sample.shape[-1])
+
 
     def mean(self, prob):
         logw, gaussians = self._split_prob(prob)
@@ -307,12 +340,10 @@ class GaussianMixturePd(ProbabilityDistribution):
         return logw, gaussians
 
 
-class StaticTransactionPd(ProbabilityDistribution):
-    def __init__(self, d):
+class FixedStdGaussianPd(ProbabilityDistribution):
+    def __init__(self, d, std):
         self.d = d
-        self.cur = None
-        self.next = None
-        self.randn = None
+        self.std = std
 
     @property
     def prob_vector_len(self):
@@ -331,43 +362,38 @@ class StaticTransactionPd(ProbabilityDistribution):
         return torch.float
 
     def logp(self, x, mean):
-        assert self.cur is not None and self.next is not None and self.randn is not None
-        target = mean
-        real = self.next - self.cur
-        p = F.cosine_similarity(real, target, dim=-1)
-        return p
+        std = self.std
+        logstd = math.log(self.std)
+        assert x.shape == mean.shape
+        nll = 0.5 * ((x - mean) / std).pow(2) + \
+              0.5 * math.log(2.0 * math.pi) * self.d + \
+              logstd
+        return -nll
 
     def kl(self, mean1, mean2):
-        def rmse(a, b):
-            return (a - b).pow(2).mean(-1).add(1e-6).sqrt()
-        return rmse(mean1, mean2) / 10
+        logstd1 = math.log(self.std)
+        logstd2 = math.log(self.std)
+        std1 = math.exp(logstd1)
+        std2 = math.exp(logstd2)
+        kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
+        return kl.mean(-1)
 
     def entropy(self, mean):
-        ent = -mean ** 2
-        ent = ent * 0
-        return ent.mean(-1)
+        # logvar = prob.new(prob.shape[-1]).fill_(math.log(self.std * self.std))
+        # ent = 0.5 * (math.log(2 * math.pi * math.e) + logvar)
+        return mean.new_zeros(mean.shape[:-1])
 
-    def sample(self, mean, randn=None):
-        if randn is None:
-            randn = torch.randn_like(mean)
-        sample = mean / mean.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
-        return sample, randn
-
-    @property
-    def init_column_norm(self):
-        return math.sqrt(self.d)
+    def sample(self, mean):
+        return torch.normal(mean, self.std)
 
 
-class DiagGaussianTransactionPd(ProbabilityDistribution):
+class TransactionPd(ProbabilityDistribution):
     def __init__(self, d):
         self.d = d
-        self.cur = None
-        self.next = None
-        self.randn = None
 
     @property
     def prob_vector_len(self):
-        return self.d * 2
+        return self.d
 
     @property
     def action_vector_len(self):
@@ -381,68 +407,27 @@ class DiagGaussianTransactionPd(ProbabilityDistribution):
     def dtype(self):
         return torch.float
 
-    def logp(self, x, prob):
-        assert self.cur is not None and self.next is not None and self.randn is not None
-        target, _ = self.sample(prob, self.randn)
-        # mean = prob[..., :self.d]
-        # std = prob[..., self.d:].exp()
-        # target = mean + std * self.randn
-        # target = target / target.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
-        real = self.next - self.cur
-        p = F.cosine_similarity(real, target, dim=-1)
-        # target = F.layer_norm(target, target.shape[-1:])
-        # real = F.layer_norm(real, real.shape[-1:])
-        # p = (target - real).pow(2).mean(-1).sqrt().neg()
+    def logp(self, x, mean):
+        p = self.atanh(F.cosine_similarity(x, mean, dim=-1))
         return p
 
-    def kl(self, prob1, prob2):
-        mean1 = prob1[..., :self.d]
-        logstd1 = prob1[..., self.d:]
-        mean2 = prob2[..., :self.d]
-        logstd2 = prob2[..., self.d:]
+    def kl(self, mean1, mean2):
         def rmse(a, b):
             return (a - b).pow(2).mean(-1).add(1e-6).sqrt()
-        return (rmse(mean1, mean2) + rmse(logstd1, logstd2)) / 10
+        return rmse(mean1, mean2) / 10
 
-    # def entropy(self, prob):
-    #     logstd = prob[..., self.d:]
-    #     mean = prob[..., :self.d]
-    #     ent = logstd #- mean.abs() #+ .5 * math.log(2.0 * math.pi * math.e)
-    #     return ent.mean(-1)
+    def entropy(self, mean):
+        return mean.new_zeros(mean.shape[:-1])
 
-    # def kl(self, prob1, prob2):
-    #     mean1 = prob1[..., :self.d]
-    #     mean2 = prob2[..., :self.d]
-    #     logstd1 = prob1[..., self.d:]
-    #     logstd2 = prob2[..., self.d:]
-    #     std1 = torch.exp(logstd1)
-    #     std2 = torch.exp(logstd2)
-    #     kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
-    #     return kl.mean(-1)
-
-    def entropy(self, prob):
-        mean = prob[..., :self.d]
-        logstd = prob[..., self.d:]
-        ent = logstd #- mean ** 2 #+ .5 * math.log(2.0 * math.pi * math.e)
-        # ent[ent > 0] = 0
-        return ent.mean(-1)
-
-    def sample(self, prob, randn=None):
-        mean = prob[..., :self.d]
-        std = prob[..., self.d:].exp()
-        if randn is None:
-            randn = torch.randn_like(std)
-        sample = mean + std * randn
-        sample = sample / sample.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
-        return sample, randn
+    def sample(self, mean):
+        return mean
 
     # @property
-    # def mean_div(self):
-    #     return self.d
+    # def init_column_norm(self):
+    #     return math.sqrt(self.d)
 
-    # @property
-    # def clip_mult(self):
-    #     return 0.1
+    def atanh(self, x):
+        return 0.5 * torch.log((1 + x) / (1 - x))
 
 
 def test_probtypes():

@@ -1,6 +1,6 @@
 import math
 import pprint
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 from copy import deepcopy
 from functools import partial
 from pathlib import Path
@@ -22,6 +22,7 @@ from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
 from ..models import FCActor, Actor
 from ..models.heads import PolicyHead, StateValueHead
+
 
 # Used to store env step data for training
 Sample = namedtuple('Sample', 'states, rewards, dones, probs, values, actions')
@@ -363,6 +364,8 @@ class PPO(RLBase):
                 data.probs_old, data.values_old, data.actions, data.advantages, data.returns)
         batches = max(1, math.ceil(self.num_actors * self.horizon / self.batch_size))
 
+        initial_lr = [g['lr'] for g in self.optimizer.param_groups]
+
         for ppo_iter in range(self.ppo_iters):
             # norm_diff = self._norm_diff(old_model, self.model)
             # max_norm = 1.0
@@ -392,6 +395,9 @@ class PPO(RLBase):
                 self.logger.add_scalar('kl', kl, self.frame)
                 self.logger.add_scalar('param diff norm', self._norm_diff(old_model, self.model), self.frame)
                 self.logger.add_scalar('param diff inf norm', self._norm_diff(old_model, self.model, 'inf'), self.frame)
+
+        for g, lr in zip(self.optimizer.param_groups, initial_lr):
+            g['lr'] = lr
 
     def _norm_diff(self, old_model, new_model, norm_type: Union[str, float]=2) -> float:
         norm = 0

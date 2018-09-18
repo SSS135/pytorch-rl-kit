@@ -5,3 +5,4 @@ from .norm_factory import NormFactory, LambdaNormFactory, BatchNormFactory, Grou
     LayerNormFactory
 from .qrnn_actors import CNN_QRNNActor
 from .rnn_actors import RNNActor
+from .hrnn_actors import HRNNActor
