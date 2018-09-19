@@ -100,19 +100,19 @@ class CategoricalPd(ProbabilityDistribution):
 
     def logp(self, a, prob):
         logp = F.log_softmax(prob, dim=-1)
-        return logp.gather(dim=-1, index=a.unsqueeze(-1) if a.dim() == 1 else a).squeeze(-1)
+        return logp.gather(dim=-1, index=a.unsqueeze(-1) if a.dim() == 1 else a)
 
     def kl(self, prob0, prob1):
         logp0 = F.log_softmax(prob0, dim=-1)
         logp1 = F.log_softmax(prob1, dim=-1)
-        return (logp0.exp() * (logp0 - logp1)).sum(dim=-1)
+        return (logp0.exp() * (logp0 - logp1)).sum(dim=-1, keepdim=True)
 
     def entropy(self, prob):
         a = prob - prob.max(dim=-1, keepdim=True)[0]
         ea = a.exp()
         z = ea.sum(dim=-1, keepdim=True)
         po = ea / z
-        return torch.sum(po * (torch.log(z) - a), dim=-1)
+        return torch.sum(po * (torch.log(z) - a), dim=-1, keepdim=True)
 
     def sample(self, prob):
         return F.softmax(prob, dim=-1).multinomial(1)
@@ -199,13 +199,13 @@ class DiagGaussianPd(ProbabilityDistribution):
         std1 = torch.exp(logstd1)
         std2 = torch.exp(logstd2)
         kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
-        return kl.mean(-1)
+        return kl
 
     def entropy(self, prob):
         mean, logstd = self.split_probs(prob)
         logvar = logstd * 2
         kld = logvar - logvar.exp() - mean.pow(2)
-        return kld.mean(-1)
+        return kld
 
     def sample_with_random(self, prob, rand):
         assert rand is None or torch.is_tensor(rand)
@@ -223,9 +223,10 @@ class DiagGaussianPd(ProbabilityDistribution):
 
 
 class BetaPd(ProbabilityDistribution):
-    def __init__(self, d, h):
+    def __init__(self, d, h, eps=1e-3):
         self.d = d
         self.h = h
+        self.eps = eps
 
     @property
     def prob_vector_len(self):
@@ -244,10 +245,13 @@ class BetaPd(ProbabilityDistribution):
         return torch.float
 
     def logp(self, x, prob):
-        h = self.h - 1e-3
-        x = x.div_(2 * self.h).add_(0.5)
+        p = (x + self.h) / (2 * self.h)
+
+        mask = (p < self.eps) | (p > 1 - self.eps)
+        assert mask.sum() == 0, x[mask]
+
         beta = self._beta(prob)
-        logp = beta.log_prob(x)
+        logp = beta.log_prob(p)
         return logp
 
     def kl(self, prob1, prob2):
@@ -256,9 +260,9 @@ class BetaPd(ProbabilityDistribution):
         kl = kl_divergence(beta1, beta2)
         return kl
 
-    def entropy(self, prob):
+    def entropy(self, prob, reduce=False):
         beta = self._beta(prob)
-        ent = beta.entropy().sum(-1)
+        ent = beta.entropy()
         return ent
 
     def sample(self, prob):
@@ -304,12 +308,12 @@ class GaussianMixturePd(ProbabilityDistribution):
         logw1, gaussians1 = self._split_prob(prob1)
         logw2, gaussians2 = self._split_prob(prob2)
         kl = self._gpd.kl(gaussians1, gaussians2) + self._cpd.kl(logw1, logw2)
-        return kl
+        return kl.mean(-2)
 
     def entropy(self, prob):
         logw, gaussians = self._split_prob(prob)
         ent = self._gpd.entropy(gaussians) + self._cpd.entropy(logw)
-        return ent
+        return ent.mean(-2)
 
     def sample(self, prob):
         logw, gaussians = self._split_prob(prob.view(-1, prob.shape[-1]))

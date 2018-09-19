@@ -101,34 +101,28 @@ from .rnn_actors import RNNActor
 class HRNNActor(RNNActor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.h_action_size = 16
+        self.h_action_size = 8
 
         obs_len = int(np.product(self.observation_space.shape))
 
         self.h_pd = BetaPd(self.h_action_size, 1.01)
         # self.gate_pd = BernoulliPd(1)
 
-        self.rnn_l1 = DenseQRNN(self.h_action_size * 2, self.hidden_code_size, self.num_layers, norm=self.norm)
+        self.rnn_l1 = DenseQRNN(self.hidden_code_size, self.hidden_code_size, self.num_layers, norm=self.norm)
         del self.rnn
-        self.rnn_l2 = DenseQRNN(self.h_action_size, self.hidden_code_size, self.num_layers, norm=self.norm)
+        self.rnn_l2 = DenseQRNN(self.hidden_code_size, self.hidden_code_size, self.num_layers, norm=self.norm)
 
         # self.action_upsample_l2 = nn.Sequential(
         #     nn.Linear(h_action_size, self.hidden_code_size, bias=not layer_norm),
         #     *([TemporalLayerNorm1(self.hidden_code_size)] if layer_norm else []),
         #     # nn.ReLU(),
         # )
-        self.input_emb_l2 = nn.Sequential(
-            nn.Linear(obs_len, self.h_action_size),
-            nn.Tanh(),
-            # TemporalLayerNorm(self.h_action_size),
-            # nn.ReLU(),
-        )
-        self.input_emb_l1 = nn.Sequential(
-            nn.Linear(obs_len, self.h_action_size),
-            nn.Tanh(),
-            # TemporalLayerNorm(self.h_action_size),
-            # nn.ReLU(),
-        )
+        self.input_to_hidden_l2 = nn.Linear(obs_len, self.hidden_code_size)
+        self.input_to_hidden_l1 = nn.Linear(obs_len, self.hidden_code_size)
+        self.input_to_state_l2 = nn.Linear(obs_len, self.h_action_size)
+        # self.state_emb_l1 = nn.Linear(obs_len, self.h_action_size)
+        self.state_to_hidden_l2 = nn.Linear(self.h_action_size, self.hidden_code_size)
+        self.state_to_hidden_l1 = nn.Linear(self.h_action_size, self.hidden_code_size)
         # self.action_merge_l1 = nn.Sequential(
         #     nn.Linear(self.hidden_code_size * 2, self.hidden_code_size),
         #     nn.Tanh(),
@@ -159,14 +153,15 @@ class HRNNActor(RNNActor):
     def forward(self, input, memory, done_flags, action_l2=None):
         memory_l1, memory_l2 = memory.chunk(2, 0) if memory is not None else (None, None)
 
-        state_l2 = self.input_emb_l2(input)
+        state_l2 = self.input_to_state_l2(input)
+        hidden_l2 = self.input_to_hidden_l2(input).sigmoid() * self.state_to_hidden_l2(state_l2)
         # input_emb_l2 = input_emb_l2 / input_emb_l2.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
         # cur_l1 = hidden_l1 = input #= F.layer_norm(hidden_l1, hidden_l1.shape[-1:])
         # head_gate_l2 = self.head_gate_l2(hidden_l1)
         # if action_gate_l2 is None:
         #     # (actors, batch, 1)
         #     action_gate_l2 = self.gate_pd.sample(head_gate_l2.probs)
-        hidden_l2, next_memory_l2 = self.rnn_l2(state_l2, memory_l2, done_flags)
+        hidden_l2, next_memory_l2 = self.rnn_l2(hidden_l2, memory_l2, done_flags)
         # hidden_l2 = F.layer_norm(hidden_l2, hidden_l2.shape[-1:])
         # cur_l1 = self.state_vec_extractor_l1(hidden_l1)
         # cur_l1 = hidden_l1
@@ -181,10 +176,9 @@ class HRNNActor(RNNActor):
         # cur_l1_norm = F.layer_norm(cur_l1, cur_l1.shape[-1:])
         # target_l1_norm = F.layer_norm(target_l1, target_l1.shape[-1:])
 
-        input_emb_l1 = self.input_emb_l1(input)
         # input_emb_l1 = input_emb_l1 / input_emb_l1.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
-        input_l1 = torch.cat([input_emb_l1, action_l2], -1)
-        hidden_l1, next_memory_l1 = self.rnn_l1(input_l1, memory_l1, done_flags)
+        hidden_l1 = torch.max(self.input_to_hidden_l1(input), self.state_to_hidden_l1(action_l2))
+        hidden_l1, next_memory_l1 = self.rnn_l1(hidden_l1, memory_l1, done_flags)
         # preact_l1 = torch.cat([hidden_l1, self.target_emb(target_l1)], -1)
         # preact_l1 = self.action_merge_l1(preact_l1)
         head_l1 = self._run_heads(hidden_l1, self.heads)

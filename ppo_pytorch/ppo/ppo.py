@@ -47,6 +47,7 @@ class PPO(RLBase):
                  value_clip=0.1,
                  kl_target=0.01,
                  kl_scale=1,
+                 lr_iter_mult=0.75,
                  cuda_eval=False,
                  cuda_train=False,
                  grad_clip_norm=2,
@@ -158,6 +159,7 @@ class PPO(RLBase):
         self.model_save_tag = model_save_tag
         self.kl_target = kl_target
         self.kl_scale = kl_scale
+        self.lr_iter_mult = lr_iter_mult
         self.entropy_reward_scale = entropy_reward_scale
         self.hidden_code_type = hidden_code_type
         self.barron_alpha_c = barron_alpha_c
@@ -322,7 +324,7 @@ class PPO(RLBase):
         if reward_scale is None:
             reward_scale = self.reward_scale
 
-        entropy = pd.entropy(probs_old) * rewards.pow(2).mean().sqrt()
+        entropy = pd.entropy(probs_old).mean(-1) * rewards.pow(2).mean().sqrt()
         rewards += self.entropy_reward_scale * entropy
 
         rewards, returns, advantages = self._process_rewards(
@@ -385,28 +387,28 @@ class PPO(RLBase):
 
                 self.model.set_log(self.logger, False, self.step)
 
-            for g in self.optimizer.param_groups:
-                g['lr'] *= 0.75
-
             if self._do_log and ppo_iter == self.ppo_iters - 1:
                 self.logger.add_scalar('learning rate', self._learning_rate, self.frame)
                 self.logger.add_scalar('clip mult', self._clip_mult, self.frame)
                 self.logger.add_scalar('total loss', loss, self.frame)
                 self.logger.add_scalar('kl', kl, self.frame)
                 self.logger.add_scalar('param diff norm', self._norm_diff(old_model, self.model), self.frame)
-                self.logger.add_scalar('param diff inf norm', self._norm_diff(old_model, self.model, 'inf'), self.frame)
+                self.logger.add_scalar('param diff inf norm', self._norm_diff(old_model, self.model, math.inf), self.frame)
+
+            for g in self.optimizer.param_groups:
+                g['lr'] *= self.lr_iter_mult
 
         for g, lr in zip(self.optimizer.param_groups, initial_lr):
             g['lr'] = lr
 
-    def _norm_diff(self, old_model, new_model, norm_type: Union[str, float]=2) -> float:
+    def _norm_diff(self, old_model, new_model, norm_type: float=2) -> float:
         norm = 0
         for old, new in zip(old_model.state_dict().values(), new_model.state_dict().values()):
-            if norm_type == 'inf':
+            if norm_type == math.inf:
                 norm = max(norm, (new - old).abs().max())
             else:
                 norm += (new - old).norm(norm_type) ** norm_type
-        if norm_type != 'inf':
+        if norm_type != math.inf:
             norm = norm.item() ** (1. / norm_type)
         return norm
 
@@ -451,27 +453,43 @@ class PPO(RLBase):
         logp = pd.logp(actions, probs)
         ratio = logp - logp_old.detach()
 
-        # for gaussian distribution support
-        logp_adv = advantages
-        while ratio.dim() > logp_adv.dim():
-            logp_adv = logp_adv.unsqueeze(-1)
+        adv_u = advantages.unsqueeze(-1)
 
-        unclipped_policy_loss = ratio * logp_adv
+        unclipped_policy_loss = ratio * adv_u
         if 'clip' in self.constraint:
             if self.advantage_scaled_clip:
-                pclip = logp_adv.abs() * policy_clip
+                pclip = adv_u.abs() * policy_clip
                 clipped_ratio = torch.min(torch.max(ratio, -pclip), pclip)
             else:
                 clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
-            clipped_policy_loss = clipped_ratio * logp_adv
+            clipped_policy_loss = clipped_ratio * adv_u
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
         else:
             # unclipped loss
             loss_clip = -unclipped_policy_loss
 
-        # for gaussian distribution support
-        while loss_clip.dim() > advantages.dim():
-            loss_clip = loss_clip.mean(-1)
+        # entropy bonus for better exploration
+        entropy = pd.entropy(probs)
+        # entropy_old = pd.entropy(probs_old)
+
+        loss_ent = -self.entropy_loss_scale * entropy
+        # loss_ent[(entropy > entropy_old + self.entropy_bonus).detach()] = 0
+
+        kl = pd.kl(probs_old, probs)
+        if 'kl' in self.constraint:
+            kl_targets = self.kl_target * adv_u.abs()
+            loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(self.kl_scale * self.kl_target)
+            small_kl = (kl < self.kl_target).detach()
+            large_kl = (kl > self.kl_target).detach()
+            loss_kl[small_kl] = 0
+            loss_ent[large_kl] = 0
+            loss_clip[large_kl] = 0
+        else:
+            loss_kl = kl.new(1).zero_()
+
+        loss_clip = loss_clip.mean(-1)
+        loss_ent = loss_ent.mean(-1)
+        loss_kl = loss_kl.mean(-1)
 
         # value loss
         if self.advantage_scaled_clip:
@@ -483,28 +501,9 @@ class PPO(RLBase):
         vf_nonclip_loss = barron_loss(values, returns, *self.barron_alpha_c, reduce=False)
         loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)
 
-        # entropy bonus for better exploration
-        entropy = pd.entropy(probs)
-        # entropy_old = pd.entropy(probs_old)
-
-        loss_ent = -self.entropy_loss_scale * entropy
-        # loss_ent[(entropy > entropy_old + self.entropy_bonus).detach()] = 0
-
-        kl = pd.kl(probs_old, probs)
-        if 'kl' in self.constraint:
-            kl_targets = self.kl_target * advantages.abs()
-            loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(self.kl_scale * self.kl_target)
-            small_kl = (kl < self.kl_target).detach()
-            large_kl = (kl > self.kl_target).detach()
-            loss_kl[small_kl] = 0
-            loss_ent[large_kl] = 0
-            loss_clip[large_kl] = 0
-        else:
-            loss_kl = kl.new(1).zero_()
-
-        assert loss_clip.shape == loss_value.shape
-        assert loss_value.shape == loss_ent.shape
-        assert loss_ent.shape == loss_kl.shape or 'kl' not in self.constraint
+        assert loss_clip.shape == loss_value.shape, (loss_clip.shape, loss_value.shape)
+        assert loss_value.shape == loss_ent.shape, (loss_value.shape, loss_ent.shape)
+        assert loss_ent.shape == loss_kl.shape or 'kl' not in self.constraint, (loss_ent.shape, loss_kl.shape)
         # sum all losses
         total_loss = loss_clip + loss_value + loss_kl + loss_ent
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \

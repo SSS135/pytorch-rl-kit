@@ -160,6 +160,8 @@ class PPO_HRNN(PPO_RNN):
 
         data = [x.contiguous().view(num_actors, -1, *x.shape[1:]).to(self.device_train) for x in data]
 
+        initial_lr = [g['lr'] for g in self.optimizer.param_groups]
+
         for ppo_iter in range(self.ppo_iters):
             actor_index_chunks = torch.randperm(num_actors).to(self.device_train).chunk(batches)
             for loader_iter, ids in enumerate(actor_index_chunks):
@@ -179,34 +181,8 @@ class PPO_HRNN(PPO_RNN):
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
 
-                with torch.enable_grad():
-                    actor_out_l1, actor_out_l2, _, _, _ = self.model(st, mem, done, ac_l2_inp)
-                    # (actors * steps, probs)
-                    probs_l1, probs_l2 = [h.probs.transpose(0, 1).contiguous().view(-1, h.probs.shape[2])
-                                          for h in (actor_out_l1, actor_out_l2)]
-                    # (actors * steps)
-                    state_value_l1, state_value_l2 = [h.state_value.transpose(0, 1).contiguous().view(-1)
-                                                      for h in (actor_out_l1, actor_out_l2)]
-
-                    # if hasattr(self.model.h_pd, 'cur'):
-                    #     # (actors * steps, action_size)
-                    #     cur_l1 = cur_l1.detach().transpose(0, 1).contiguous().view(-1, cur_l1.shape[-1])
-                    #     self.model.h_pd.cur = cur_l1
-                    #     next_l1 = cur_l1.clone()
-                    #     next_l1[:-1] = next_l1[1:]
-                    #     self.model.h_pd.next = next_l1
-                    # if hasattr(self.model.h_pd, 'randn'):
-                    #     self.model.h_pd.randn = r_l2
-
-                    # st_d = st_d / st_d.pow(2).mean(-1, keepdim=True).sqrt()
-                    st_d = st_d / st_d.abs().max(-1, keepdim=True)[0]
-
-                    # get loss
-                    loss_l1, kl_l1 = self._get_ppo_loss(probs_l1, po_l1, state_value_l1, vo_l1, ac_l1, adv_l1, ret_l1,
-                                                        self.model.pd, tag='')
-                    loss_l2, kl_l2 = self._get_ppo_loss(probs_l2, po_l2, state_value_l2, vo_l2, st_d, adv_l2, ret_l2,
-                                                        self.model.h_pd, tag=' l2')
-                    loss = loss_l1.mean() + loss_l2.view(num_actors, -1)[:, :-1].mean()
+                loss, kl_l1, kl_l2 = self._hrnn_step(st, po_l1, po_l2, vo_l1, vo_l2, ac_l1, ac_l2_inp,
+                                                     adv_l1, adv_l2, ret_l1, ret_l2, st_d, mem, done)
 
                 # optimize
                 loss.backward()
@@ -223,6 +199,36 @@ class PPO_HRNN(PPO_RNN):
                 self.logger.add_scalar('total loss', loss, self.frame)
                 self.logger.add_scalar('kl', kl_l1, self.frame)
                 self.logger.add_scalar('kl_l2', kl_l2, self.frame)
+
+            for g in self.optimizer.param_groups:
+                g['lr'] *= self.lr_iter_mult
+
+        for g, lr in zip(self.optimizer.param_groups, initial_lr):
+            g['lr'] = lr
+
+    def _hrnn_step(self, st, po_l1, po_l2, vo_l1, vo_l2, ac_l1, ac_l2_inp, adv_l1, adv_l2, ret_l1, ret_l2, st_d, mem, done):
+        with torch.enable_grad():
+            actor_out_l1, actor_out_l2, _, _, _ = self.model(st, mem, done, ac_l2_inp)
+            # (actors * steps, probs)
+            probs_l1, probs_l2 = [h.probs.transpose(0, 1).contiguous().view(-1, h.probs.shape[2])
+                                  for h in (actor_out_l1, actor_out_l2)]
+            # (actors * steps)
+            state_value_l1, state_value_l2 = [h.state_value.transpose(0, 1).contiguous().view(-1)
+                                              for h in (actor_out_l1, actor_out_l2)]
+
+            # st_d = st_d / st_d.pow(2).mean(-1, keepdim=True).sqrt()
+            st_d = st_d / st_d.abs().max(-1, keepdim=True)[0].clamp(0.01, 10000)
+            assert ((st_d < -1) | (st_d > 1)).sum() == 0
+
+            # get loss
+            loss_l1, kl_l1 = self._get_ppo_loss(probs_l1, po_l1, state_value_l1, vo_l1, ac_l1, adv_l1, ret_l1,
+                                                self.model.pd, tag='')
+            loss_l2, kl_l2 = self._get_ppo_loss(probs_l2, po_l2, state_value_l2, vo_l2, st_d, adv_l2, ret_l2,
+                                                self.model.h_pd, tag=' l2')
+            loss = loss_l1.mean() + loss_l2.view(self.num_actors, -1)[:, :-1].mean()
+
+            return loss, kl_l1, kl_l2
+
 
     def drop_collected_steps(self):
         super().drop_collected_steps()
