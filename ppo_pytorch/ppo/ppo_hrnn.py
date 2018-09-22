@@ -104,7 +104,7 @@ class PPO_HRNN(PPO_RNN):
                 self.logger.add_histogram('probs l2', F.log_softmax(self.data_l2.probs_old, dim=-1), self.frame)
 
         return super()._process_sample(self.sample, self.model.pd, self.reward_discount, self.advantage_discount,
-                                       self.reward_scale, mean_norm=False)
+                                       self.reward_scale)
 
     def _ppo_update(self, data_l1):
         self.model.train()

@@ -101,7 +101,7 @@ from .rnn_actors import RNNActor
 class HRNNActor(RNNActor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.h_action_size = 8
+        self.h_action_size = 16
 
         obs_len = int(np.product(self.observation_space.shape))
 

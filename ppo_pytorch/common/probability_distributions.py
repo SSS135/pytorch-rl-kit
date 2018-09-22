@@ -260,7 +260,7 @@ class BetaPd(ProbabilityDistribution):
         kl = kl_divergence(beta1, beta2)
         return kl
 
-    def entropy(self, prob, reduce=False):
+    def entropy(self, prob):
         beta = self._beta(prob)
         ent = beta.entropy()
         return ent
