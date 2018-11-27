@@ -4,6 +4,7 @@ from collections import namedtuple
 from copy import deepcopy
 from functools import partial
 from pathlib import Path
+from typing import Dict
 
 import gym.spaces
 import numpy as np
@@ -20,14 +21,99 @@ from ..common.opt_clip import opt_clip
 from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
 from ..common.pop_art import PopArt
+from ..common.attr_dict import AttrDict
 from ..models import FCActor, Actor
 from ..models.heads import PolicyHead, StateValueHead
 
 
-# Used to store env step data for training
-Sample = namedtuple('Sample', 'states, rewards, dones, probs, values, actions')
-# Preprocessed steps for use in in PPO training loop. Produced from multiple `Sample`.
-TrainingData = namedtuple('TrainingData', 'states, probs_old, values_old, actions, advantages, returns, dones, rewards')
+class StepsProcessor:
+    def __init__(self,
+                 pd,
+                 reward_discount,
+                 advantage_discount,
+                 reward_scale,
+                 mean_norm,
+                 barron_alpha_c,
+                 entropy_reward_scale):
+        super().__init__()
+        self.pd = pd
+        self.reward_discount = reward_discount
+        self.advantage_discount = advantage_discount
+        self.reward_scale = reward_scale
+        self.mean_norm = mean_norm
+        self.barron_alpha_c = barron_alpha_c
+        self.entropy_reward_scale = entropy_reward_scale
+        self.data = AttrDict()
+
+    def append(self, head: Dict[str, torch.Tensor], **kwargs: torch.Tensor):
+        assert len(head.keys() & kwargs.keys()) == 0
+        data = head.items() | kwargs.items()
+        for k, v in data:
+            if k not in self.data:
+                self.data[k] = []
+            self.data[k].append(v.cpu())
+
+    def _process_sample(self):
+        # convert list to numpy array
+        # (seq, num_actors, ...)
+        rewards = torch.tensor(self.data.rewards, dtype=torch.float)
+        values_old = torch.tensor(self.data.values, dtype=torch.float)
+        dones = torch.tensor(self.data.dones, dtype=torch.float)
+        probs_old = torch.tensor(self.data.probs[:-1], dtype=torch.float)
+        actions = torch.tensor(self.data.actions[:-1], dtype=self.pd.dtype)
+        if self.data.states is not None:
+            if torch.is_tensor(self.data.states):
+                states = torch.tensor(self.data.states[:-1], dtype=torch.float)
+            else:
+                states = torch.stack(self.data.states[:-1], dim=0)
+        else:
+            states = None
+
+        return self._process_sample_tensors(rewards, values_old, dones, probs_old, actions, states)
+
+    def _process_sample_tensors(self, rewards, values_old, dones, probs_old, actions, states):
+
+        if self.entropy_reward_scale != 0:
+            entropy = self.pd.entropy(probs_old).mean(-1) * rewards.pow(2).mean().sqrt()
+            rewards += self.entropy_reward_scale * entropy
+
+        rewards, returns, advantages = self._process_rewards(rewards, values_old, dones)
+
+        # flatten
+        states = states.view(-1, *states.shape[2:]) if states is not None else None
+        values_old = values_old[:-1].reshape(-1)
+        dones = dones.reshape(-1)
+        returns = returns.reshape(-1)
+        advantages = advantages.reshape(-1)
+        rewards = rewards.reshape(-1)
+        probs_old, actions = [v.reshape(-1, v.shape[-1]) for v in (probs_old, actions)]
+
+        return TrainingData(states, probs_old, values_old, actions, advantages, returns, dones, rewards)
+
+    def _process_rewards(self, rewards, values, dones):
+        norm_rewards = self.reward_scale * rewards
+
+        # calculate returns and advantages
+        returns = calc_returns(norm_rewards, values, dones, self.reward_discount)
+        advantages = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
+        if self.mean_norm:
+            advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-3)
+        else:
+            advantages = advantages / max(advantages.pow(2).mean().sqrt(), 1e-3)
+        advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
+
+        return norm_rewards, returns, advantages
+
+    @staticmethod
+    def _append_to_sample(sample, states, rewards, dones, actions, probs, values):
+        # add step to history
+        if len(sample.states) != 0:
+            sample.rewards.append(rewards)
+            sample.dones.append(dones)
+        sample.states.append(states.cpu())
+        sample.probs.append(probs)
+        sample.values.append(values)
+        sample.actions.append(actions)
 
 
 class PPO(RLBase):
@@ -195,7 +281,7 @@ class PPO(RLBase):
     def _clip_mult(self):
         return self.clip_decay.value if self.clip_decay is not None else 1
 
-    def _step(self, prev_states, rewards, dones, cur_states) -> np.ndarray:
+    def _step(self, prev_states, rewards, dones, cur_states) -> torch.Tensor:
         # move network to cuda or cpu
         orig_grad_enabled = torch.is_grad_enabled()
         torch.set_grad_enabled(False)
@@ -204,17 +290,16 @@ class PPO(RLBase):
 
         # convert observations to tensors
         if self.image_observation:
-            states = torch.tensor(cur_states * 255, dtype=torch.uint8)
+            states = torch.as_tensor(cur_states * 255, dtype=torch.uint8)
         else:
-            states = torch.tensor(cur_states, dtype=torch.float)
+            states = torch.as_tensor(cur_states, dtype=torch.float)
 
         # run network
         ac_out = self._take_step(states.to(self.device_eval), dones)
-        actions = self.model.pd.sample(ac_out.probs).cpu().numpy()
+        actions = self.model.pd.sample(ac_out.probs).cpu()
 
         if not self.disable_training:
-            probs, values = ac_out.probs.cpu().numpy(), ac_out.state_value.cpu().numpy()
-            self._append_to_sample(self.sample, states, rewards, dones, actions, probs, values)
+            self.sample.append(ac_out, states=states, rewards=rewards, dones=dones, actions=actions)
 
             if len(self.sample.rewards) >= self.horizon:
                 self._pre_train()
@@ -273,90 +358,8 @@ class PPO(RLBase):
                 self.logger.add_histogram(name, param, self.frame)
 
     @staticmethod
-    def _append_to_sample(sample, states, rewards, dones, actions, probs, values):
-        # add step to history
-        if len(sample.states) != 0:
-            sample.rewards.append(rewards)
-            sample.dones.append(dones)
-        sample.states.append(states.cpu())
-        sample.probs.append(probs)
-        sample.values.append(values)
-        sample.actions.append(actions)
-
-    @staticmethod
     def _create_new_sample() -> Sample:
-        return Sample([], [], [], [], [], [])
-
-    def _process_sample(self, sample, pd=None, reward_discount=None, advantage_discount=None,
-                        reward_scale=None, mean_norm=True, update_adv_norm=True):
-        if pd is None:
-            pd = self.model.pd
-
-        # convert list to numpy array
-        # (seq, num_actors, ...)
-        rewards = torch.tensor(sample.rewards, dtype=torch.float)
-        values_old = torch.tensor(sample.values, dtype=torch.float)
-        dones = torch.tensor(sample.dones, dtype=torch.float)
-        probs_old = torch.tensor(sample.probs[:-1], dtype=torch.float)
-        actions = torch.tensor(sample.actions[:-1], dtype=pd.dtype)
-        if sample.states is not None:
-            if torch.is_tensor(sample.states):
-                states = torch.tensor(sample.states[:-1], dtype=torch.float)
-            else:
-                states = torch.stack(sample.states[:-1], dim=0)
-        else:
-            states = None
-
-        return self._process_sample_tensors(
-            rewards, values_old, dones, probs_old, actions, states,
-            pd, reward_discount, advantage_discount, reward_scale, mean_norm, update_adv_norm)
-
-    def _process_sample_tensors(
-            self, rewards, values_old, dones, probs_old, actions, states,
-            pd=None, reward_discount=None, advantage_discount=None, reward_scale=None,
-            mean_norm=True, update_adv_norm=True):
-
-        if pd is None:
-            pd = self.model.pd
-        if reward_discount is None:
-            reward_discount = self.reward_discount
-        if advantage_discount is None:
-            advantage_discount = self.advantage_discount
-        if reward_scale is None:
-            reward_scale = self.reward_scale
-
-        if self.entropy_reward_scale != 0:
-            entropy = pd.entropy(probs_old).mean(-1) * rewards.pow(2).mean().sqrt()
-            rewards += self.entropy_reward_scale * entropy
-
-        rewards, returns, advantages = self._process_rewards(
-            rewards, values_old, dones, reward_discount, advantage_discount, reward_scale,
-            mean_norm=mean_norm, update_norm=update_adv_norm)
-
-        # flatten
-        states = states.view(-1, *states.shape[2:]) if states is not None else None
-        values_old = values_old[:-1].reshape(-1)
-        dones = dones.reshape(-1)
-        returns = returns.reshape(-1)
-        advantages = advantages.reshape(-1)
-        rewards = rewards.reshape(-1)
-        probs_old, actions = [v.reshape(-1, v.shape[-1]) for v in (probs_old, actions)]
-
-        return TrainingData(states, probs_old, values_old, actions, advantages, returns, dones, rewards)
-
-    def _process_rewards(self, rewards, values, dones, reward_discount, advantage_discount, reward_scale, mean_norm, update_norm):
-        norm_rewards = reward_scale * rewards
-
-        # calculate returns and advantages
-        returns = calc_returns(norm_rewards, values, dones, reward_discount)
-        advantages = calc_advantages(norm_rewards, values, dones, reward_discount, advantage_discount)
-        if mean_norm:
-            advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-3)
-        else:
-            advantages = advantages / max(advantages.pow(2).mean().sqrt(), 1e-3)
-        advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
-
-        return norm_rewards, returns, advantages
+        return Sample()
 
     def _ppo_update(self, data: TrainingData):
         # move model to cuda or cpu
@@ -541,7 +544,7 @@ class PPO(RLBase):
         self.logger.add_text('Model', str(self.model))
 
     def drop_collected_steps(self):
-        self.sample = Sample(states=[], probs=[], values=[], actions=[], rewards=[], dones=[])
+        self.sample = self._create_new_sample()
 
     def _check_save_model(self):
         if self.model_save_interval is None or \

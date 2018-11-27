@@ -2,17 +2,11 @@ import torch.nn as nn
 
 from .utils import normalized_columns_initializer_
 from ..common.probability_distributions import ProbabilityDistribution, CategoricalPd
+from ..common.attr_dict import AttrDict
 
 
-class HeadOutput(dict):
-    """
-    Output of `HeadBase`. Different heads may fill different arguments.
-    """
-    def __getattr__(self, key):
-        return self[key]
-
-    def __setattr__(self, key, value):
-        self[key] = value
+class HeadOutput(AttrDict):
+    pass
 
 
 class HeadBase(nn.Module):
