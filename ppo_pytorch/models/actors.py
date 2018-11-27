@@ -11,6 +11,8 @@ from .heads import HeadBase, HeadOutput
 from .norm_factory import NormFactory
 from .utils import weights_init
 from ..common.probability_distributions import make_pd, ProbabilityDistribution
+import torch
+import torch.nn.functional as F
 
 
 class Actor(nn.Module):
@@ -63,8 +65,9 @@ class Actor(nn.Module):
         for m in self.modules():
             if m is not self and hasattr(m, 'reset_weights'):
                 m.reset_weights()
-        for head in self.heads.values():
-            head.reset_weights()
+        if hasattr(self, 'heads'):
+            for head in self.heads.values():
+                head.reset_weights()
 
     @staticmethod
     def _create_fc(in_size: int, out_size: Optional[int], hidden_sizes: List[int],

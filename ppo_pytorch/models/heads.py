@@ -110,3 +110,13 @@ class StateValueHead(HeadBase):
 
     def forward(self, x):
         return self.linear(x).squeeze(-1)
+
+    def normalize(self, mean, std):
+        self.linear.weight.data /= std
+        self.linear.bias.data -= mean
+        self.linear.bias.data /= std
+
+    def unnormalize(self, mean, std):
+        self.linear.weight.data *= std
+        self.linear.bias.data *= std
+        self.linear.bias.data += mean

@@ -16,18 +16,18 @@ RNNData = namedtuple('RNNData', 'memory, dones, action_l2, cur_l1, probs_l2, val
 class PPO_HRNN(PPO_RNN):
     def __init__(self, observation_space, action_space, *args,
                  model_factory=HRNNActor,
-                 reward_discount_l2=0.99,
-                 advantage_discount_l2=0.95,
-                 reward_scale_l2=1.0,
-                 real_reward_l1_frac=0.0,
+                 reward_discount_l1=0.95,
+                 advantage_discount_l1=0.95,
+                 env_reward_scale_l1=1.0,
+                 h_reward_scale_l1=0.1,
                  **kwargs):
         super().__init__(observation_space, action_space, model_factory=model_factory, *args, **kwargs)
         self._rnn_data = RNNData([], [], [], [], [], [])
         self.data_l2 = None
-        self.reward_discount_l2 = reward_discount_l2
-        self.advantage_discount_l2 = advantage_discount_l2
-        self.reward_scale_l2 = reward_scale_l2
-        self.real_reward_l1_frac = real_reward_l1_frac
+        self.reward_discount_l1 = reward_discount_l1
+        self.advantage_discount_l1 = advantage_discount_l1
+        self.env_reward_scale_l1 = env_reward_scale_l1
+        self.h_reward_scale_l1 = h_reward_scale_l1
         assert (self.horizon * self.num_actors) % self.batch_size == 0
 
     def _take_step(self, states, dones):
@@ -56,39 +56,25 @@ class PPO_HRNN(PPO_RNN):
     def get_l1_l2_samples(self):
         target = torch.stack(self._rnn_data.action_l2[:-1], 0)
         real = torch.stack(self._rnn_data.cur_l1[1:], 0) - torch.stack(self._rnn_data.cur_l1[:-1], 0)
-        # rewards_l1 = 0.5 - (real[-target.shape[0]:] - target).pow(2).mean(-1).sqrt()
-        rewards_l1 = F.cosine_similarity(real[-target.shape[0]:], target, dim=-1)
+        h_rewards_l1 = F.cosine_similarity(real[-target.shape[0]:], target, dim=-1)
 
-        # next_l1 = torch.stack(self._rnn_data.cur_l1[1:], 0)
-        # cur_l1 = torch.stack(self._rnn_data.cur_l1[:-1], 0)
-        # target_l1 = torch.stack(self._rnn_data.target_l1[:-1], 0)
-        # r_next_l1 = (target_l1 - next_l1).pow(2).mean(-1).sqrt().neg()
-        # r_cur_l1 = (target_l1 - cur_l1).pow(2).mean(-1).sqrt().neg()
-        # rewards_l1 = r_next_l1 - r_cur_l1
-
-        # cur_l1_norm = F.layer_norm(cur_l1, cur_l1.shape[-1:])
-        # next_l1_norm = F.layer_norm(next_l1, next_l1.shape[-1:])
-        # target_l1_norm = F.layer_norm(target_l1, target_l1.shape[-1:])
-        # r_next_l1 = (target_l1_norm - next_l1_norm).pow(2).mean(-1).sqrt().neg()
-        # r_cur_l1 = (target_l1_norm - cur_l1_norm).pow(2).mean(-1).sqrt().neg()
-        # # r_next_l1 = F.cosine_similarity(target_l1_norm, next_l1_norm, dim=-1)
-        # # r_cur_l1 = F.cosine_similarity(target_l1_norm, cur_l1_norm, dim=-1)
-        # rewards_l1 = (r_next_l1 - r_cur_l1).cpu().numpy()
         probs_l2 = torch.stack(self._rnn_data.probs_l2, 0).cpu().numpy()
         values_l2 = torch.stack(self._rnn_data.values_l2, 0).cpu().numpy()
         actions_l2 = torch.stack(self._rnn_data.action_l2, 0).cpu().numpy()
 
         sample_l1 = self.sample
-        sample_l2 = Sample(None, sample_l1.rewards, self.sample.dones, probs_l2, values_l2, actions_l2)
-        sample_l1 = sample_l1._replace(rewards=rewards_l1.cpu().numpy() +
-                                               self.real_reward_l1_frac * np.asarray(sample_l1.rewards))
+        total_rewards_l2 = self.reward_scale * np.asarray(sample_l1.rewards)
+        total_rewards_l1 = self.h_reward_scale_l1 * h_rewards_l1.cpu().numpy() + \
+                           self.env_reward_scale_l1 * self.reward_scale * np.asarray(sample_l1.rewards)
+        sample_l2 = Sample(None, total_rewards_l2, self.sample.dones, probs_l2, values_l2, actions_l2)
+        sample_l1 = sample_l1._replace(rewards=total_rewards_l1)
 
         return sample_l1, sample_l2
 
     def _process_sample(self, *args, **kwargs):
         self.sample, sample_l2 = self.get_l1_l2_samples()
         self.data_l2 = super()._process_sample(
-            sample_l2, self.model.h_pd, self.reward_discount_l2, self.advantage_discount_l2, self.reward_scale_l2)
+            sample_l2, self.model.h_pd, self.reward_discount, self.advantage_discount, 1)
 
         if self._do_log:
             self.logger.add_scalar('rewards l1', np.mean(self.sample.rewards), self.frame)
@@ -103,8 +89,7 @@ class PPO_HRNN(PPO_RNN):
             else:
                 self.logger.add_histogram('probs l2', F.log_softmax(self.data_l2.probs_old, dim=-1), self.frame)
 
-        return super()._process_sample(self.sample, self.model.pd, self.reward_discount, self.advantage_discount,
-                                       self.reward_scale)
+        return super()._process_sample(self.sample, self.model.pd, self.reward_discount_l1, self.advantage_discount_l1, 1)
 
     def _ppo_update(self, data_l1):
         self.model.train()
@@ -126,14 +111,8 @@ class PPO_HRNN(PPO_RNN):
         state_diff = torch.stack(self._rnn_data.cur_l1[1:], 0) - torch.stack(self._rnn_data.cur_l1[:-1], 0)
         state_diff = state_diff[-self.horizon:]
         state_diff = state_diff.transpose(0, 1).reshape(-1, state_diff.shape[-1])
-
-        # next_l1 = torch.stack(self._rnn_data.cur_l1[1:], 0) # (steps, actors, action_size)
-        # next_l1 = next_l1.transpose(0, 1).contiguous().view(-1, next_l1.shape[-1]) # (actors * steps, action_size)
-        # cur_l1 = torch.stack(self._rnn_data.cur_l1[:-1], 0) # (steps, actors, action_size)
-        # cur_l1 = cur_l1.transpose(0, 1).contiguous().view(-1, cur_l1.shape[-1]) # (actors * steps, action_size)
-
-        # randn_l2 = torch.stack(self._rnn_data.randn_l2[:-1], 0) # (steps, actors, action_size)
-        # randn_l2 = randn_l2.transpose(0, 1).contiguous().view(-1, randn_l2.shape[-1]) # (actors * steps, action_size)
+        state_diff /= state_diff.abs().max(-1, keepdim=True)[0].clamp(1e-5, 1e8)
+        assert ((state_diff < -1) | (state_diff > 1)).sum() == 0
 
         self._rnn_data = RNNData(self._rnn_data.memory[-1:], [], [], self._rnn_data.cur_l1[-1:], [], [])
 
@@ -215,10 +194,6 @@ class PPO_HRNN(PPO_RNN):
             # (actors * steps)
             state_value_l1, state_value_l2 = [h.state_value.transpose(0, 1).contiguous().view(-1)
                                               for h in (actor_out_l1, actor_out_l2)]
-
-            # st_d = st_d / st_d.pow(2).mean(-1, keepdim=True).sqrt()
-            st_d = st_d / st_d.abs().max(-1, keepdim=True)[0].clamp(0.01, 10000)
-            assert ((st_d < -1) | (st_d > 1)).sum() == 0
 
             # get loss
             loss_l1, kl_l1 = self._get_ppo_loss(probs_l1, po_l1, state_value_l1, vo_l1, ac_l1, adv_l1, ret_l1,

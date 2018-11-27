@@ -5,7 +5,7 @@ import numpy as np
 from baselines.common.vec_env import VecEnv
 
 
-class ThreadingVecEnv(VecEnv):
+class ThreadingVecEnv:
     def __init__(self, env_fns):
         self.executor = ThreadPoolExecutor(max_workers=os.cpu_count())
         self.envs = [fn() for fn in env_fns]

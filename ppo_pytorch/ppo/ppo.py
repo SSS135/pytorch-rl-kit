@@ -1,10 +1,9 @@
 import math
 import pprint
-from collections import namedtuple, defaultdict
+from collections import namedtuple
 from copy import deepcopy
 from functools import partial
 from pathlib import Path
-from typing import Union
 
 import gym.spaces
 import numpy as np
@@ -20,6 +19,7 @@ from ..common.gae import calc_advantages, calc_returns
 from ..common.opt_clip import opt_clip
 from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
+from ..common.pop_art import PopArt
 from ..models import FCActor, Actor
 from ..models.heads import PolicyHead, StateValueHead
 
@@ -165,7 +165,7 @@ class PPO(RLBase):
         self.barron_alpha_c = barron_alpha_c
         self.advantage_scaled_clip = advantage_scaled_clip
 
-        assert len(set(self.constraint) - {'clip', 'kl', 'opt'}) == 0
+        assert len(set(self.constraint) - {'clip', 'kl', 'opt', 'mse'}) == 0
         assert not image_observation or \
                isinstance(observation_space, gym.spaces.Box) and len(observation_space.shape) == 3
 
@@ -181,6 +181,7 @@ class PPO(RLBase):
         self.clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
         self.entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
         self.last_model_save_frame = 0
+        self._pop_art = PopArt()
 
     @staticmethod
     def _head_factory(hidden_size, pd):
@@ -324,8 +325,9 @@ class PPO(RLBase):
         if reward_scale is None:
             reward_scale = self.reward_scale
 
-        entropy = pd.entropy(probs_old).mean(-1) * rewards.pow(2).mean().sqrt()
-        rewards += self.entropy_reward_scale * entropy
+        if self.entropy_reward_scale != 0:
+            entropy = pd.entropy(probs_old).mean(-1) * rewards.pow(2).mean().sqrt()
+            rewards += self.entropy_reward_scale * entropy
 
         rewards, returns, advantages = self._process_rewards(
             rewards, values_old, dones, reward_discount, advantage_discount, reward_scale,
@@ -362,8 +364,12 @@ class PPO(RLBase):
 
         old_model = deepcopy(self.model)
 
+        returns_mean, returns_std = self._pop_art.update_statistics(data.returns)
+        self.model.heads['state_value'].normalize(returns_mean, returns_std)
+
         data = (data.states.pin_memory() if self.device_train.type == 'cuda' else data.states,
-                data.probs_old, data.values_old, data.actions, data.advantages, data.returns)
+                data.probs_old, (data.values_old - returns_mean) / returns_std, data.actions, data.advantages,
+                (data.returns - returns_mean) / returns_std)
         batches = max(1, math.ceil(self.num_actors * self.horizon / self.batch_size))
 
         initial_lr = [g['lr'] for g in self.optimizer.param_groups]
@@ -400,6 +406,8 @@ class PPO(RLBase):
 
         for g, lr in zip(self.optimizer.param_groups, initial_lr):
             g['lr'] = lr
+
+        self.model.heads['state_value'].unnormalize(returns_mean, returns_std)
 
     def _norm_diff(self, old_model, new_model, norm_type: float=2) -> float:
         norm = 0
@@ -484,6 +492,8 @@ class PPO(RLBase):
             loss_kl[small_kl] = 0
             loss_ent[large_kl] = 0
             loss_clip[large_kl] = 0
+        elif 'mse' in self.constraint:
+            loss_kl = self.kl_scale * (probs - probs_old) ** 2
         else:
             loss_kl = kl.new(1).zero_()
 

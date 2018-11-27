@@ -72,4 +72,4 @@ class EnvTrainer:
             self.step(self.frame + self.env.num_envs >= max_frames)
             if self.frame >= max_frames:
                 break
-        return self.all_rewards
+        # return self.all_rewards
