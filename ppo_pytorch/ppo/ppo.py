@@ -49,7 +49,6 @@ class PPO(RLBase):
                  barron_alpha_c=(1.5, 1),
                  advantage_scaled_clip=True,
                  hidden_code_type: 'input' or 'first' or 'last'='input',
-                 image_observation=False,
                  lr_scheduler_factory=None,
                  clip_decay_factory=None,
                  entropy_decay_factory=None,
@@ -115,7 +114,6 @@ class PPO(RLBase):
             advantage_scaled_clip (bool): Whether to multiply `policy_clip` and `value_clip` by abs(advantages)
             hidden_code_type (str): Model hidden code type. Not used in PPO.
                 Valid values are 'input' or 'first' or 'last'
-            image_observation (bool): Memory optimization for image-based states
             lr_scheduler_factory (Callable[DecayLR]): Learning rate scheduler factory.
             clip_decay_factory (Callable[ValueDecay]): Policy / value clip scheduler factory.
             entropy_decay_factory (Callable[ValueDecay]): `entropy_loss_scale` scheduler factory.
@@ -146,7 +144,6 @@ class PPO(RLBase):
         self.model_factory = model_factory
         self.constraint = (constraint,) if isinstance(constraint, str) else constraint
         self.reward_scale = reward_scale
-        self.image_observation = image_observation
         self.model_save_folder = model_save_folder
         self.model_save_interval = model_save_interval
         self.save_intermediate_models = save_intermediate_models
@@ -160,8 +157,6 @@ class PPO(RLBase):
         self.advantage_scaled_clip = advantage_scaled_clip
 
         assert len(set(self.constraint) - {'clip', 'kl', 'opt', 'mse'}) == 0
-        assert not image_observation or \
-               isinstance(observation_space, gym.spaces.Box) and len(observation_space.shape) == 3
 
         if model_init_path is None:
             self.model: Actor = model_factory(observation_space, action_space, self._head_factory, hidden_code_type=hidden_code_type)
@@ -195,18 +190,12 @@ class PPO(RLBase):
 
         self.model = self.model.to(self.device_eval)
 
-        # convert observations to tensors
-        if self.image_observation:
-            states = torch.as_tensor(cur_states * 255, dtype=torch.uint8)
-        else:
-            states = torch.as_tensor(cur_states, dtype=torch.float)
-
         # run network
-        ac_out = self._take_step(states.to(self.device_eval), dones)
+        ac_out = self._take_step(cur_states.to(self.device_eval), dones)
         actions = self.model.pd.sample(ac_out.probs).cpu()
 
         if not self.disable_training:
-            self._steps_processor.append(ac_out, states=states, rewards=rewards, dones=dones, actions=actions)
+            self._steps_processor.append(ac_out, states=cur_states, rewards=rewards, dones=dones, actions=actions)
 
             if len(self._steps_processor.data.states) > self.horizon:
                 self._pre_train()
@@ -247,7 +236,7 @@ class PPO(RLBase):
                     img = data.states[:4]
                     img = img.view(-1, *img.shape[2:]).unsqueeze(1)
                     nrow = data.states.shape[1]
-                if self.image_observation:
+                if data.states.dtype == torch.uint8:
                     img = img.float() / 255
                 img = make_grid(img, nrow=nrow, normalize=False)
                 self.logger.add_image('state', img, self.frame)

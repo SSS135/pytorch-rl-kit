@@ -24,7 +24,6 @@ def create_fc_kwargs(learning_decay_frames=5e5, **kwargs):
         horizon=64,
         batch_size=128,
         model_factory=FCActor,
-        image_observation=False,
         cuda_eval=False,
         cuda_train=False,
     )
@@ -59,7 +58,6 @@ def create_hqrnn_kwargs(**kwargs):
         horizon=128,
         batch_size=256,
         model_factory=FCActor,
-        image_observation=False,
         cuda_eval=True,
         cuda_train=True,
         lr_scheduler_factory=None,
@@ -90,7 +88,6 @@ def create_atari_kwargs(learning_decay_frames=10e6, **kwargs):
         policy_clip=0.2,
         value_clip=0.2,
         model_factory=CNNActor,
-        image_observation=True,
         cuda_eval=True,
         cuda_train=True,
     )
@@ -128,7 +125,6 @@ def create_sega_kwargs(**kwargs):
         value_clip=0.1,
         reward_scale=0.0025,
         model_factory=None,
-        image_observation=True,
         cuda_eval=True,
         cuda_train=True,
         lr_scheduler_factory=None,

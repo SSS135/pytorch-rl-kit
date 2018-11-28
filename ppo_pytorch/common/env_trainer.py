@@ -46,12 +46,13 @@ class EnvTrainer:
     def step(self, always_log=False):
         """Do single step of RL alg"""
 
+        self.states = torch.as_tensor(np.asarray(self.states, dtype=self.env.observation_space.dtype))
+
         # evaluate RL alg
         actions = self.rl_alg.eval(self.states)
         self.states, rewards, dones, infos = self.env.step(actions.numpy())
 
-        self.states, rewards, dones = [torch.as_tensor(np.asarray(x, dtype=np.float32))
-                                       for x in (self.states, rewards, dones)]
+        rewards, dones = [torch.as_tensor(np.asarray(x, dtype=np.float32)) for x in (rewards, dones)]
 
         # process step results
         for info in infos:

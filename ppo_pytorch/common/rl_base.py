@@ -129,6 +129,7 @@ class RLBase:
         """
         assert self.step_type == RLStep.EVAL or self.disable_training
         assert obs.shape[1:] == self.observation_space.shape, f'{obs.shape[1:]} {self.observation_space.shape}'
+        assert obs.dtype == torch.float32 or obs.dtype == torch.uint8
         self.step_type = RLStep.REWARD
         return obs
 

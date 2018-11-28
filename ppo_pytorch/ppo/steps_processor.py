@@ -1,9 +1,9 @@
 from typing import Dict
 
-from ppo_pytorch.common.attr_dict import AttrDict
-from ppo_pytorch.common.barron_loss import barron_loss_derivative
-from ppo_pytorch.common.gae import calc_returns, calc_advantages
-from torch import __init__
+from ..common.attr_dict import AttrDict
+from ..common.barron_loss import barron_loss_derivative
+from ..common.gae import calc_returns, calc_advantages
+import torch
 
 
 class StepsProcessor:

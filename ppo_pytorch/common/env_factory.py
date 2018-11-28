@@ -16,7 +16,7 @@ from .threading_vec_env import ThreadingVecEnv
 class NamedVecEnv:
     vec_env_types = dict(dummy=DummyVecEnv, thread=ThreadingVecEnv, process=SubprocVecEnv)
 
-    def __init__(self, env_name, parallel='thread'):
+    def __init__(self, env_name: str, parallel: str='dummy'):
         self.env_name = env_name
         self.parallel = parallel
         self.subproc_envs = None
@@ -44,8 +44,8 @@ class NamedVecEnv:
 
 
 class AtariVecEnv(NamedVecEnv):
-    def __init__(self, env_name, episode_life=True, scale=True, clip_rewards=True,
-                 frame_stack=True, grayscale=True, parallel=True):
+    def __init__(self, env_name, episode_life=True, scale=False, clip_rewards=False,
+                 frame_stack=True, grayscale=True, parallel='process'):
         self.scale = scale
         self.clip_rewards = clip_rewards
         self.episode_life = episode_life
@@ -89,7 +89,7 @@ class ChannelTranspose(gym.ObservationWrapper):
     def __init__(self, env):
         super().__init__(env)
         obs = env.observation_space.shape
-        self.observation_space = spaces.Box(low=0, high=255, shape=(obs[2], obs[0], obs[1]))
+        self.observation_space = spaces.Box(low=0, high=255, shape=(obs[2], obs[0], obs[1]), dtype=np.uint8)
 
     def observation(self, frame):
         return frame.transpose(2, 0, 1)
@@ -103,7 +103,7 @@ class SimplifyFrame(gym.ObservationWrapper):
         ob = env.observation_space.shape
         assert len(ob) == 3 and ob[2] == 3
         out_ob = size, size, (1 if grayscale else 3)
-        self.observation_space = spaces.Box(low=0, high=255, shape=out_ob)
+        self.observation_space = spaces.Box(low=0, high=255, shape=out_ob, dtype=np.uint8)
 
     def observation(self, frame):
         if self.grayscale:
