@@ -29,9 +29,9 @@ class StepsProcessor:
         self.append_values(**head, **new_data)
 
     def append_values(self, **new_data: torch.Tensor):
-        data_len = len(self.data)
+        first_step = 'actions' not in self.data
         for k, v in new_data.items():
-            if (k == 'rewards' or k == 'dones') and data_len == 0:
+            if (k == 'rewards' or k == 'dones') and first_step:
                 continue
             if k not in self.data:
                 self.data[k] = []
@@ -61,8 +61,6 @@ class StepsProcessor:
     def _drop_excess_data(self):
         lens = [len(x) for x in self.data.values()]
         min_len = min(lens)
-        max_len = max(lens)
-        assert min_len + 1 == max_len
         self.data.update({k: v[:min_len] for k, v in self.data.items()})
 
     def _flatten_data(self):

@@ -16,6 +16,7 @@ class PPO_RNN(PPO):
                  *args, **kwargs):
         super().__init__(observation_space, action_space, model_factory=model_factory, *args, **kwargs)
         assert (self.horizon * self.num_actors) % self.batch_size == 0
+        self.layers = None
 
     def _reorder_data(self, data: AttrDict) -> AttrDict:
         def reorder(input):
@@ -31,17 +32,18 @@ class PPO_RNN(PPO):
         self.model.eval()
 
         data = self._steps_processor.data
-        # (layers, batch_size, hidden_size)
+        # (layers, num_actors, hidden_size)
         mem = data.memory[-1] if 'memory' in data else None
         dones = torch.zeros(self.num_actors) if dones is None else dones
         dones = dones.unsqueeze(0).to(self.device_eval)
         states = states.unsqueeze(0)
         ac_out, next_mem = self.model(states, mem, dones)
+        self.layers = next_mem.shape[0]
 
         if not self.disable_training:
             if 'memory' not in data:
                 self._steps_processor.append_values(memory=next_mem.clone().fill_(0))
-            self._steps_processor.append_values(next_mem)
+            self._steps_processor.append_values(memory=next_mem)
 
         return HeadOutput(probs=ac_out.probs.squeeze(0), state_values=ac_out.state_values.squeeze(0))
 
@@ -52,14 +54,15 @@ class PPO_RNN(PPO):
 
         data = self._reorder_data(data)
 
-        memory = torch.stack(data.memory[:-2], 0)  # (steps, layers, actors, hidden_size)
-        memory = memory.permute(2, 0, 1, 3)  # (actors, steps, layers, hidden_size)
-        memory = memory.reshape(-1, *memory.shape[2:]) # (actors * steps, layers, hidden_size)
+        all_memory = data.memory.reshape(self.layers, -1, *data.memory.shape[1:])  # (layers, steps, actors, hidden_size)
+        memory = all_memory[:, :-2].permute(2, 1, 0, 3)  # (actors, steps, layers, hidden_size)
+        memory = memory.reshape(-1, *memory.shape[2:])  # (actors * steps, layers, hidden_size)
 
-        dones = data.dones[:-1] # (steps, actors)
-        dones = torch.stack(dones, 0).transpose(0, 1).reshape(-1) # (actors * steps)
+        dones = data.dones.reshape(self.num_actors, -1)[:, :-1].reshape(-1)  # (actors * steps)
 
-        self._steps_processor.append_values(memory=data.memory[-1])
+        self._steps_processor.append_values(memory=all_memory[:, -1])
+
+        print(data.states.shape, memory.shape, dones.shape)
 
         # actor_switch_flags = torch.zeros(self.horizon)
         # actor_switch_flags[-1] = 1
@@ -67,7 +70,7 @@ class PPO_RNN(PPO):
 
         # (actors * steps, ...)
         data = (data.states.pin_memory() if self.device_train.type == 'cuda' else data.states,
-                data.probs_old, data.values_old, data.actions, data.advantages,
+                data.probs, data.state_values, data.actions, data.advantages,
                 data.returns, memory, dones)
 
         # (actors, steps, ...)
@@ -79,7 +82,7 @@ class PPO_RNN(PPO):
         else:
             batches = max(1, num_actors * self.horizon // self.batch_size)
 
-        data = [x.contiguous().view(num_actors, -1, *x.shape[1:]) for x in data]
+        data = [x.reshape(num_actors, -1, *x.shape[1:]) for x in data]
 
         for ppo_iter in range(self.ppo_iters):
             actor_index_chunks = torch.randperm(num_actors).to(self.device_train).chunk(batches)
@@ -90,11 +93,11 @@ class PPO_RNN(PPO):
                     x[ids].to(self.device_train).view(-1, *x.shape[2:])
                     for x in data]
                 # (steps, actors, ...)
-                st, mem, done = [x.contiguous().view(ids.shape[0], -1, *x.shape[1:]).transpose(0, 1) for x in (st, mem, done)]
+                st, mem, done = [x.reshape(ids.shape[0], -1, *x.shape[1:]).transpose(0, 1) for x in (st, mem, done)]
                 # (layers, actors, hidden_size)
                 mem = mem[0].transpose(0, 1)
                 # (steps, actors)
-                done = done.contiguous().view(done.shape[:2])
+                done = done.reshape(done.shape[:2])
 
                 st, mem, done = (x.contiguous() for x in (st, mem, done))
                 st = image_to_float(st)
@@ -105,9 +108,9 @@ class PPO_RNN(PPO):
                 with torch.enable_grad():
                     actor_out, _ = self.model(st, mem, done)
                     # (actors * steps, probs)
-                    probs = actor_out.probs.transpose(0, 1).contiguous().view(-1, actor_out.probs.shape[2])
+                    probs = actor_out.probs.transpose(0, 1).reshape(-1, actor_out.probs.shape[2])
                     # (actors * steps)
-                    state_values = actor_out.state_values.transpose(0, 1).contiguous().view(-1)
+                    state_values = actor_out.state_values.transpose(0, 1).reshape(-1)
                     # get loss
                     loss, kl = self._get_ppo_loss(probs, po, state_values, vo, ac, adv, ret)
                     # loss_vat = get_vat_loss(

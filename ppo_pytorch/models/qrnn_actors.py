@@ -25,7 +25,7 @@ class CNN_QRNNActor(CNNActor):
 
     def forward(self, input, memory, done_flags):
         seq_len, batch_len = input.shape[:2]
-        input = input.contiguous().view(seq_len * batch_len, *input.shape[2:])
+        input = input.reshape(seq_len * batch_len, *input.shape[2:])
 
         input = image_to_float(input)
         x = self._extract_features(input)

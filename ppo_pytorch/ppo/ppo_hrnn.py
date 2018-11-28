@@ -101,10 +101,10 @@ class PPO_HRNN(PPO_RNN):
 
         memory = torch.stack(self._rnn_data.memory[:-2], 0)  # (steps, layers, actors, hidden_size)
         memory = memory.permute(2, 0, 1, 3)  # (actors, steps, layers, hidden_size)
-        memory = memory.contiguous().view(-1, *memory.shape[2:]) # (actors * steps, layers, hidden_size)
+        memory = memory.reshape(-1, *memory.shape[2:]) # (actors * steps, layers, hidden_size)
 
         dones = self._rnn_data.dones[:-1] # (steps, actors)
-        dones = torch.stack(dones, 0).transpose(0, 1).contiguous().view(-1) # (actors * steps)
+        dones = torch.stack(dones, 0).transpose(0, 1).reshape(-1) # (actors * steps)
 
         # (steps, actors, state_size)
         state_diff = torch.stack(self._rnn_data.cur_l1[1:], 0) - torch.stack(self._rnn_data.cur_l1[:-1], 0)
@@ -136,7 +136,7 @@ class PPO_HRNN(PPO_RNN):
         else:
             batches = max(1, num_actors * self.horizon // self.batch_size)
 
-        data = [x.contiguous().view(num_actors, -1, *x.shape[1:]).to(self.device_train) for x in data]
+        data = [x.reshape(num_actors, -1, *x.shape[1:]).to(self.device_train) for x in data]
 
         initial_lr = [g['lr'] for g in self.optimizer.param_groups]
 
@@ -146,7 +146,7 @@ class PPO_HRNN(PPO_RNN):
                 # prepare batch data
                 # (actors * steps, ...)
                 st, po_l1, po_l2, vo_l1, vo_l2, ac_l1, ac_l2, adv_l1, adv_l2, ret_l1, ret_l2, st_d, mem, done = [
-                    x[ids].contiguous().view(-1, *x.shape[2:])
+                    x[ids].reshape(-1, *x.shape[2:])
                     for x in data]
                 # (steps, actors, ...)
                 st, mem, done, ac_l2_inp = [x.data.view(ids.shape[0], -1, *x.shape[1:]).transpose(0, 1)
@@ -154,7 +154,7 @@ class PPO_HRNN(PPO_RNN):
                 # (layers, actors, hidden_size)
                 mem = mem[0].transpose(0, 1)
                 # (steps, actors)
-                done = done.contiguous().view(done.shape[:2])
+                done = done.reshape(done.shape[:2])
 
                 if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                     self.model.set_log(self.logger, self._do_log, self.step)
@@ -188,10 +188,10 @@ class PPO_HRNN(PPO_RNN):
         with torch.enable_grad():
             actor_out_l1, actor_out_l2, _, _, _ = self.model(st, mem, done, ac_l2_inp)
             # (actors * steps, probs)
-            probs_l1, probs_l2 = [h.probs.transpose(0, 1).contiguous().view(-1, h.probs.shape[2])
+            probs_l1, probs_l2 = [h.probs.transpose(0, 1).reshape(-1, h.probs.shape[2])
                                   for h in (actor_out_l1, actor_out_l2)]
             # (actors * steps)
-            state_value_l1, state_value_l2 = [h.state_values.transpose(0, 1).contiguous().view(-1)
+            state_value_l1, state_value_l2 = [h.state_values.transpose(0, 1).reshape(-1)
                                               for h in (actor_out_l1, actor_out_l2)]
 
             # get loss
