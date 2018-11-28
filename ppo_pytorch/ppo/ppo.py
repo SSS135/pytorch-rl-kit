@@ -40,8 +40,8 @@ class PPO(RLBase):
                  policy_clip=0.1,
                  value_clip=0.1,
                  kl_target=0.01,
-                 kl_scale=1,
-                 lr_iter_mult=0.75,
+                 kl_scale=0.1,
+                 lr_iter_mult=1.0,
                  cuda_eval=False,
                  cuda_train=False,
                  grad_clip_norm=2,
@@ -57,6 +57,7 @@ class PPO(RLBase):
                  model_save_interval=None,
                  model_init_path=None,
                  save_intermediate_models=False,
+                 use_pop_art=False,
                  **kwargs):
         """
         Single threaded implementation of Proximal Policy Optimization Algorithms
@@ -155,6 +156,7 @@ class PPO(RLBase):
         self.hidden_code_type = hidden_code_type
         self.barron_alpha_c = barron_alpha_c
         self.advantage_scaled_clip = advantage_scaled_clip
+        self.use_pop_art = use_pop_art
 
         assert len(set(self.constraint) - {'clip', 'kl', 'opt', 'mse'}) == 0
 
@@ -195,7 +197,7 @@ class PPO(RLBase):
         actions = self.model.pd.sample(ac_out.probs).cpu()
 
         if not self.disable_training:
-            self._steps_processor.append(ac_out, states=cur_states, rewards=rewards, dones=dones, actions=actions)
+            self._steps_processor.append_head(ac_out, states=cur_states, rewards=rewards, dones=dones, actions=actions)
 
             if len(self._steps_processor.data.states) > self.horizon:
                 self._pre_train()
@@ -221,10 +223,12 @@ class PPO(RLBase):
 
     def _train(self):
         self._steps_processor.complete()
-        self._log_training_data(self._steps_processor.data)
-        self._ppo_update(self._steps_processor.data)
-        self._check_save_model()
+        data = self._steps_processor.data
         self._steps_processor = self._create_steps_processor()
+
+        self._log_training_data(data)
+        self._ppo_update(data)
+        self._check_save_model()
 
     def _log_training_data(self, data: AttrDict):
         if self._do_log:
@@ -263,8 +267,11 @@ class PPO(RLBase):
 
         old_model = deepcopy(self.model)
 
-        returns_mean, returns_std = self._pop_art.update_statistics(data.returns)
-        self.model.heads.state_values.normalize(returns_mean, returns_std)
+        if self.use_pop_art:
+            returns_mean, returns_std = self._pop_art.update_statistics(data.returns)
+            self.model.heads.state_values.normalize(returns_mean, returns_std)
+        else:
+            returns_mean, returns_std = 0, 1
 
         data = (data.states.pin_memory() if self.device_train.type == 'cuda' else data.states,
                 data.probs, (data.state_values - returns_mean) / returns_std, data.actions, data.advantages,
@@ -306,7 +313,8 @@ class PPO(RLBase):
         for g, lr in zip(self.optimizer.param_groups, initial_lr):
             g['lr'] = lr
 
-        self.model.heads.state_values.unnormalize(returns_mean, returns_std)
+        if self.use_pop_art:
+            self.model.heads.state_values.unnormalize(returns_mean, returns_std)
 
     def _norm_diff(self, old_model, new_model, norm_type: float=2) -> float:
         norm = 0

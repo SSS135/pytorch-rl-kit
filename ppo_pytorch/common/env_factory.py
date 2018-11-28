@@ -44,7 +44,7 @@ class NamedVecEnv:
 
 
 class AtariVecEnv(NamedVecEnv):
-    def __init__(self, env_name, episode_life=True, scale=False, clip_rewards=False,
+    def __init__(self, env_name, episode_life=True, scale=False, clip_rewards=True,
                  frame_stack=True, grayscale=True, parallel='process'):
         self.scale = scale
         self.clip_rewards = clip_rewards

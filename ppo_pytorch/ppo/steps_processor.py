@@ -25,11 +25,12 @@ class StepsProcessor:
         self.entropy_reward_scale = entropy_reward_scale
         self.data = AttrDict()
 
-    def append(self, head: Dict[str, torch.Tensor], **kwargs: torch.Tensor):
-        assert len(head.keys() & kwargs.keys()) == 0
-        data = head.items() | kwargs.items()
+    def append_head(self, head: Dict[str, torch.Tensor], **new_data: torch.Tensor):
+        self.append_values(**head, **new_data)
+
+    def append_values(self, **new_data: torch.Tensor):
         data_len = len(self.data)
-        for k, v in data:
+        for k, v in new_data.items():
             if (k == 'rewards' or k == 'dones') and data_len == 0:
                 continue
             if k not in self.data:
