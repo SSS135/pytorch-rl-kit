@@ -5,6 +5,7 @@ from typing import Callable
 import numpy as np
 
 from .tensorboard_env_logger import TensorboardEnvLogger
+import torch
 
 
 class EnvTrainer:
@@ -47,8 +48,10 @@ class EnvTrainer:
 
         # evaluate RL alg
         actions = self.rl_alg.eval(self.states)
-        self.states, rewards, dones, infos = self.env.step(actions)
-        self.states, rewards, dones = [np.asarray(v) for v in (self.states, rewards, dones)]
+        self.states, rewards, dones, infos = self.env.step(actions.numpy())
+
+        self.states, rewards, dones = [torch.as_tensor(np.asarray(x, dtype=np.float32))
+                                       for x in (self.states, rewards, dones)]
 
         # process step results
         for info in infos:

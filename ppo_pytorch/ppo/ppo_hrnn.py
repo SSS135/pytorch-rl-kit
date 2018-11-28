@@ -5,7 +5,6 @@ import torch
 import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
 
-from .ppo import Sample
 from .ppo_rnn import PPO_RNN
 from ..common.probability_distributions import DiagGaussianPd
 from ..models import HRNNActor
@@ -38,9 +37,9 @@ class PPO_HRNN(PPO_RNN):
         head_l1, head_l2, action_l2, cur_l1, next_mem = self.model(states, mem, dones)
 
         head_l1.probs = head_l1.probs.squeeze(0)
-        head_l1.state_value = head_l1.state_value.squeeze(0)
+        head_l1.state_values = head_l1.state_values.squeeze(0)
         head_l2.probs = head_l2.probs.squeeze(0)
-        head_l2.state_value = head_l2.state_value.squeeze(0)
+        head_l2.state_values = head_l2.state_values.squeeze(0)
 
         if len(self._rnn_data.memory) == 0:
             self._rnn_data.memory.append(next_mem.data.clone().fill_(0))
@@ -49,7 +48,7 @@ class PPO_HRNN(PPO_RNN):
         self._rnn_data.action_l2.append(action_l2.data[0])
         self._rnn_data.cur_l1.append(cur_l1.data[0])
         self._rnn_data.probs_l2.append(head_l2.probs.data)
-        self._rnn_data.values_l2.append(head_l2.state_value.data)
+        self._rnn_data.values_l2.append(head_l2.state_values.data)
 
         return head_l1
 
@@ -192,7 +191,7 @@ class PPO_HRNN(PPO_RNN):
             probs_l1, probs_l2 = [h.probs.transpose(0, 1).contiguous().view(-1, h.probs.shape[2])
                                   for h in (actor_out_l1, actor_out_l2)]
             # (actors * steps)
-            state_value_l1, state_value_l2 = [h.state_value.transpose(0, 1).contiguous().view(-1)
+            state_value_l1, state_value_l2 = [h.state_values.transpose(0, 1).contiguous().view(-1)
                                               for h in (actor_out_l1, actor_out_l2)]
 
             # get loss

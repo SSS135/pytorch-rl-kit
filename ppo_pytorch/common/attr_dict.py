@@ -1,6 +1,5 @@
 class AttrDict(dict):
     def __getattr__(self, key):
-        return self[key]
+        return self[key] if key in self else self.__getattribute__(key)
 
-    def __setattr__(self, key, value):
-        self[key] = value
+    __setattr__ = dict.__setitem__

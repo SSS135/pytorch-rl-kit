@@ -1,7 +1,8 @@
 from enum import Enum
+from typing import Optional
 
 import gym
-import numpy as np
+import torch
 from gym.spaces import Discrete
 
 
@@ -59,8 +60,8 @@ class RLBase:
         self._logger = log
         self._log_set()
 
-    def _step(self, prev_states: np.ndarray, rewardss: np.ndarray,
-              doness: np.ndarray, cur_states: np.ndarray) -> np.ndarray:
+    def _step(self, prev_states: torch.Tensor, rewardss: torch.Tensor,
+              doness: torch.Tensor, cur_states: torch.Tensor) -> torch.Tensor:
         """
         Internal RL algorithm step.
         Args:
@@ -73,28 +74,28 @@ class RLBase:
         """
         raise NotImplementedError
 
-    def eval(self, input: np.ndarray or list) -> np.ndarray:
+    def eval(self, obs: torch.Tensor) -> Optional[torch.Tensor]:
         """
         Process new observations and return actions.
         Args:
-            input: List of observations across all `envs`
+            obs: List of observations across all `envs`
             envs: List of parallely running envs.
 
         Returns: Taken actions.
         """
         self.prev_states = self.cur_states
-        self.cur_states = self._check_states(input)
+        self.cur_states = self._check_states(obs)
         actions = self._step(self.prev_states, self.rewards, self.dones, self.cur_states)
         self.step += 1
         if actions is None:
             return None
         if isinstance(self.action_space, Discrete):
-            actions = np.reshape(actions, (self.num_actors,))
+            actions = actions.reshape(self.num_actors)
         else:
-            actions = np.reshape(actions, (self.num_actors, -1))
+            actions = actions.reshape(self.num_actors, -1)
         return actions
 
-    def reward(self, reward: np.ndarray or list) -> None:
+    def reward(self, reward: torch.Tensor):
         """
         Reward for taken actions at `self.eval` call.
         Args:
@@ -102,7 +103,7 @@ class RLBase:
         """
         self.rewards = self._check_rewards(reward)
 
-    def finish_episodes(self, done: np.ndarray or list) -> None:
+    def finish_episodes(self, done: torch.Tensor):
         """
         Notify for ended episodes after taking actions from `self.eval`.
         Args:
@@ -117,22 +118,21 @@ class RLBase:
         """Called when logger is set or changed"""
         pass
 
-    def _check_states(self, input) -> np.ndarray:
+    def _check_states(self, obs: torch.Tensor) -> torch.Tensor:
         """
         Check if observations have correct shape and type and convert them to numpy array.
             Also check if it's allowed to call that function in current `self.step_type`
         Args:
-            input: Observations
+            obs: Observations
 
         Returns: Observations converted to numpy array
         """
         assert self.step_type == RLStep.EVAL or self.disable_training
-        input = np.asarray(input, dtype=np.float32)
-        assert input.shape[1:] == self.observation_space.shape, f'{input.shape[1:]} {self.observation_space.shape}'
+        assert obs.shape[1:] == self.observation_space.shape, f'{obs.shape[1:]} {self.observation_space.shape}'
         self.step_type = RLStep.REWARD
-        return input
+        return obs
 
-    def _check_rewards(self, rewards):
+    def _check_rewards(self, rewards: torch.Tensor) -> torch.Tensor:
         """
         Check if rewards have correct shape and type and convert them to numpy array.
             Also check if it's allowed to call that function in current `self.step_type`
@@ -142,12 +142,11 @@ class RLBase:
         Returns: Rewards converted to numpy array
         """
         assert self.step_type == RLStep.REWARD
-        rewards = np.asarray(rewards, dtype=np.float32).reshape(-1)
         assert rewards.shape == (self.num_actors,), f'wrong reward {rewards} shape {rewards.shape}'
         self.step_type = RLStep.FINISH
         return rewards
 
-    def _check_dones(self, done):
+    def _check_dones(self, done: torch.Tensor) -> torch.Tensor:
         """
         Check if done flags have correct shape and type and convert them to numpy array.
             Also check if it's allowed to call that function in current `self.step_type`
@@ -157,7 +156,6 @@ class RLBase:
         Returns: Episode end flags converted to numpy array
         """
         assert self.step_type == RLStep.FINISH
-        done = np.asarray(done, dtype=bool).reshape(-1)
         assert done.shape == (self.num_actors,)
         self.step_type = RLStep.EVAL
         return done

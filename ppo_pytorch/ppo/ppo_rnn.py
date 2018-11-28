@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch.nn.utils import clip_grad_norm_
 
-from .ppo import PPO, TrainingData
+from .ppo import PPO
 from ..models import RNNActor
 from ..models.heads import HeadOutput
 from ..models.utils import image_to_float
@@ -20,7 +20,7 @@ class PPO_RNN(PPO):
         self._rnn_data = RNNData([], [])
         assert (self.horizon * self.num_actors) % self.batch_size == 0
 
-    def _reorder_data(self, data) -> TrainingData:
+    def _reorder_data(self, data):
         def reorder(input):
             if input is None:
                 return None
@@ -51,7 +51,7 @@ class PPO_RNN(PPO):
             self._rnn_data.memory.append(next_mem)
             self._rnn_data.dones.append(dones[0])
 
-        return HeadOutput(probs=ac_out.probs.squeeze(0), state_value=ac_out.state_value.squeeze(0))
+        return HeadOutput(probs=ac_out.probs.squeeze(0), state_values=ac_out.state_values.squeeze(0))
 
     def _ppo_update(self, data):
         self.model.train()
@@ -114,9 +114,9 @@ class PPO_RNN(PPO):
                     # (actors * steps, probs)
                     probs = actor_out.probs.transpose(0, 1).contiguous().view(-1, actor_out.probs.shape[2])
                     # (actors * steps)
-                    state_value = actor_out.state_value.transpose(0, 1).contiguous().view(-1)
+                    state_values = actor_out.state_values.transpose(0, 1).contiguous().view(-1)
                     # get loss
-                    loss, kl = self._get_ppo_loss(probs, po, state_value, vo, ac, adv, ret)
+                    loss, kl = self._get_ppo_loss(probs, po, state_values, vo, ac, adv, ret)
                     # loss_vat = get_vat_loss(
                     #     lambda x: self.model(x.view_as(st), mem, done)[0].probs.view_as(probs),
                     #     st.view(-1, *st.shape[2:]),

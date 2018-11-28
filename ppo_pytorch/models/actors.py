@@ -11,6 +11,7 @@ from .heads import HeadBase, HeadOutput
 from .norm_factory import NormFactory
 from .utils import weights_init
 from ..common.probability_distributions import make_pd, ProbabilityDistribution
+from ..common.attr_dict import AttrDict
 import torch
 import torch.nn.functional as F
 
@@ -108,7 +109,7 @@ class Actor(nn.Module):
         self.heads = self._create_heads('heads', hc_size, self.pd, self.head_factory)
 
     def _create_heads(self, head_name, hc_size, pd, head_factory):
-        heads = head_factory(hc_size, pd)
+        heads = AttrDict(head_factory(hc_size, pd))
         for name, head in heads.items():
             self.add_module(f'{head_name}_{name}', head)
         return heads

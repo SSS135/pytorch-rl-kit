@@ -1,10 +1,8 @@
 import math
 import pprint
-from collections import namedtuple
 from copy import deepcopy
 from functools import partial
 from pathlib import Path
-from typing import Dict
 
 import gym.spaces
 import numpy as np
@@ -15,8 +13,7 @@ import torch.optim as optim
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 
-from ..common.barron_loss import barron_loss, barron_loss_derivative
-from ..common.gae import calc_advantages, calc_returns
+from ..common.barron_loss import barron_loss
 from ..common.opt_clip import opt_clip
 from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
@@ -24,96 +21,7 @@ from ..common.pop_art import PopArt
 from ..common.attr_dict import AttrDict
 from ..models import FCActor, Actor
 from ..models.heads import PolicyHead, StateValueHead
-
-
-class StepsProcessor:
-    def __init__(self,
-                 pd,
-                 reward_discount,
-                 advantage_discount,
-                 reward_scale,
-                 mean_norm,
-                 barron_alpha_c,
-                 entropy_reward_scale):
-        super().__init__()
-        self.pd = pd
-        self.reward_discount = reward_discount
-        self.advantage_discount = advantage_discount
-        self.reward_scale = reward_scale
-        self.mean_norm = mean_norm
-        self.barron_alpha_c = barron_alpha_c
-        self.entropy_reward_scale = entropy_reward_scale
-        self.data = AttrDict()
-
-    def append(self, head: Dict[str, torch.Tensor], **kwargs: torch.Tensor):
-        assert len(head.keys() & kwargs.keys()) == 0
-        data = head.items() | kwargs.items()
-        for k, v in data:
-            if k not in self.data:
-                self.data[k] = []
-            self.data[k].append(v.cpu())
-
-    def _process_sample(self):
-        # convert list to numpy array
-        # (seq, num_actors, ...)
-        rewards = torch.tensor(self.data.rewards, dtype=torch.float)
-        values_old = torch.tensor(self.data.values, dtype=torch.float)
-        dones = torch.tensor(self.data.dones, dtype=torch.float)
-        probs_old = torch.tensor(self.data.probs[:-1], dtype=torch.float)
-        actions = torch.tensor(self.data.actions[:-1], dtype=self.pd.dtype)
-        if self.data.states is not None:
-            if torch.is_tensor(self.data.states):
-                states = torch.tensor(self.data.states[:-1], dtype=torch.float)
-            else:
-                states = torch.stack(self.data.states[:-1], dim=0)
-        else:
-            states = None
-
-        return self._process_sample_tensors(rewards, values_old, dones, probs_old, actions, states)
-
-    def _process_sample_tensors(self, rewards, values_old, dones, probs_old, actions, states):
-
-        if self.entropy_reward_scale != 0:
-            entropy = self.pd.entropy(probs_old).mean(-1) * rewards.pow(2).mean().sqrt()
-            rewards += self.entropy_reward_scale * entropy
-
-        rewards, returns, advantages = self._process_rewards(rewards, values_old, dones)
-
-        # flatten
-        states = states.view(-1, *states.shape[2:]) if states is not None else None
-        values_old = values_old[:-1].reshape(-1)
-        dones = dones.reshape(-1)
-        returns = returns.reshape(-1)
-        advantages = advantages.reshape(-1)
-        rewards = rewards.reshape(-1)
-        probs_old, actions = [v.reshape(-1, v.shape[-1]) for v in (probs_old, actions)]
-
-        return TrainingData(states, probs_old, values_old, actions, advantages, returns, dones, rewards)
-
-    def _process_rewards(self, rewards, values, dones):
-        norm_rewards = self.reward_scale * rewards
-
-        # calculate returns and advantages
-        returns = calc_returns(norm_rewards, values, dones, self.reward_discount)
-        advantages = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
-        if self.mean_norm:
-            advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-3)
-        else:
-            advantages = advantages / max(advantages.pow(2).mean().sqrt(), 1e-3)
-        advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
-
-        return norm_rewards, returns, advantages
-
-    @staticmethod
-    def _append_to_sample(sample, states, rewards, dones, actions, probs, values):
-        # add step to history
-        if len(sample.states) != 0:
-            sample.rewards.append(rewards)
-            sample.dones.append(dones)
-        sample.states.append(states.cpu())
-        sample.probs.append(probs)
-        sample.values.append(values)
-        sample.actions.append(actions)
+from .steps_processor import StepsProcessor
 
 
 class PPO(RLBase):
@@ -255,8 +163,6 @@ class PPO(RLBase):
         assert not image_observation or \
                isinstance(observation_space, gym.spaces.Box) and len(observation_space.shape) == 3
 
-        self.sample = self._create_new_sample()
-
         if model_init_path is None:
             self.model: Actor = model_factory(observation_space, action_space, self._head_factory, hidden_code_type=hidden_code_type)
         else:
@@ -266,12 +172,13 @@ class PPO(RLBase):
         self.lr_scheduler = lr_scheduler_factory(self.optimizer) if lr_scheduler_factory is not None else None
         self.clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
         self.entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
-        self.last_model_save_frame = 0
+        self._last_model_save_frame = 0
         self._pop_art = PopArt()
+        self._steps_processor = self._create_steps_processor()
 
     @staticmethod
     def _head_factory(hidden_size, pd):
-        return dict(probs=PolicyHead(hidden_size, pd), state_value=StateValueHead(hidden_size))
+        return dict(probs=PolicyHead(hidden_size, pd), state_values=StateValueHead(hidden_size))
 
     @property
     def _learning_rate(self):
@@ -299,9 +206,9 @@ class PPO(RLBase):
         actions = self.model.pd.sample(ac_out.probs).cpu()
 
         if not self.disable_training:
-            self.sample.append(ac_out, states=states, rewards=rewards, dones=dones, actions=actions)
+            self._steps_processor.append(ac_out, states=states, rewards=rewards, dones=dones, actions=actions)
 
-            if len(self.sample.rewards) >= self.horizon:
+            if len(self._steps_processor.data.states) > self.horizon:
                 self._pre_train()
                 self._train()
 
@@ -324,13 +231,13 @@ class PPO(RLBase):
             self.entropy_decay.step(self.frame)
 
     def _train(self):
-        data = self._process_sample(self.sample)
-        self._log_training_data(data)
-        self._ppo_update(data)
+        self._steps_processor.complete()
+        self._log_training_data(self._steps_processor.data)
+        self._ppo_update(self._steps_processor.data)
         self._check_save_model()
-        self.sample = self._create_new_sample()
+        self._steps_processor = self._create_steps_processor()
 
-    def _log_training_data(self, data):
+    def _log_training_data(self, data: AttrDict):
         if self._do_log:
             if data.states.dim() == 4:
                 if data.states.shape[1] in (1, 3):
@@ -347,31 +254,31 @@ class PPO(RLBase):
             self.logger.add_histogram('rewards', data.rewards, self.frame)
             self.logger.add_histogram('returns', data.returns, self.frame)
             self.logger.add_histogram('advantages', data.advantages, self.frame)
-            self.logger.add_histogram('values', data.values_old, self.frame)
+            self.logger.add_histogram('values', data.state_values, self.frame)
             if isinstance(self.model.pd, DiagGaussianPd):
-                mean, std = data.probs_old.chunk(2, dim=1)
+                mean, std = data.probs.chunk(2, dim=1)
                 self.logger.add_histogram('probs mean', mean, self.frame)
                 self.logger.add_histogram('probs std', std, self.frame)
             else:
-                self.logger.add_histogram('probs', F.log_softmax(data.probs_old, dim=-1), self.frame)
+                self.logger.add_histogram('probs', F.log_softmax(data.probs, dim=-1), self.frame)
             for name, param in self.model.named_parameters():
                 self.logger.add_histogram(name, param, self.frame)
 
-    @staticmethod
-    def _create_new_sample() -> Sample:
-        return Sample()
+    def _create_steps_processor(self) -> StepsProcessor:
+        return StepsProcessor(self.model.pd, self.reward_discount, self.advantage_discount,
+                              self.reward_scale, True, self.barron_alpha_c, self.entropy_reward_scale)
 
-    def _ppo_update(self, data: TrainingData):
+    def _ppo_update(self, data: AttrDict):
         # move model to cuda or cpu
         self.model = self.model.to(self.device_train).train()
 
         old_model = deepcopy(self.model)
 
         returns_mean, returns_std = self._pop_art.update_statistics(data.returns)
-        self.model.heads['state_value'].normalize(returns_mean, returns_std)
+        self.model.heads.state_values.normalize(returns_mean, returns_std)
 
         data = (data.states.pin_memory() if self.device_train.type == 'cuda' else data.states,
-                data.probs_old, (data.values_old - returns_mean) / returns_std, data.actions, data.advantages,
+                data.probs, (data.state_values - returns_mean) / returns_std, data.actions, data.advantages,
                 (data.returns - returns_mean) / returns_std)
         batches = max(1, math.ceil(self.num_actors * self.horizon / self.batch_size))
 
@@ -410,7 +317,7 @@ class PPO(RLBase):
         for g, lr in zip(self.optimizer.param_groups, initial_lr):
             g['lr'] = lr
 
-        self.model.heads['state_value'].unnormalize(returns_mean, returns_std)
+        self.model.heads.state_values.unnormalize(returns_mean, returns_std)
 
     def _norm_diff(self, old_model, new_model, norm_type: float=2) -> float:
         norm = 0
@@ -427,7 +334,7 @@ class PPO(RLBase):
         with torch.enable_grad():
             actor_out = self.model(states)
             probs = actor_out.probs
-            values = actor_out.state_value
+            values = actor_out.state_values
             # get loss
             loss, kl = self._get_ppo_loss(probs, probs_old, values, values_old, actions, advantages, returns)
             loss = loss.mean()
@@ -544,13 +451,13 @@ class PPO(RLBase):
         self.logger.add_text('Model', str(self.model))
 
     def drop_collected_steps(self):
-        self.sample = self._create_new_sample()
+        self._steps_processor = self._create_steps_processor()
 
     def _check_save_model(self):
         if self.model_save_interval is None or \
-           self.last_model_save_frame + self.model_save_interval > self.frame:
+           self._last_model_save_frame + self.model_save_interval > self.frame:
             return
-        self.last_model_save_frame = self.frame
+        self._last_model_save_frame = self.frame
         if self.save_intermediate_models:
             name = f'{self.model_save_tag}_{self.actor_index}_{self.frame}'
         else:
