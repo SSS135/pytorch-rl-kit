@@ -19,6 +19,7 @@ from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
 from ..common.pop_art import PopArt
 from ..common.attr_dict import AttrDict
+from ..common.data_loader import DataLoader
 from ..models import FCActor, Actor
 from ..models.heads import PolicyHead, StateValueHead
 from .steps_processor import StepsProcessor
@@ -172,6 +173,7 @@ class PPO(RLBase):
         self._last_model_save_frame = 0
         self._pop_art = PopArt()
         self._steps_processor = self._create_steps_processor()
+        self.model = self.model.to(self.device_eval, non_blocking=True).eval()
 
     @staticmethod
     def _head_factory(hidden_size, pd):
@@ -189,8 +191,6 @@ class PPO(RLBase):
         # move network to cuda or cpu
         orig_grad_enabled = torch.is_grad_enabled()
         torch.set_grad_enabled(False)
-
-        self.model = self.model.to(self.device_eval)
 
         # run network
         ac_out = self._take_step(cur_states.to(self.device_eval), dones)
@@ -263,7 +263,7 @@ class PPO(RLBase):
 
     def _ppo_update(self, data: AttrDict):
         # move model to cuda or cpu
-        self.model = self.model.to(self.device_train).train()
+        self.model = self.model.to(self.device_train, non_blocking=True).train()
 
         old_model = deepcopy(self.model)
 
@@ -273,48 +273,46 @@ class PPO(RLBase):
         else:
             returns_mean, returns_std = 0, 1
 
-        data = (data.states.pin_memory() if self.device_train.type == 'cuda' else data.states,
-                data.probs, (data.state_values - returns_mean) / returns_std, data.actions, data.advantages,
-                (data.returns - returns_mean) / returns_std)
+        data = [data.states, data.probs, (data.state_values - returns_mean) / returns_std,
+                data.actions, data.advantages, (data.returns - returns_mean) / returns_std]
+
         batches = max(1, math.ceil(self.num_actors * self.horizon / self.batch_size))
 
         initial_lr = [g['lr'] for g in self.optimizer.param_groups]
 
-        for ppo_iter in range(self.ppo_iters):
-            # norm_diff = self._norm_diff(old_model, self.model)
-            # max_norm = 1.0
-            # if norm_diff > max_norm:
-            #     for old, new in zip(old_model.state_dict().values(), self.model.state_dict().values()):
-            #         new.data.copy_(old + (new - old) * (max_norm / norm_diff))
+        rand_idx = torch.randperm(len(data[0]) * self.ppo_iters, device=self.device_train)
+        rand_idx = rand_idx.fmod_(len(data[0])).chunk(batches * self.ppo_iters)
 
-            rand_idx = torch.randperm(len(data[0])).to(self.device_train)
-            for loader_iter in range(batches):
-                # prepare batch data
-                batch_idx = rand_idx[loader_iter * self.batch_size: (loader_iter + 1) * self.batch_size]
-                st, po, vo, ac, adv, ret = [x[batch_idx].to(self.device_train) for x in data]
-                if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
-                    self.model.set_log(self.logger, self._do_log, self.step)
+        with DataLoader(data, rand_idx, self.device_train, 4) as data_loader:
+            for ppo_iter in range(self.ppo_iters):
+                for loader_iter in range(batches):
+                    # prepare batch data
+                    st, po, vo, ac, adv, ret = data_loader.get_next_batch()
+                    if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
+                        self.model.set_log(self.logger, self._do_log, self.step)
 
-                loss, kl = self._ppo_step(st, po, vo, ac, adv, ret)
+                    loss, kl = self._ppo_step(st, po, vo, ac, adv, ret)
 
-                self.model.set_log(self.logger, False, self.step)
+                    self.model.set_log(self.logger, False, self.step)
 
-            if self._do_log and ppo_iter == self.ppo_iters - 1:
-                self.logger.add_scalar('learning rate', self._learning_rate, self.frame)
-                self.logger.add_scalar('clip mult', self._clip_mult, self.frame)
-                self.logger.add_scalar('total loss', loss, self.frame)
-                self.logger.add_scalar('kl', kl, self.frame)
-                self.logger.add_scalar('param diff norm', self._norm_diff(old_model, self.model), self.frame)
-                self.logger.add_scalar('param diff inf norm', self._norm_diff(old_model, self.model, math.inf), self.frame)
+                if self._do_log and ppo_iter == self.ppo_iters - 1:
+                    self.logger.add_scalar('learning rate', self._learning_rate, self.frame)
+                    self.logger.add_scalar('clip mult', self._clip_mult, self.frame)
+                    self.logger.add_scalar('total loss', loss, self.frame)
+                    self.logger.add_scalar('kl', kl, self.frame)
+                    self.logger.add_scalar('param diff norm', self._norm_diff(old_model, self.model), self.frame)
+                    self.logger.add_scalar('param diff inf norm', self._norm_diff(old_model, self.model, math.inf), self.frame)
 
-            for g in self.optimizer.param_groups:
-                g['lr'] *= self.lr_iter_mult
+                for g in self.optimizer.param_groups:
+                    g['lr'] *= self.lr_iter_mult
 
         for g, lr in zip(self.optimizer.param_groups, initial_lr):
             g['lr'] = lr
 
         if self.use_pop_art:
             self.model.heads.state_values.unnormalize(returns_mean, returns_std)
+
+        self.model = self.model.to(self.device_eval, non_blocking=True).eval()
 
     def _norm_diff(self, old_model, new_model, norm_type: float=2) -> float:
         norm = 0
@@ -350,6 +348,9 @@ class PPO(RLBase):
         Single iteration of PPO algorithm.
         Returns: Total loss and KL divergence.
         """
+
+        # probs, probs_old, values, values_old, actions, advantages, returns = \
+        #     [x.cpu() for x in (probs, probs_old, values, values_old, actions, advantages, returns)]
 
         if pd is None:
             pd = self.model.pd
