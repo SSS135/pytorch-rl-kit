@@ -2,7 +2,8 @@
 # https://github.com/openai/baselines/blob/master/baselines/common/distributions.py
 
 import math
-from typing import Tuple, Optional
+from functools import partial
+from typing import Tuple, Optional, Callable
 
 import gym.spaces
 import numpy as np
@@ -18,8 +19,9 @@ def make_pd(space: gym.Space):
         return CategoricalPd(space.n)
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
-        return FixedStdGaussianPd(space.shape[0], 0.3)
+        # return FixedStdGaussianPd(space.shape[0], 0.3)
         # return BetaPd(space.shape[0], 1)
+        return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     else:
@@ -224,7 +226,7 @@ class DiagGaussianPd(ProbabilityDistribution):
 
 
 class BetaPd(ProbabilityDistribution):
-    def __init__(self, d, h, eps=1e-3):
+    def __init__(self, d, h, eps=1e-7):
         self.d = d
         self.h = h
         self.eps = eps
@@ -276,12 +278,12 @@ class BetaPd(ProbabilityDistribution):
         return Beta(*prob.chunk(2, -1))
 
 
-class GaussianMixturePd(ProbabilityDistribution):
-    def __init__(self, d, num_mixtures=16, eps=1e-6):
+class MixturePd(ProbabilityDistribution):
+    def __init__(self, d, num_mixtures=8, pd_type: Callable=DiagGaussianPd, eps=1e-6):
         self.d = d
         self.num_mixtures = num_mixtures
         self.eps = eps
-        self._gpd = DiagGaussianPd(d)
+        self._mix_pd = pd_type(d)
         self._cpd = CategoricalPd(num_mixtures)
 
     @property
@@ -301,34 +303,34 @@ class GaussianMixturePd(ProbabilityDistribution):
         return torch.float
 
     def logp(self, x, prob):
-        logw, gaussians = self._split_prob(prob)
-        logp = self._gpd.logp(x.unsqueeze(-2), gaussians) + F.log_softmax(logw, -1).unsqueeze(-1)
+        logw, mix_prob = self._split_prob(prob)
+        logp = self._mix_pd.logp(x.unsqueeze(-2), mix_prob).mean(-1, keepdim=True) + F.log_softmax(logw, -1).unsqueeze(-1)
         return logp.mean(-2)
 
     def kl(self, prob1, prob2):
-        logw1, gaussians1 = self._split_prob(prob1)
-        logw2, gaussians2 = self._split_prob(prob2)
-        kl = self._gpd.kl(gaussians1, gaussians2) + self._cpd.kl(logw1, logw2)
+        logw1, mix_prob_1 = self._split_prob(prob1)
+        logw2, mix_prob_2 = self._split_prob(prob2)
+        kl = self._mix_pd.kl(mix_prob_1, mix_prob_2).mean(-1, keepdim=True) + self._cpd.kl(logw1, logw2).unsqueeze(-1)
         return kl.mean(-2)
 
     def entropy(self, prob):
-        logw, gaussians = self._split_prob(prob)
-        ent = self._gpd.entropy(gaussians) + self._cpd.entropy(logw)
+        logw, mix_prob = self._split_prob(prob)
+        ent = self._mix_pd.entropy(mix_prob).mean(-1, keepdim=True) + self._cpd.entropy(logw).unsqueeze(-1)
         return ent.mean(-2)
 
     def sample(self, prob):
-        logw, gaussians = self._split_prob(prob.view(-1, prob.shape[-1]))
+        logw, mix_prob = self._split_prob(prob.view(-1, prob.shape[-1]))
         # (..., 1)
         mixture_idx = self._cpd.sample(logw)
-        rep = *((gaussians.dim() - 1) * [1]), gaussians.shape[-1]
+        rep = *((mix_prob.dim() - 1) * [1]), mix_prob.shape[-1]
         index = mixture_idx.unsqueeze(-1).repeat(rep)
-        selected = gaussians.gather(dim=-2, index=index).squeeze(-2)
-        sample = self._gpd.sample(selected)
+        selected = mix_prob.gather(dim=-2, index=index).squeeze(-2)
+        sample = self._mix_pd.sample(selected)
         return sample.view(*prob.shape[:-1], sample.shape[-1])
 
     def mean(self, prob):
-        logw, gaussians = self._split_prob(prob)
-        mean = gaussians[..., :self.d]
+        logw, mix_prob = self._split_prob(prob)
+        mean = mix_prob[..., :self.d]
         w = F.softmax(logw, -1).unsqueeze(-1)
         return (mean * w).sum(-2)
 
@@ -337,11 +339,11 @@ class GaussianMixturePd(ProbabilityDistribution):
     #     return 0.01
 
     def _split_prob(self, prob):
-        logw, gaussians = prob.split([self.num_mixtures, self.d * 2 * self.num_mixtures], dim=-1)
-        gaussians = gaussians.contiguous().view(*gaussians.shape[:-1], self.num_mixtures, self.d * 2)
+        logw, mix_prob = prob.split([self.num_mixtures, self.d * 2 * self.num_mixtures], dim=-1)
+        mix_prob = mix_prob.contiguous().view(*mix_prob.shape[:-1], self.num_mixtures, self.d * 2)
         # logw - (..., n)
-        # gaussians - (..., n, d * 2)
-        return logw, gaussians
+        # mix_prob - (..., n, d * 2)
+        return logw, mix_prob
 
 
 class FixedStdGaussianPd(ProbabilityDistribution):

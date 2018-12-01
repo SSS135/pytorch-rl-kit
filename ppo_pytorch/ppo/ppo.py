@@ -183,18 +183,6 @@ class PPO(RLBase):
         self._train_model = self._train_model.to(self.device_eval, non_blocking=True).train()
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
-    @staticmethod
-    def _head_factory(hidden_size, pd):
-        return dict(probs=PolicyHead(hidden_size, pd), state_values=StateValueHead(hidden_size))
-
-    @property
-    def _learning_rate(self):
-        return self._optimizer.param_groups[0]['lr']
-
-    @property
-    def _clip_mult(self):
-        return self._clip_decay.value if self._clip_decay is not None else 1
-
     def _step(self, prev_states, rewards, dones, cur_states) -> torch.Tensor:
         with torch.no_grad():
             # run network
@@ -229,47 +217,16 @@ class PPO(RLBase):
         data = self._steps_processor.data
         self._steps_processor = self._create_steps_processor()
 
-        # self._train_async(data)
-        if self._train_future is not None:
-            self._train_future.result()
-        self._train_future = self._train_executor.submit(self._train_async, data)
+        self._train_async(data)
+        # if self._train_future is not None:
+        #     self._train_future.result()
+        # self._train_future = self._train_executor.submit(self._train_async, data)
 
     def _train_async(self, data):
         with torch.no_grad():
             self._log_training_data(data)
             self._ppo_update(data)
             self._check_save_model()
-
-    def _log_training_data(self, data: AttrDict):
-        if self._do_log:
-            if data.states.dim() == 4:
-                if data.states.shape[1] in (1, 3):
-                    img = data.states[:4]
-                    nrow = 2
-                else:
-                    img = data.states[:4]
-                    img = img.view(-1, *img.shape[2:]).unsqueeze(1)
-                    nrow = data.states.shape[1]
-                if data.states.dtype == torch.uint8:
-                    img = img.float() / 255
-                img = make_grid(img, nrow=nrow, normalize=False)
-                self.logger.add_image('state', img, self.frame)
-            self.logger.add_histogram('rewards', data.rewards, self.frame)
-            self.logger.add_histogram('returns', data.returns, self.frame)
-            self.logger.add_histogram('advantages', data.advantages, self.frame)
-            self.logger.add_histogram('values', data.state_values, self.frame)
-            if isinstance(self._train_model.pd, DiagGaussianPd):
-                mean, std = data.probs.chunk(2, dim=1)
-                self.logger.add_histogram('probs mean', mean, self.frame)
-                self.logger.add_histogram('probs std', std, self.frame)
-            else:
-                self.logger.add_histogram('probs', F.log_softmax(data.probs, dim=-1), self.frame)
-            for name, param in self._train_model.named_parameters():
-                self.logger.add_histogram(name, param, self.frame)
-
-    def _create_steps_processor(self) -> StepsProcessor:
-        return StepsProcessor(self._train_model.pd, self.reward_discount, self.advantage_discount,
-                              self.reward_scale, True, self.barron_alpha_c, self.entropy_reward_scale)
 
     def _ppo_update(self, data: AttrDict):
         if self.use_pop_art:
@@ -321,7 +278,7 @@ class PPO(RLBase):
             returns_mean, returns_std = self._pop_art.statistics
             self._train_model.heads.state_values.unnormalize(returns_mean, returns_std)
 
-        self._update_eval_model()
+        self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
     def _ppo_step(self, states, probs_old, values_old, actions, advantages, returns):
         with torch.enable_grad():
@@ -346,9 +303,6 @@ class PPO(RLBase):
         Single iteration of PPO algorithm.
         Returns: Total loss and KL divergence.
         """
-
-        # probs, probs_old, values, values_old, actions, advantages, returns = \
-        #     [x.cpu() for x in (probs, probs_old, values, values_old, actions, advantages, returns)]
 
         if pd is None:
             pd = self._train_model.pd
@@ -384,10 +338,7 @@ class PPO(RLBase):
 
         # entropy bonus for better exploration
         entropy = pd.entropy(probs)
-        # entropy_old = pd.entropy(probs_old)
-
         loss_ent = -self.entropy_loss_scale * entropy
-        # loss_ent[(entropy > entropy_old + self.entropy_bonus).detach()] = 0
 
         kl = pd.kl(probs_old, probs)
         if 'kl' in self.constraint:
@@ -442,6 +393,18 @@ class PPO(RLBase):
 
         return total_loss, kl.mean()
 
+    @staticmethod
+    def _head_factory(hidden_size, pd):
+        return dict(probs=PolicyHead(hidden_size, pd), state_values=StateValueHead(hidden_size))
+
+    @property
+    def _learning_rate(self):
+        return self._optimizer.param_groups[0]['lr']
+
+    @property
+    def _clip_mult(self):
+        return self._clip_decay.value if self._clip_decay is not None else 1
+
     def _log_set(self):
         self.logger.add_text('PPO', pprint.pformat(self._init_args))
         self.logger.add_text('Model', str(self._train_model))
@@ -459,7 +422,7 @@ class PPO(RLBase):
         self._save_model(path)
 
     def _save_model(self, path):
-        print(f'saving model at {self.frame} step to {path}')
+        # print(f'saving model at {self.frame} step to {path}')
         model = deepcopy(self._train_model).cpu()
         try:
             torch.save(model, path)
@@ -481,9 +444,36 @@ class PPO(RLBase):
             if e.errno != errno.EEXIST:
                 raise
 
-    def _update_eval_model(self):
-        for train, eval in zip(self._train_model.state_dict().values(), self._eval_model.state_dict().values()):
-            eval.data.copy_(train.data)
+    def _log_training_data(self, data: AttrDict):
+        if self._do_log:
+            if data.states.dim() == 4:
+                if data.states.shape[1] in (1, 3):
+                    img = data.states[:4]
+                    nrow = 2
+                else:
+                    img = data.states[:4]
+                    img = img.view(-1, *img.shape[2:]).unsqueeze(1)
+                    nrow = data.states.shape[1]
+                if data.states.dtype == torch.uint8:
+                    img = img.float() / 255
+                img = make_grid(img, nrow=nrow, normalize=False)
+                self.logger.add_image('state', img, self.frame)
+            self.logger.add_histogram('rewards', data.rewards, self.frame)
+            self.logger.add_histogram('returns', data.returns, self.frame)
+            self.logger.add_histogram('advantages', data.advantages, self.frame)
+            self.logger.add_histogram('values', data.state_values, self.frame)
+            if isinstance(self._train_model.pd, DiagGaussianPd):
+                mean, std = data.probs.chunk(2, dim=1)
+                self.logger.add_histogram('probs mean', mean, self.frame)
+                self.logger.add_histogram('probs std', std, self.frame)
+            else:
+                self.logger.add_histogram('probs', F.log_softmax(data.probs, dim=-1), self.frame)
+            for name, param in self._train_model.named_parameters():
+                self.logger.add_histogram(name, param, self.frame)
+
+    def _create_steps_processor(self) -> StepsProcessor:
+        return StepsProcessor(self._train_model.pd, self.reward_discount, self.advantage_discount,
+                              self.reward_scale, True, self.barron_alpha_c, self.entropy_reward_scale)
 
     def __getstate__(self):
         d = dict(self.__dict__)
