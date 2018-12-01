@@ -58,9 +58,9 @@ class PPO(RLBase):
                  lr_scheduler_factory=None,
                  clip_decay_factory=None,
                  entropy_decay_factory=None,
-                 model_save_folder=None,
+                 model_save_folder='./models',
                  model_save_tag='ppo_model',
-                 model_save_interval=None,
+                 model_save_interval=100_000,
                  model_init_path=None,
                  save_intermediate_models=False,
                  use_pop_art=False,
@@ -456,8 +456,15 @@ class PPO(RLBase):
 
         self._create_save_folder()
         path = self._get_save_path()
-        print('saving to path', path)
-        torch.save(self._train_model.cpu(), path)
+        self._save_model(path)
+
+    def _save_model(self, path):
+        print(f'saving model at {self.frame} step to {path}')
+        model = deepcopy(self._train_model).cpu()
+        try:
+            torch.save(model, path)
+        except OSError as e:
+            print('error while saving model', e)
 
     def _get_save_path(self):
         self._last_model_save_frame = self.frame

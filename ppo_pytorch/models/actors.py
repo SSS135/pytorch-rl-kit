@@ -126,8 +126,8 @@ class Actor(nn.Module):
 
     def __getstate__(self):
         d = dict(self.__dict__)
-        del d['logger']
-        del d['_thread_local']
+        d['logger'] = None
+        d['_thread_local'] = None
         return d
 
     def __setstate__(self, d):
