@@ -13,7 +13,7 @@ def make_conv_heatmap(x, scale=0.5):
     Returns: Blue-black-yellow images
     """
     img = x.repeat(1, 3, 1, 1).fill_(0)
-    x = F.tanh(x * scale).squeeze(1)
+    x = torch.tanh(x * scale).squeeze(1)
     img[:, 0] = img[:, 1] = x.clamp(0, 1)
     img[:, 2] = -x.clamp(-1, 0)
     return img
@@ -70,3 +70,16 @@ def multiply_gradient(x: torch.Tensor, mul: float) -> torch.Tensor:
     x = mul * x
     x.data /= mul
     return x
+
+
+def model_diff(old_model, new_model, max_diff=False) -> float:
+    norm = 0
+    param_count = 0
+    for old, new in zip(old_model.state_dict().values(), new_model.state_dict().values()):
+        if max_diff:
+            norm = max(norm, (new - old).abs().max().item())
+            param_count = 1
+        else:
+            norm += (new - old).abs().mean().item()
+            param_count += 1
+    return norm / param_count

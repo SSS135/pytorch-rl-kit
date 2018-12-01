@@ -9,6 +9,7 @@ from .actors import Actor
 from .heads import HeadOutput
 from .utils import make_conv_heatmap, image_to_float
 from ..common.make_grid import make_grid
+from optfn.skip_connections import ResidualBlock
 
 
 class GroupTranspose(nn.Module):
@@ -84,6 +85,34 @@ class CNNActor(Actor):
                 self._make_cnn_layer(nf * 32, nf * 8, 3, 1, 1, groups=8),
             ])
             self.linear = self._make_fc_layer(nf * 8 * 4 * 4, 512)
+        elif cnn_kind == 'impala':
+            def impala_block(c_in, c_out):
+                return nn.Sequential(
+                    nn.Conv2d(c_in, c_out, 3, 1, 1),
+                    nn.MaxPool2d(3, 2),
+                    ResidualBlock(
+                        nn.ReLU(),
+                        nn.Conv2d(c_out, c_out, 3, 1, 1),
+                        nn.ReLU(),
+                        nn.Conv2d(c_out, c_out, 3, 1, 1),
+                    ),
+                    ResidualBlock(
+                        nn.ReLU(),
+                        nn.Conv2d(c_out, c_out, 3, 1, 1),
+                        nn.ReLU(),
+                        nn.Conv2d(c_out, c_out, 3, 1, 1),
+                    )
+                )
+            self.convs = nn.Sequential(
+                impala_block(4, 16),
+                impala_block(16, 32),
+                impala_block(32, 32),
+                nn.ReLU(),
+            )
+            self.linear = nn.Sequential(
+                nn.Linear(2592, 256),
+                nn.ReLU(),
+            )
         else:
             raise ValueError(cnn_kind)
 

@@ -14,6 +14,7 @@ from ..common.probability_distributions import make_pd, ProbabilityDistribution
 from ..common.attr_dict import AttrDict
 import torch
 import torch.nn.functional as F
+import threading
 
 
 class Actor(nn.Module):
@@ -43,6 +44,7 @@ class Actor(nn.Module):
         self.weight_init = weight_init
         self.norm = norm
 
+        self._thread_local = threading.local()
         self.do_log = False
         self.logger = None
         self.hidden_code_size = None
@@ -60,6 +62,14 @@ class Actor(nn.Module):
         self.logger = logger
         self.do_log = do_log
         self._step = step
+
+    @property
+    def do_log(self):
+        return self._thread_local.do_log if hasattr(self._thread_local, 'do_log') else False
+
+    @do_log.setter
+    def do_log(self, value):
+        self._thread_local.do_log = value
 
     def reset_weights(self):
         self.apply(partial(weights_init, init_alg=self.weight_init, gain=self.weight_init_gain))
@@ -116,11 +126,13 @@ class Actor(nn.Module):
 
     def __getstate__(self):
         d = dict(self.__dict__)
-        d['logger'] = None
+        del d['logger']
+        del d['_thread_local']
         return d
 
     def __setstate__(self, d):
         self.__dict__ = d
+        self._thread_local = threading.local()
 
 
 class FCActor(Actor):
@@ -145,21 +157,19 @@ class FCActor(Actor):
         self.hidden_code_size = obs_len if hidden_code_type == 'input' else hidden_sizes[-1]
         self._init_heads(hidden_sizes[-1])
         self.linear = self._create_fc(obs_len, None, hidden_sizes, activation, self.norm)
+        self.linear_value = self._create_fc(obs_len, None, hidden_sizes, activation, self.norm)
         self.reset_weights()
 
-    def forward(self, input, hidden_code_input=False, only_hidden_code_output=False):
-        if hidden_code_input and only_hidden_code_output:
-            return HeadOutput(hidden_code=input)
-
+    def _run_linear(self, linear, input, hidden_code_input=False, only_hidden_code_output=False):
         x = input
         hidden_code = None
         if self.hidden_code_type == 'last':
             if hidden_code_input:
                 hidden_code = input
-                x = self.linear[-1][-1](input)
+                x = linear[-1][-1](input)
             else:
-                for i, layer in enumerate(self.linear):
-                    if i + 1 == len(self.linear):
+                for i, layer in enumerate(linear):
+                    if i + 1 == len(linear):
                         hidden_code = layer[:-1](x)
                         if only_hidden_code_output:
                             return HeadOutput(hidden_code=hidden_code)
@@ -169,9 +179,9 @@ class FCActor(Actor):
                     if self.do_log:
                         self.logger.add_histogram(f'layer {i} output', x, self._step)
         else:
-            for i, layer in enumerate(self.linear):
+            for i, layer in enumerate(linear):
                 # x = layer(x) if self.input_as_hidden_code or i != 0 else layer[-1](x)
-                if i == 0: # i + 1 == len(self.linear):
+                if i == 0: # i + 1 == len(linear):
                     hidden_code = x if hidden_code_input and self.hidden_code_type != 'input' else layer[:-1](x)
                     if only_hidden_code_output:
                         return HeadOutput(hidden_code=input if self.hidden_code_type == 'input' else hidden_code)
@@ -180,8 +190,17 @@ class FCActor(Actor):
                     x = layer(x)
                 if self.do_log:
                     self.logger.add_histogram(f'layer {i} output', x, self._step)
+        return x, hidden_code
+
+    def forward(self, input, hidden_code_input=False, only_hidden_code_output=False):
+        if hidden_code_input and only_hidden_code_output:
+            return HeadOutput(hidden_code=input)
+
+        x, hidden_code = self._run_linear(self.linear, input, hidden_code_input, only_hidden_code_output)
+        x_value, _ = self._run_linear(self.linear_value, input, hidden_code_input, only_hidden_code_output)
 
         head = self._run_heads(x)
+        head.state_values = self._run_heads(x_value).state_values
         if self.hidden_code_type == 'input':
             hidden_code = input
         head.hidden_code = hidden_code

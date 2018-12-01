@@ -138,7 +138,7 @@ class PPO_HRNN(PPO_RNN):
 
         data = [x.reshape(num_actors, -1, *x.shape[1:]).to(self.device_train) for x in data]
 
-        initial_lr = [g['lr'] for g in self.optimizer.param_groups]
+        initial_lr = [g['lr'] for g in self._optimizer.param_groups]
 
         for ppo_iter in range(self.ppo_iters):
             actor_index_chunks = torch.randperm(num_actors).to(self.device_train).chunk(batches)
@@ -166,8 +166,8 @@ class PPO_HRNN(PPO_RNN):
                 loss.backward()
                 if self.grad_clip_norm is not None:
                     clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-                self.optimizer.step()
-                self.optimizer.zero_grad()
+                self._optimizer.step()
+                self._optimizer.zero_grad()
 
                 self.model.set_log(self.logger, False, self.step)
 
@@ -178,10 +178,10 @@ class PPO_HRNN(PPO_RNN):
                 self.logger.add_scalar('kl', kl_l1, self.frame)
                 self.logger.add_scalar('kl_l2', kl_l2, self.frame)
 
-            for g in self.optimizer.param_groups:
+            for g in self._optimizer.param_groups:
                 g['lr'] *= self.lr_iter_mult
 
-        for g, lr in zip(self.optimizer.param_groups, initial_lr):
+        for g, lr in zip(self._optimizer.param_groups, initial_lr):
             g['lr'] = lr
 
     def _hrnn_step(self, st, po_l1, po_l2, vo_l1, vo_l2, ac_l1, ac_l2_inp, adv_l1, adv_l2, ret_l1, ret_l2, st_d, mem, done):

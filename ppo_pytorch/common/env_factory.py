@@ -6,6 +6,7 @@ import gym.spaces as spaces
 import numpy as np
 from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
+from .online_normalizer import OnlineNormalizer
 
 from .atari_wrappers import NoopResetEnv, MaxAndSkipEnv, EpisodicLifeEnv, FireResetEnv, ScaledFloatFrame, ClipRewardEnv, \
     FrameStack
@@ -77,12 +78,18 @@ class AtariVecEnv(NamedVecEnv):
 
 
 class SimpleVecEnv(NamedVecEnv):
+    def __init__(self, env_name, observation_norm=True, parallel='thread'):
+        self.observation_norm = observation_norm
+        super().__init__(env_name, parallel)
+
     def get_env_fn(self):
-        def make(env_name):
+        def make(env_name, observation_norm):
             env = gym.make(env_name)
             env = Monitor(env)
+            if observation_norm:
+                env = ObservationNorm(env)
             return env
-        return partial(make, self.env_name)
+        return partial(make, self.env_name, self.observation_norm)
 
 
 class ChannelTranspose(gym.ObservationWrapper):
@@ -112,3 +119,14 @@ class SimplifyFrame(gym.ObservationWrapper):
         resize_shape = self.observation_space.shape[1], self.observation_space.shape[0]
         frame = cv2.resize(frame, resize_shape, interpolation=cv2.INTER_AREA)
         return np.expand_dims(frame, -1) if self.grayscale else frame
+
+
+class ObservationNorm(gym.ObservationWrapper):
+    def __init__(self, env, eps=(1e-3, 1e5), absmax=5, scale=True, center=True, single_value=True):
+        super().__init__(env)
+        self._norm = OnlineNormalizer(eps, absmax, scale, center, single_value)
+        obs = env.observation_space.shape
+        self.observation_space = spaces.Box(low=-absmax, high=absmax, shape=obs, dtype=np.float32)
+
+    def observation(self, frame):
+        return self._norm(frame)

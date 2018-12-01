@@ -124,8 +124,8 @@ class PPO_RNN(PPO):
                 loss.backward()
                 if self.grad_clip_norm is not None:
                     clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-                self.optimizer.step()
-                self.optimizer.zero_grad()
+                self._optimizer.step()
+                self._optimizer.zero_grad()
 
                 self.model.set_log(self.logger, False, self.step)
 

@@ -18,7 +18,8 @@ def make_pd(space: gym.Space):
         return CategoricalPd(space.n)
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
-        return BetaPd(space.shape[0], 1)
+        return FixedStdGaussianPd(space.shape[0], 0.3)
+        # return BetaPd(space.shape[0], 1)
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     else:
@@ -325,7 +326,6 @@ class GaussianMixturePd(ProbabilityDistribution):
         sample = self._gpd.sample(selected)
         return sample.view(*prob.shape[:-1], sample.shape[-1])
 
-
     def mean(self, prob):
         logw, gaussians = self._split_prob(prob)
         mean = gaussians[..., :self.d]
@@ -380,12 +380,12 @@ class FixedStdGaussianPd(ProbabilityDistribution):
         std1 = math.exp(logstd1)
         std2 = math.exp(logstd2)
         kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
-        return kl.mean(-1)
+        return kl
 
     def entropy(self, mean):
         # logvar = prob.new(prob.shape[-1]).fill_(math.log(self.std * self.std))
         # ent = 0.5 * (math.log(2 * math.pi * math.e) + logvar)
-        return mean.new_zeros(mean.shape[:-1])
+        return mean.new_zeros(mean.shape)
 
     def sample(self, mean):
         return torch.normal(mean, self.std)

@@ -1,8 +1,12 @@
 import math
 import pprint
+from asyncio import Future
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from functools import partial
 from pathlib import Path
+from typing import Optional
+import os, errno
 
 import gym.spaces
 import numpy as np
@@ -22,6 +26,7 @@ from ..common.attr_dict import AttrDict
 from ..common.data_loader import DataLoader
 from ..models import FCActor, Actor
 from ..models.heads import PolicyHead, StateValueHead
+from ..models.utils import model_diff
 from .steps_processor import StepsProcessor
 
 
@@ -162,18 +167,21 @@ class PPO(RLBase):
         assert len(set(self.constraint) - {'clip', 'kl', 'opt', 'mse'}) == 0
 
         if model_init_path is None:
-            self.model: Actor = model_factory(observation_space, action_space, self._head_factory, hidden_code_type=hidden_code_type)
+            self._train_model: Actor = model_factory(observation_space, action_space, self._head_factory, hidden_code_type=hidden_code_type)
         else:
-            self.model: Actor = torch.load(model_init_path)
+            self._train_model: Actor = torch.load(model_init_path)
             print(f'loaded model {model_init_path}')
-        self.optimizer = optimizer_factory(self.model.parameters())
-        self.lr_scheduler = lr_scheduler_factory(self.optimizer) if lr_scheduler_factory is not None else None
-        self.clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
-        self.entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
+        self._optimizer = optimizer_factory(self._train_model.parameters())
+        self._lr_scheduler = lr_scheduler_factory(self._optimizer) if lr_scheduler_factory is not None else None
+        self._clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
+        self._entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
         self._last_model_save_frame = 0
         self._pop_art = PopArt()
         self._steps_processor = self._create_steps_processor()
-        self.model = self.model.to(self.device_eval, non_blocking=True).eval()
+        self._train_future: Optional[Future] = None
+        self._train_executor = ThreadPoolExecutor(max_workers=1)
+        self._train_model = self._train_model.to(self.device_eval, non_blocking=True).train()
+        self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
     @staticmethod
     def _head_factory(hidden_size, pd):
@@ -181,54 +189,56 @@ class PPO(RLBase):
 
     @property
     def _learning_rate(self):
-        return self.optimizer.param_groups[0]['lr']
+        return self._optimizer.param_groups[0]['lr']
 
     @property
     def _clip_mult(self):
-        return self.clip_decay.value if self.clip_decay is not None else 1
+        return self._clip_decay.value if self._clip_decay is not None else 1
 
     def _step(self, prev_states, rewards, dones, cur_states) -> torch.Tensor:
-        # move network to cuda or cpu
-        orig_grad_enabled = torch.is_grad_enabled()
-        torch.set_grad_enabled(False)
+        with torch.no_grad():
+            # run network
+            ac_out = self._take_step(cur_states.to(self.device_eval), dones)
+            actions = self._eval_model.pd.sample(ac_out.probs).cpu()
 
-        # run network
-        ac_out = self._take_step(cur_states.to(self.device_eval), dones)
-        actions = self.model.pd.sample(ac_out.probs).cpu()
+            if not self.disable_training:
+                self._steps_processor.append_head(ac_out, states=cur_states, rewards=rewards, dones=dones, actions=actions)
 
-        if not self.disable_training:
-            self._steps_processor.append_head(ac_out, states=cur_states, rewards=rewards, dones=dones, actions=actions)
+                if len(self._steps_processor.data.states) > self.horizon:
+                    self._pre_train()
+                    self._train()
 
-            if len(self._steps_processor.data.states) > self.horizon:
-                self._pre_train()
-                self._train()
-
-        torch.set_grad_enabled(orig_grad_enabled)
-
-        return actions
+            return actions
 
     def _take_step(self, states, dones):
-        return self.model(states)
+        return self._eval_model(states)
 
     def _pre_train(self):
         self._check_log()
 
         # update clipping and learning rate decay schedulers
-        if self.lr_scheduler is not None:
-            self.lr_scheduler.step(self.frame)
-        if self.clip_decay is not None:
-            self.clip_decay.step(self.frame)
-        if self.entropy_decay is not None:
-            self.entropy_decay.step(self.frame)
+        if self._lr_scheduler is not None:
+            self._lr_scheduler.step(self.frame)
+        if self._clip_decay is not None:
+            self._clip_decay.step(self.frame)
+        if self._entropy_decay is not None:
+            self._entropy_decay.step(self.frame)
 
     def _train(self):
         self._steps_processor.complete()
         data = self._steps_processor.data
         self._steps_processor = self._create_steps_processor()
 
-        self._log_training_data(data)
-        self._ppo_update(data)
-        self._check_save_model()
+        # self._train_async(data)
+        if self._train_future is not None:
+            self._train_future.result()
+        self._train_future = self._train_executor.submit(self._train_async, data)
+
+    def _train_async(self, data):
+        with torch.no_grad():
+            self._log_training_data(data)
+            self._ppo_update(data)
+            self._check_save_model()
 
     def _log_training_data(self, data: AttrDict):
         if self._do_log:
@@ -248,28 +258,24 @@ class PPO(RLBase):
             self.logger.add_histogram('returns', data.returns, self.frame)
             self.logger.add_histogram('advantages', data.advantages, self.frame)
             self.logger.add_histogram('values', data.state_values, self.frame)
-            if isinstance(self.model.pd, DiagGaussianPd):
+            if isinstance(self._train_model.pd, DiagGaussianPd):
                 mean, std = data.probs.chunk(2, dim=1)
                 self.logger.add_histogram('probs mean', mean, self.frame)
                 self.logger.add_histogram('probs std', std, self.frame)
             else:
                 self.logger.add_histogram('probs', F.log_softmax(data.probs, dim=-1), self.frame)
-            for name, param in self.model.named_parameters():
+            for name, param in self._train_model.named_parameters():
                 self.logger.add_histogram(name, param, self.frame)
 
     def _create_steps_processor(self) -> StepsProcessor:
-        return StepsProcessor(self.model.pd, self.reward_discount, self.advantage_discount,
+        return StepsProcessor(self._train_model.pd, self.reward_discount, self.advantage_discount,
                               self.reward_scale, True, self.barron_alpha_c, self.entropy_reward_scale)
 
     def _ppo_update(self, data: AttrDict):
-        # move model to cuda or cpu
-        self.model = self.model.to(self.device_train, non_blocking=True).train()
-
-        old_model = deepcopy(self.model)
-
         if self.use_pop_art:
-            returns_mean, returns_std = self._pop_art.update_statistics(data.returns)
-            self.model.heads.state_values.normalize(returns_mean, returns_std)
+            returns_mean, returns_std = self._pop_art.statistics
+            self._pop_art.update_statistics(data.returns)
+            self._train_model.heads.state_values.normalize(returns_mean, returns_std)
         else:
             returns_mean, returns_std = 0, 1
 
@@ -278,10 +284,12 @@ class PPO(RLBase):
 
         batches = max(1, math.ceil(self.num_actors * self.horizon / self.batch_size))
 
-        initial_lr = [g['lr'] for g in self.optimizer.param_groups]
+        initial_lr = [g['lr'] for g in self._optimizer.param_groups]
 
         rand_idx = torch.randperm(len(data[0]) * self.ppo_iters, device=self.device_train)
         rand_idx = rand_idx.fmod_(len(data[0])).chunk(batches * self.ppo_iters)
+
+        old_model = deepcopy(self._train_model)
 
         with DataLoader(data, rand_idx, self.device_train, 4) as data_loader:
             for ppo_iter in range(self.ppo_iters):
@@ -289,45 +297,35 @@ class PPO(RLBase):
                     # prepare batch data
                     st, po, vo, ac, adv, ret = data_loader.get_next_batch()
                     if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
-                        self.model.set_log(self.logger, self._do_log, self.step)
+                        self._train_model.set_log(self.logger, self._do_log, self.step)
 
                     loss, kl = self._ppo_step(st, po, vo, ac, adv, ret)
 
-                    self.model.set_log(self.logger, False, self.step)
+                    self._train_model.set_log(self.logger, False, self.step)
 
-                if self._do_log and ppo_iter == self.ppo_iters - 1:
-                    self.logger.add_scalar('learning rate', self._learning_rate, self.frame)
-                    self.logger.add_scalar('clip mult', self._clip_mult, self.frame)
-                    self.logger.add_scalar('total loss', loss, self.frame)
-                    self.logger.add_scalar('kl', kl, self.frame)
-                    self.logger.add_scalar('param diff norm', self._norm_diff(old_model, self.model), self.frame)
-                    self.logger.add_scalar('param diff inf norm', self._norm_diff(old_model, self.model, math.inf), self.frame)
-
-                for g in self.optimizer.param_groups:
+                for g in self._optimizer.param_groups:
                     g['lr'] *= self.lr_iter_mult
 
-        for g, lr in zip(self.optimizer.param_groups, initial_lr):
+        for g, lr in zip(self._optimizer.param_groups, initial_lr):
             g['lr'] = lr
 
+        if self._do_log:
+            self.logger.add_scalar('learning rate', self._learning_rate, self.frame)
+            self.logger.add_scalar('clip mult', self._clip_mult, self.frame)
+            self.logger.add_scalar('total loss', loss, self.frame)
+            self.logger.add_scalar('kl', kl, self.frame)
+            self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame)
+            self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame)
+
         if self.use_pop_art:
-            self.model.heads.state_values.unnormalize(returns_mean, returns_std)
+            returns_mean, returns_std = self._pop_art.statistics
+            self._train_model.heads.state_values.unnormalize(returns_mean, returns_std)
 
-        self.model = self.model.to(self.device_eval, non_blocking=True).eval()
-
-    def _norm_diff(self, old_model, new_model, norm_type: float=2) -> float:
-        norm = 0
-        for old, new in zip(old_model.state_dict().values(), new_model.state_dict().values()):
-            if norm_type == math.inf:
-                norm = max(norm, (new - old).abs().max())
-            else:
-                norm += (new - old).norm(norm_type) ** norm_type
-        if norm_type != math.inf:
-            norm = norm.item() ** (1. / norm_type)
-        return norm
+        self._update_eval_model()
 
     def _ppo_step(self, states, probs_old, values_old, actions, advantages, returns):
         with torch.enable_grad():
-            actor_out = self.model(states)
+            actor_out = self._train_model(states)
             probs = actor_out.probs
             values = actor_out.state_values
             # get loss
@@ -337,9 +335,9 @@ class PPO(RLBase):
         # optimize
         loss.backward()
         if self.grad_clip_norm is not None:
-            clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-        self.optimizer.step()
-        self.optimizer.zero_grad()
+            clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
+        self._optimizer.step()
+        self._optimizer.zero_grad()
 
         return loss, kl
 
@@ -353,7 +351,7 @@ class PPO(RLBase):
         #     [x.cpu() for x in (probs, probs_old, values, values_old, actions, advantages, returns)]
 
         if pd is None:
-            pd = self.model.pd
+            pd = self._train_model.pd
 
         # clipping factors
         value_clip = self.value_clip * self._clip_mult
@@ -401,7 +399,7 @@ class PPO(RLBase):
             loss_ent[large_kl] = 0
             loss_clip[large_kl] = 0
         elif 'mse' in self.constraint:
-            loss_kl = self.kl_scale * (probs - probs_old) ** 2
+            loss_kl = self.kl_scale * 10 * (probs - probs_old).abs().pow(2.5)
         else:
             loss_kl = kl.new(1).zero_()
 
@@ -427,7 +425,7 @@ class PPO(RLBase):
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_clip.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
 
-        if self.model.do_log and tag is not None:
+        if self._train_model.do_log and tag is not None:
             with torch.no_grad():
                 self.logger.add_histogram('loss value' + tag, loss_value, self.frame)
                 self.logger.add_histogram('loss ent' + tag, loss_ent, self.frame)
@@ -446,7 +444,7 @@ class PPO(RLBase):
 
     def _log_set(self):
         self.logger.add_text('PPO', pprint.pformat(self._init_args))
-        self.logger.add_text('Model', str(self.model))
+        self.logger.add_text('Model', str(self._train_model))
 
     def drop_collected_steps(self):
         self._steps_processor = self._create_steps_processor()
@@ -455,14 +453,30 @@ class PPO(RLBase):
         if self.model_save_interval is None or \
            self._last_model_save_frame + self.model_save_interval > self.frame:
             return
+
+        self._create_save_folder()
+        path = self._get_save_path()
+        print('saving to path', path)
+        torch.save(self._train_model.cpu(), path)
+
+    def _get_save_path(self):
         self._last_model_save_frame = self.frame
         if self.save_intermediate_models:
             name = f'{self.model_save_tag}_{self.actor_index}_{self.frame}'
         else:
             name = f'{self.model_save_tag}_{self.actor_index}'
-        path = Path(self.model_save_folder) / (name + '.pth')
-        print('saving to path', path)
-        torch.save(self.model.cpu(), path)
+        return Path(self.model_save_folder) / (name + '.pth')
+
+    def _create_save_folder(self):
+        try:
+            os.makedirs(self.model_save_folder)
+        except OSError as e:
+            if e.errno != errno.EEXIST:
+                raise
+
+    def _update_eval_model(self):
+        for train, eval in zip(self._train_model.state_dict().values(), self._eval_model.state_dict().values()):
+            eval.data.copy_(train.data)
 
     def __getstate__(self):
         d = dict(self.__dict__)
