@@ -44,7 +44,17 @@ class ReplayBuffer:
         return {k: torch.stack(v, 1) for k, v in samples.items()}
 
     def get_last_samples(self, horizon):
-        return {k: v[self._index - horizon:self._index] for k, v in self._data.items()} # FIXME
+        assert self._len_horizon >= horizon
+
+        def loop_slice(x):
+            start = self._index - horizon
+            end = self._index
+            if start >= 0:
+                return x[start:end]
+            else:
+                return torch.cat([x[start:], x[:end]], 0)
+
+        return {k: loop_slice(v) for k, v in self._data.items()}
 
     @property
     def _len_horizon(self):
@@ -68,15 +78,17 @@ def test_replay_buffer():
 
     buffer = ReplayBuffer(capacity)
 
-    for st, ac, r in zip(states, actions, rewards):
-        buffer.push(states=st, actions=ac, rewards=r)
-
     def check_sample(sample, r, h):
         assert sample['states'].shape == (h, r, 4, 10, 12)
         assert sample['actions'].shape == (h, r, 6)
         assert sample['rewards'].shape == (h, r)
 
+    for st, ac, r in zip(states, actions, rewards):
+        buffer.push(states=st, actions=ac, rewards=r)
+        r, h = random.choice(rollouts), random.choice(horizon)
+        if len(buffer) >= h * num_actors:
+            check_sample(buffer.get_last_samples(h), num_actors, h)
+
     for _ in range(iters):
         r, h = random.choice(rollouts), random.choice(horizon)
         check_sample(buffer.sample(r, h), r, h)
-        # check_sample(buffer.get_last_samples(h), num_actors, h) # FIXME

@@ -16,7 +16,7 @@ from ..models.utils import model_diff
 
 
 class IMPALA(PPO):
-    def __init__(self, *args, replay_buf_size=64 * 1024, off_policy_batches=4, **kwargs):
+    def __init__(self, *args, replay_buf_size=128 * 1024, off_policy_batches=4, **kwargs):
         super().__init__(*args, **kwargs)
         self.replay_buf_size = replay_buf_size
         self.off_policy_batches = off_policy_batches
@@ -66,17 +66,17 @@ class IMPALA(PPO):
             self._check_save_model()
 
     def _create_data(self):
-        rand_actors = self.batch_size * self.off_policy_batches // self.horizon
-        rand_samples = self._replay_buffer.sample(rand_actors, self.horizon)
-        return AttrDict(rand_samples)
+        # rand_actors = self.batch_size * self.off_policy_batches // self.horizon
+        # rand_samples = self._replay_buffer.sample(rand_actors, self.horizon)
+        # return AttrDict(rand_samples)
 
-        # last_samples = self._replay_buffer.get_last_samples(self.horizon)
-        # if self.off_policy_batches != 0:
-        #     rand_actors = self.batch_size * self.off_policy_batches // self.horizon
-        #     rand_samples = self._replay_buffer.sample(rand_actors, self.horizon)
-        #     return AttrDict({k: torch.cat([v1, v2], 1) for (k, v1), v2 in zip(rand_samples.items(), last_samples.values())})
-        # else:
-        #     return AttrDict(last_samples)
+        last_samples = self._replay_buffer.get_last_samples(self.horizon)
+        if self.off_policy_batches != 0:
+            rand_actors = self.batch_size * self.off_policy_batches // self.horizon
+            rand_samples = self._replay_buffer.sample(rand_actors, self.horizon)
+            return AttrDict({k: torch.cat([v1, v2], 1) for (k, v1), v2 in zip(rand_samples.items(), last_samples.values())})
+        else:
+            return AttrDict(last_samples)
 
     def _impala_update(self, data: AttrDict):
         num_samples = data.states.shape[0] * data.states.shape[1]
@@ -114,13 +114,14 @@ class IMPALA(PPO):
             self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame)
             self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame)
 
+        self._adjust_kl_scale(kl)
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
     def _impala_step(self, data):
         with torch.enable_grad():
-            actor_out = self._train_model(data.states)
-            data.logits = actor_out.logits
-            data.state_values = actor_out.state_values
+            actor_out = self._train_model(data.states.reshape(-1, *data.states.shape[2:]))
+            data.logits, data.state_values = [x.view(*data.states.shape[:2], *x.shape[1:])
+                                              for x in (actor_out.logits, actor_out.state_values)]
             # get loss
             loss, kl = self._get_impala_loss(data)
             loss = loss.mean()
@@ -155,18 +156,20 @@ class IMPALA(PPO):
 
         entropy = pd.entropy(data.logits)
         kl = pd.kl(data.old_logits, data.logits)
+        loss_kl = self.kl_scale * (kl + (kl - 2 * self.kl_target).clamp(0, 1e6).pow(2)).mean()
 
         policy_loss = (-data.logp * data.advantages).mean()
         loss_ent = self.entropy_loss_scale * -entropy.mean()
         loss_value = self.value_loss_scale * barron_loss(data.state_values, data.returns, *self.barron_alpha_c)
 
         # sum all losses
-        total_loss = policy_loss + loss_value + loss_ent
+        total_loss = policy_loss + loss_value + loss_ent + loss_kl
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (policy_loss.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
 
         if self._train_model.do_log and tag is not None:
             with torch.no_grad():
+                self._log_training_data(data)
                 self.logger.add_histogram('loss value' + tag, loss_value, self.frame)
                 self.logger.add_histogram('loss ent' + tag, loss_ent, self.frame)
                 self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame)
@@ -187,7 +190,7 @@ class IMPALA(PPO):
         norm_rewards = self.reward_scale * data.rewards
 
         # calculate returns and advantages
-        returns, advantages, p = calc_vtrace(
+        returns, advantages = calc_vtrace(
             norm_rewards, state_values.detach(), data.dones, data.probs_ratio.detach(), self.reward_discount)
 
         mean, square, iter = self._advantage_stats
@@ -207,7 +210,6 @@ class IMPALA(PPO):
             rms = square ** 0.5
             advantages = advantages / max(rms, 1e-3)
         advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
-        advantages *= p
 
         data.returns, data.advantages, data.rewards = returns, advantages, norm_rewards
 

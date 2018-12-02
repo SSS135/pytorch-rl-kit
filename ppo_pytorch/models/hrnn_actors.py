@@ -60,7 +60,7 @@ class HRNNActor(Actor):
 
     @staticmethod
     def _gate_head_factory(hidden_size, pd):
-        return dict(probs=PolicyHead(hidden_size, pd))
+        return dict(logits=PolicyHead(hidden_size, pd))
 
     def forward(self, input, memory, done_flags, action_l2=None, prev_action_l2=None, gate_l2=None):
         memory_l1, memory_l2 = memory.chunk(2, 0) if memory is not None else (None, None)
@@ -71,7 +71,7 @@ class HRNNActor(Actor):
 
         head_l2 = self._run_heads(hidden_l2, self.head_l2)
         if action_l2 is None:
-            action_l2 = self.h_pd.sample(head_l2.probs)
+            action_l2 = self.h_pd.sample(head_l2.logits)
             action_l2 /= action_l2.abs().max(-1, keepdim=True)[0]
             action_l2 = action_l2.detach()
 
