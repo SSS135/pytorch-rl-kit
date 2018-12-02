@@ -20,8 +20,8 @@ def make_pd(space: gym.Space):
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
         # return FixedStdGaussianPd(space.shape[0], 0.3)
-        # return BetaPd(space.shape[0], 1)
-        return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
+        return BetaPd(space.shape[0], 1)
+        # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     else:
@@ -328,11 +328,11 @@ class MixturePd(ProbabilityDistribution):
         sample = self._mix_pd.sample(selected)
         return sample.view(*prob.shape[:-1], sample.shape[-1])
 
-    def mean(self, prob):
-        logw, mix_prob = self._split_prob(prob)
-        mean = mix_prob[..., :self.d]
-        w = F.softmax(logw, -1).unsqueeze(-1)
-        return (mean * w).sum(-2)
+    # def mean(self, prob):
+    #     logw, mix_prob = self._split_prob(prob)
+    #     mean = mix_prob[..., :self.d]
+    #     w = F.softmax(logw, -1).unsqueeze(-1)
+    #     return (mean * w).sum(-2)
 
     # @property
     # def init_column_norm(self):
@@ -340,7 +340,7 @@ class MixturePd(ProbabilityDistribution):
 
     def _split_prob(self, prob):
         logw, mix_prob = prob.split([self.num_mixtures, self.d * 2 * self.num_mixtures], dim=-1)
-        mix_prob = mix_prob.contiguous().view(*mix_prob.shape[:-1], self.num_mixtures, self.d * 2)
+        mix_prob = mix_prob.reshape(*mix_prob.shape[:-1], self.num_mixtures, self.d * 2)
         # logw - (..., n)
         # mix_prob - (..., n, d * 2)
         return logw, mix_prob

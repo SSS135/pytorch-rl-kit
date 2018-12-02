@@ -49,10 +49,9 @@ def calc_returns(rewards, values, dones, reward_discount):
     return returns
 
 
-def calc_vtrace(rewards, values, dones, discount, cur_probs, old_probs, c_max=1, p_max=1):
-    ratio = cur_probs / old_probs
-    c = ratio.clamp(0, c_max)
-    p = ratio.clamp(0, p_max)
+def calc_vtrace(rewards, values, dones, probs_ratio, discount, c_max=1, p_max=1):
+    c = probs_ratio.clamp(0, c_max)
+    p = probs_ratio.clamp(0, p_max)
     nonterminal = 1 - dones
     td = p * (rewards + nonterminal * discount * values[1:] - values[:-1])
     targets = values.clone()
@@ -71,7 +70,7 @@ def test_vtrace():
     cur_probs = old_probs = torch.zeros(N)
     ret = calc_returns(rewards, values, dones, discount)
     adv = calc_advantages(rewards, values, dones, discount, 1)
-    v_ret, v_adv, _ = calc_vtrace(rewards, values, dones, discount, cur_probs, old_probs, 1, 1)
+    v_ret, v_adv, _ = calc_vtrace(rewards, values, dones, cur_probs / old_probs, discount, 1, 1)
 
     assert ((ret - v_ret).abs() > 1e-2).sum().item() == 0
     assert ((adv - v_adv).abs() > 1e-2).sum().item() == 0

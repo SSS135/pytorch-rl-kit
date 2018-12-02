@@ -78,7 +78,7 @@ class AtariVecEnv(NamedVecEnv):
 
 
 class SimpleVecEnv(NamedVecEnv):
-    def __init__(self, env_name, observation_norm=True, parallel='thread'):
+    def __init__(self, env_name, observation_norm=False, parallel='thread'):
         self.observation_norm = observation_norm
         super().__init__(env_name, parallel)
 

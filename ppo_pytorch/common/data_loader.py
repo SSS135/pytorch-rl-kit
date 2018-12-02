@@ -4,11 +4,12 @@ from typing import List
 
 
 class DataLoader:
-    def __init__(self, data, chunks, device, num_threads):
+    def __init__(self, data, chunks, device, num_threads, dim=0):
         self.data = data
         self.chunks = chunks
         self.device = device
         self.num_threads = num_threads
+        self.dim = dim
         self._chunk_index = 0
         self._executor = ThreadPoolExecutor(max_workers=num_threads)
         self._futures: List[Future] = []
@@ -35,4 +36,12 @@ class DataLoader:
 
     def _load_chunk(self, index):
         chunk = self.chunks[index]
-        return [x[chunk] if x.device == self.device else x[chunk].to(self.device) for x in self.data]
+        chunk = *([slice(None)] * self.dim), chunk
+
+        def extract_chunk(x):
+            return (x[chunk] if x.device == self.device else x[chunk].to(self.device)).contiguous()
+
+        if isinstance(self.data, dict):
+            return {k: extract_chunk(v) for k, v in self.data.items()}
+        else:
+            return [extract_chunk(x) for x in self.data]

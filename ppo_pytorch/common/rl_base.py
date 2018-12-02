@@ -60,15 +60,13 @@ class RLBase:
         self._logger = log
         self._log_set()
 
-    def _step(self, prev_states: torch.Tensor, rewardss: torch.Tensor,
-              doness: torch.Tensor, cur_states: torch.Tensor) -> torch.Tensor:
+    def _step(self, rewards: torch.Tensor, dones: torch.Tensor, states: torch.Tensor) -> torch.Tensor:
         """
         Internal RL algorithm step.
         Args:
-            prev_states: Previous observations.
             rewards: Rewards received after actig on `prev_states`
             dones: Episode end flags.
-            cur_states: Current observations.
+            states: Current observations.
 
         Returns: Actions for `current_states`
         """
@@ -85,7 +83,7 @@ class RLBase:
         """
         self.prev_states = self.cur_states
         self.cur_states = self._check_states(obs)
-        actions = self._step(self.prev_states, self.rewards, self.dones, self.cur_states)
+        actions = self._step(self.rewards, self.dones, self.cur_states)
         self.step += 1
         if actions is None:
             return None

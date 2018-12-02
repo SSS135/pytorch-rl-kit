@@ -80,7 +80,7 @@ class PPO(RLBase):
             When `kl` < `kl_target` it is not applied.
             When `kl` > `kl_target` it is scaled quadratically based on abs(`kl` - `kl_target`)
                 and policy and entropy maximization objectives are disabled.
-        4)  New constraint type which clips raw network output vector instead of action log probs.
+        4)  New constraint type which clips raw network output vector instead of action log logits.
             See 'opt' in `constraint` documentation.
         4)  Several different constraints could be applied at same time.
 
@@ -105,7 +105,7 @@ class PPO(RLBase):
                     Controlled by `policy_clip` and `value_clip`,
                 'kl' - KL Divergence based constraint, implementation is very different from PPO paper.
                     Controlled by `kl_target` and `kl_scale`
-                'opt' - clip raw action probs and state-value.
+                'opt' - clip raw action logits and state-value.
                     Controlled by `policy_clip` and `value_clip`,
             policy_clip (float): policy clip strength
             value_clip (float): State-value clip strength
@@ -183,14 +183,14 @@ class PPO(RLBase):
         self._train_model = self._train_model.to(self.device_eval, non_blocking=True).train()
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
-    def _step(self, prev_states, rewards, dones, cur_states) -> torch.Tensor:
+    def _step(self, rewards, dones, states) -> torch.Tensor:
         with torch.no_grad():
             # run network
-            ac_out = self._take_step(cur_states.to(self.device_eval), dones)
-            actions = self._eval_model.pd.sample(ac_out.probs).cpu()
+            ac_out = self._take_step(states.to(self.device_eval), dones)
+            actions = self._eval_model.pd.sample(ac_out.logits).cpu()
 
             if not self.disable_training:
-                self._steps_processor.append_head(ac_out, states=cur_states, rewards=rewards, dones=dones, actions=actions)
+                self._steps_processor.append_head(ac_out, states=states, rewards=rewards, dones=dones, actions=actions)
 
                 if len(self._steps_processor.data.states) > self.horizon:
                     self._pre_train()
@@ -213,14 +213,17 @@ class PPO(RLBase):
             self._entropy_decay.step(self.frame)
 
     def _train(self):
-        self._steps_processor.complete()
-        data = self._steps_processor.data
-        self._steps_processor = self._create_steps_processor()
-
+        data = self._create_data()
         self._train_async(data)
         # if self._train_future is not None:
         #     self._train_future.result()
         # self._train_future = self._train_executor.submit(self._train_async, data)
+
+    def _create_data(self):
+        self._steps_processor.complete()
+        data = self._steps_processor.data
+        self._steps_processor = self._create_steps_processor()
+        return data
 
     def _train_async(self, data):
         with torch.no_grad():
@@ -236,7 +239,7 @@ class PPO(RLBase):
         else:
             returns_mean, returns_std = 0, 1
 
-        data = [data.states, data.probs, (data.state_values - returns_mean) / returns_std,
+        data = [data.states, data.logits, (data.state_values - returns_mean) / returns_std,
                 data.actions, data.advantages, (data.returns - returns_mean) / returns_std]
 
         batches = max(1, math.ceil(self.num_actors * self.horizon / self.batch_size))
@@ -247,6 +250,7 @@ class PPO(RLBase):
         rand_idx = rand_idx.fmod_(len(data[0])).chunk(batches * self.ppo_iters)
 
         old_model = deepcopy(self._train_model)
+        kl_list = []
 
         with DataLoader(data, rand_idx, self.device_train, 4) as data_loader:
             for ppo_iter in range(self.ppo_iters):
@@ -257,6 +261,7 @@ class PPO(RLBase):
                         self._train_model.set_log(self.logger, self._do_log, self.step)
 
                     loss, kl = self._ppo_step(st, po, vo, ac, adv, ret)
+                    kl_list.append(kl)
 
                     self._train_model.set_log(self.logger, False, self.step)
 
@@ -266,11 +271,14 @@ class PPO(RLBase):
         for g, lr in zip(self._optimizer.param_groups, initial_lr):
             g['lr'] = lr
 
+        kl = np.mean(kl_list)
+
         if self._do_log:
             self.logger.add_scalar('learning rate', self._learning_rate, self.frame)
             self.logger.add_scalar('clip mult', self._clip_mult, self.frame)
             self.logger.add_scalar('total loss', loss, self.frame)
             self.logger.add_scalar('kl', kl, self.frame)
+            self.logger.add_scalar('kl scale', self.kl_scale, self.frame)
             self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame)
             self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame)
 
@@ -278,27 +286,30 @@ class PPO(RLBase):
             returns_mean, returns_std = self._pop_art.statistics
             self._train_model.heads.state_values.unnormalize(returns_mean, returns_std)
 
+        self._adjust_kl_scale(kl)
+
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
-    def _ppo_step(self, states, probs_old, values_old, actions, advantages, returns):
+    def _ppo_step(self, states, logits_old, values_old, actions, advantages, returns):
         with torch.enable_grad():
             actor_out = self._train_model(states)
-            probs = actor_out.probs
+            logits = actor_out.logits
             values = actor_out.state_values
             # get loss
-            loss, kl = self._get_ppo_loss(probs, probs_old, values, values_old, actions, advantages, returns)
+            loss, kl = self._get_ppo_loss(logits, logits_old, values, values_old, actions, advantages, returns)
             loss = loss.mean()
-
-        # optimize
-        loss.backward()
-        if self.grad_clip_norm is not None:
-            clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
-        self._optimizer.step()
-        self._optimizer.zero_grad()
+        kl = kl.item()
+        if 'kl' not in self.constraint and 'mse' not in self.constraint or kl < 4 * self.kl_target:
+            # optimize
+            loss.backward()
+            if self.grad_clip_norm is not None:
+                clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
+            self._optimizer.step()
+            self._optimizer.zero_grad()
 
         return loss, kl
 
-    def _get_ppo_loss(self, probs, probs_old, values, values_old, actions, advantages, returns, pd=None, tag=''):
+    def _get_ppo_loss(self, logits, logits_old, values, values_old, actions, advantages, returns, pd=None, tag=''):
         """
         Single iteration of PPO algorithm.
         Returns: Total loss and KL divergence.
@@ -312,13 +323,13 @@ class PPO(RLBase):
         policy_clip = self.policy_clip * self._clip_mult
 
         if 'opt' in self.constraint:
-            probs = opt_clip(probs, probs_old, policy_clip)
+            logits = opt_clip(logits, logits_old, policy_clip)
             values = opt_clip(values, values_old, value_clip)
 
         # action probability ratio
         # log probabilities used for better numerical stability
-        logp_old = pd.logp(actions, probs_old)
-        logp = pd.logp(actions, probs)
+        logp_old = pd.logp(actions, logits_old)
+        logp = pd.logp(actions, logits)
         ratio = logp - logp_old.detach()
 
         adv_u = advantages.unsqueeze(-1)
@@ -337,20 +348,14 @@ class PPO(RLBase):
             loss_clip = -unclipped_policy_loss
 
         # entropy bonus for better exploration
-        entropy = pd.entropy(probs)
+        entropy = pd.entropy(logits)
         loss_ent = -self.entropy_loss_scale * entropy
 
-        kl = pd.kl(probs_old, probs)
+        kl = pd.kl(logits_old, logits)
         if 'kl' in self.constraint:
-            kl_targets = self.kl_target * adv_u.abs()
-            loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(self.kl_scale * self.kl_target)
-            small_kl = (kl < self.kl_target).detach()
-            large_kl = (kl > self.kl_target).detach()
-            loss_kl[small_kl] = 0
-            loss_ent[large_kl] = 0
-            loss_clip[large_kl] = 0
+            loss_kl = self.kl_scale * (kl + 10 * (kl - 2 * self.kl_target).clamp(0, 1e6).pow(2))
         elif 'mse' in self.constraint:
-            loss_kl = self.kl_scale * 10 * (probs - probs_old).abs().pow(2.5)
+            loss_kl = self.kl_scale * (logits - logits_old).pow(2)
         else:
             loss_kl = kl.new(1).zero_()
 
@@ -393,9 +398,16 @@ class PPO(RLBase):
 
         return total_loss, kl.mean()
 
+    def _adjust_kl_scale(self, kl):
+        threshold, change, limit = 1.2, 1.1, 100.0
+        if kl > threshold * self.kl_target:
+            self.kl_scale = min(limit, self.kl_scale * change)
+        if kl < (1 / threshold) * self.kl_target:
+            self.kl_scale = max(1 / limit, self.kl_scale / change)
+
     @staticmethod
     def _head_factory(hidden_size, pd):
-        return dict(probs=PolicyHead(hidden_size, pd), state_values=StateValueHead(hidden_size))
+        return dict(logits=PolicyHead(hidden_size, pd), state_values=StateValueHead(hidden_size))
 
     @property
     def _learning_rate(self):
@@ -406,7 +418,7 @@ class PPO(RLBase):
         return self._clip_decay.value if self._clip_decay is not None else 1
 
     def _log_set(self):
-        self.logger.add_text('PPO', pprint.pformat(self._init_args))
+        self.logger.add_text(self.__class__.__name__, pprint.pformat(self._init_args))
         self.logger.add_text('Model', str(self._train_model))
 
     def drop_collected_steps(self):
@@ -463,11 +475,11 @@ class PPO(RLBase):
             self.logger.add_histogram('advantages', data.advantages, self.frame)
             self.logger.add_histogram('values', data.state_values, self.frame)
             if isinstance(self._train_model.pd, DiagGaussianPd):
-                mean, std = data.probs.chunk(2, dim=1)
-                self.logger.add_histogram('probs mean', mean, self.frame)
-                self.logger.add_histogram('probs std', std, self.frame)
+                mean, std = data.logits.chunk(2, dim=1)
+                self.logger.add_histogram('logits mean', mean, self.frame)
+                self.logger.add_histogram('logits std', std, self.frame)
             else:
-                self.logger.add_histogram('probs', F.log_softmax(data.probs, dim=-1), self.frame)
+                self.logger.add_histogram('logits', F.log_softmax(data.logits, dim=-1), self.frame)
             for name, param in self._train_model.named_parameters():
                 self.logger.add_histogram(name, param, self.frame)
 
