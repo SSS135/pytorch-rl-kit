@@ -49,7 +49,7 @@ def calc_returns(rewards, values, dones, reward_discount):
     return returns
 
 
-def calc_vtrace(rewards, values, dones, probs_ratio, discount, c_max=1, p_max=1):
+def calc_vtrace(rewards, values, dones, probs_ratio, discount, c_max=1.5, p_max=1.5):
     c = probs_ratio.clamp(0, c_max)
     p = probs_ratio.clamp(0, p_max)
     nonterminal = 1 - dones

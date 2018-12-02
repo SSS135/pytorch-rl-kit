@@ -45,7 +45,7 @@ class IMPALA(PPO):
                 self._eval_steps += 1
                 self._prev_data = (rewards, dones)
 
-                if self._eval_steps >= self.horizon and len(self._replay_buffer) >= self.horizon:
+                if self._eval_steps >= self.horizon and len(self._replay_buffer) >= self.horizon * self.num_actors:
                     self._eval_steps = 0
                     self._pre_train()
                     self._train()
