@@ -3,7 +3,7 @@ import math
 import torch
 
 
-def barron_loss(pred, target, alpha, c, reduce=True):
+def barron_loss(pred, target, alpha=1.5, c=1, reduce=True):
     """
     A More General Robust Loss Function
     https://arxiv.org/abs/1701.03077
@@ -26,7 +26,7 @@ def barron_loss(pred, target, alpha, c, reduce=True):
     return loss.mean() if reduce else loss
 
 
-def barron_loss_derivative(x, alpha, c):
+def barron_loss_derivative(x, alpha=1.5, c=1):
     """
     A More General Robust Loss Function
     https://arxiv.org/abs/1701.03077

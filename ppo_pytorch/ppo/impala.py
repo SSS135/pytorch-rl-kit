@@ -163,7 +163,7 @@ class IMPALA(PPO):
         loss_value = self.value_loss_scale * barron_loss(data.state_values, data.returns, *self.barron_alpha_c)
 
         # sum all losses
-        total_loss = policy_loss + loss_value + loss_ent + loss_kl
+        total_loss = policy_loss + loss_value + loss_ent #+ loss_kl
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (policy_loss.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
 

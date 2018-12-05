@@ -3,7 +3,7 @@
 
 import math
 from functools import partial
-from typing import Tuple, Optional, Callable
+from typing import Tuple, Optional, Callable, Dict, Any
 
 import gym.spaces
 import numpy as np
@@ -29,6 +29,11 @@ def make_pd(space: gym.Space):
 
 
 class ProbabilityDistribution:
+    def __init__(self, init_args: Dict[str, Any]):
+        del init_args['self']
+        del init_args['__class__']
+        self._init_args = init_args
+
     """Unified API to work with different types of probability distributions"""
     @property
     def prob_vector_len(self):
@@ -80,9 +85,16 @@ class ProbabilityDistribution:
     def init_column_norm(self):
         return 0.01
 
+    def __repr__(self):
+        str_args = str.join(', ', [f'{k}={v}' for k, v in self._init_args.items()])
+        return f'{self.__class__.__name__}({str_args})'
+
+    __str__ = __repr__
+
 
 class CategoricalPd(ProbabilityDistribution):
     def __init__(self, n):
+        super().__init__(locals())
         self.n = n
 
     @property
@@ -118,7 +130,7 @@ class CategoricalPd(ProbabilityDistribution):
         return torch.sum(po * (torch.log(z) - a), dim=-1, keepdim=True)
 
     def sample(self, prob):
-        return F.softmax(prob, dim=-1).multinomial(1)
+        return F.softmax(prob.reshape(-1, prob.shape[-1]), dim=-1).multinomial(1).reshape(*prob.shape[:-1], -1)
 
     def to_inputs(self, action):
         with torch.no_grad():
@@ -130,6 +142,7 @@ class CategoricalPd(ProbabilityDistribution):
 
 class BernoulliPd(ProbabilityDistribution):
     def __init__(self, n):
+        super().__init__(locals())
         self.n = n
 
     @property
@@ -169,8 +182,10 @@ class BernoulliPd(ProbabilityDistribution):
 
 
 class DiagGaussianPd(ProbabilityDistribution):
-    def __init__(self, d):
+    def __init__(self, d, eps=1e-6):
+        super().__init__(locals())
         self.d = d
+        self.eps = eps
 
     @property
     def prob_vector_len(self):
@@ -190,7 +205,7 @@ class DiagGaussianPd(ProbabilityDistribution):
 
     def logp(self, x, prob):
         mean, logstd = self.split_probs(prob)
-        std = torch.exp(logstd)
+        std = torch.exp(logstd) + self.eps
         nll = 0.5 * ((x - mean) / std).pow(2) + \
               0.5 * math.log(2.0 * math.pi) * self.d + \
               logstd
@@ -199,8 +214,8 @@ class DiagGaussianPd(ProbabilityDistribution):
     def kl(self, prob1, prob2):
         mean1, logstd1 = self.split_probs(prob1)
         mean2, logstd2 = self.split_probs(prob2)
-        std1 = torch.exp(logstd1)
-        std2 = torch.exp(logstd2)
+        std1 = torch.exp(logstd1) + self.eps
+        std2 = torch.exp(logstd2) + self.eps
         kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
         return kl
 
@@ -213,7 +228,7 @@ class DiagGaussianPd(ProbabilityDistribution):
     def sample_with_random(self, prob, rand):
         assert rand is None or torch.is_tensor(rand)
         mean, logstd = self.split_probs(prob)
-        std = torch.exp(logstd)
+        std = torch.exp(logstd) + self.eps
         if rand is None:
             rand = torch.randn_like(mean)
         sample = mean + std * rand
@@ -227,6 +242,7 @@ class DiagGaussianPd(ProbabilityDistribution):
 
 class BetaPd(ProbabilityDistribution):
     def __init__(self, d, h, eps=1e-7):
+        super().__init__(locals())
         self.d = d
         self.h = h
         self.eps = eps
@@ -280,11 +296,16 @@ class BetaPd(ProbabilityDistribution):
 
 class MixturePd(ProbabilityDistribution):
     def __init__(self, d, num_mixtures=8, pd_type: Callable=DiagGaussianPd, eps=1e-6):
+        args = locals()
+
         self.d = d
         self.num_mixtures = num_mixtures
         self.eps = eps
         self._mix_pd = pd_type(d)
         self._cpd = CategoricalPd(num_mixtures)
+
+        args['pd_type'] = self._mix_pd
+        super().__init__(args)
 
     @property
     def prob_vector_len(self):
@@ -348,6 +369,7 @@ class MixturePd(ProbabilityDistribution):
 
 class FixedStdGaussianPd(ProbabilityDistribution):
     def __init__(self, d, std):
+        super().__init__(locals())
         self.d = d
         self.std = std
 
@@ -395,6 +417,7 @@ class FixedStdGaussianPd(ProbabilityDistribution):
 
 class TransactionPd(ProbabilityDistribution):
     def __init__(self, d):
+        super().__init__(locals())
         self.d = d
 
     @property
