@@ -21,6 +21,7 @@ def make_pd(space: gym.Space):
         assert len(space.shape) == 1
         # return FixedStdGaussianPd(space.shape[0], 0.3)
         return BetaPd(space.shape[0], 1)
+        # return DiagGaussianPd(space.shape[0])
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)

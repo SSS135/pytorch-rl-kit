@@ -17,7 +17,7 @@ import torch.optim as optim
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 
-from ..common.barron_loss import barron_loss
+from ..common.barron_loss import barron_loss, barron_loss_derivative
 from ..common.opt_clip import opt_clip
 from ..common.probability_distributions import DiagGaussianPd
 from ..common.rl_base import RLBase
@@ -28,6 +28,7 @@ from ..models import FCActor, Actor
 from ..models.heads import PolicyHead, StateValueHead
 from ..models.utils import model_diff
 from .steps_processor import StepsProcessor
+from ..common.target_logits import get_target_logits
 
 
 class PPO(RLBase):
@@ -164,7 +165,7 @@ class PPO(RLBase):
         self.advantage_scaled_clip = advantage_scaled_clip
         self.use_pop_art = use_pop_art
 
-        assert len(set(self.constraint) - {'clip', 'kl', 'opt', 'mse'}) == 0
+        assert len(set(self.constraint) - {'clip', 'kl', 'opt', 'mse', 'target'}) == 0
 
         if model_init_path is None:
             self._train_model: Actor = model_factory(observation_space, action_space, self._head_factory, hidden_code_type=hidden_code_type)
@@ -239,15 +240,26 @@ class PPO(RLBase):
         else:
             returns_mean, returns_std = 0, 1
 
-        data = [data.states, data.logits, (data.state_values - returns_mean) / returns_std,
-                data.actions, data.advantages, (data.returns - returns_mean) / returns_std]
+        data.state_values = (data.state_values - returns_mean) / returns_std
+        data.returns = (data.returns - returns_mean) / returns_std
+
+        data = AttrDict(states=data.states, logits_old=data.logits, state_values_old=data.state_values,
+                        actions=data.actions, advantages=data.advantages, returns=data.returns)
+
+        if 'target' in self.constraint:
+            data.target_logits = get_target_logits(self._train_model.pd, data.actions, data.logits_old, self.policy_clip * data.advantages)
+
+            value_diff = data.returns - data.state_values_old
+            value_diff /= self.value_clip * value_diff.pow(2).mean().sqrt()
+            value_diff = barron_loss_derivative(value_diff, *self.barron_alpha_c)
+            data.target_values = data.state_values_old + value_diff
 
         batches = max(1, math.ceil(self.num_actors * self.horizon / self.batch_size))
 
         initial_lr = [g['lr'] for g in self._optimizer.param_groups]
 
-        rand_idx = torch.randperm(len(data[0]) * self.ppo_iters, device=self.device_train)
-        rand_idx = rand_idx.fmod_(len(data[0])).chunk(batches * self.ppo_iters)
+        rand_idx = torch.randperm(len(data.state_values_old) * self.ppo_iters, device=self.device_train)
+        rand_idx = rand_idx.fmod_(len(data.state_values_old)).chunk(batches * self.ppo_iters)
 
         old_model = deepcopy(self._train_model)
         kl_list = []
@@ -256,11 +268,11 @@ class PPO(RLBase):
             for ppo_iter in range(self.ppo_iters):
                 for loader_iter in range(batches):
                     # prepare batch data
-                    st, po, vo, ac, adv, ret = data_loader.get_next_batch()
+                    batch = AttrDict(data_loader.get_next_batch())
                     if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
                         self._train_model.set_log(self.logger, self._do_log, self.step)
 
-                    loss, kl = self._ppo_step(st, po, vo, ac, adv, ret)
+                    loss, kl = self._ppo_step(batch)
                     kl_list.append(kl)
 
                     self._train_model.set_log(self.logger, False, self.step)
@@ -290,13 +302,13 @@ class PPO(RLBase):
 
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
-    def _ppo_step(self, states, logits_old, values_old, actions, advantages, returns):
+    def _ppo_step(self, batch):
         with torch.enable_grad():
-            actor_out = self._train_model(states)
-            logits = actor_out.logits
-            values = actor_out.state_values
+            actor_out = self._train_model(batch.states)
+            batch.logits = actor_out.logits
+            batch.state_values = actor_out.state_values
             # get loss
-            loss, kl = self._get_ppo_loss(logits, logits_old, values, values_old, actions, advantages, returns)
+            loss, kl = self._get_ppo_loss(batch)
             loss = loss.mean()
         kl = kl.item()
         if 'kl' not in self.constraint and 'mse' not in self.constraint or kl < 4 * self.kl_target:
@@ -309,11 +321,17 @@ class PPO(RLBase):
 
         return loss, kl
 
-    def _get_ppo_loss(self, logits, logits_old, values, values_old, actions, advantages, returns, pd=None, tag=''):
+    def _get_ppo_loss(self, batch, pd=None, tag=''):
         """
         Single iteration of PPO algorithm.
         Returns: Total loss and KL divergence.
         """
+
+        logits, logits_old, logits_target = batch.logits, batch.logits_old, batch.logits_target
+        values, values_old = batch.state_values, batch.state_values_old
+        returns = batch.returns
+        actions = batch.actions
+        advantages = batch.advantages
 
         if pd is None:
             pd = self._train_model.pd
@@ -334,8 +352,8 @@ class PPO(RLBase):
 
         adv_u = advantages.unsqueeze(-1)
 
-        unclipped_policy_loss = ratio * adv_u
         if 'clip' in self.constraint:
+            unclipped_policy_loss = ratio * adv_u
             if self.advantage_scaled_clip:
                 pclip = adv_u.abs() * policy_clip
                 clipped_ratio = torch.min(torch.max(ratio, -pclip), pclip)
@@ -343,9 +361,22 @@ class PPO(RLBase):
                 clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
             clipped_policy_loss = clipped_ratio * adv_u
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
+        elif 'target' in self.constraint:
+            # diff_target = logits_target - logits_old
+            # loss_clip = (logits_target - logits) * diff_target / diff_target.pow(2).mean().sqrt().clamp(min=1e-3)
+            # loss_clip = adv_u.abs() * loss_clip.clamp(min=0)
+
+            # loss_clip = F.l1_loss(logits, logits_target, reduction='none')
+
+            # clip_mult = ((logits_target - logits).sign() == (logits_target - logits_old).sign()).float()
+            # loss_clip = adv_u.abs() * clip_mult * F.l1_loss(logits, logits_target, reduction='none')
+
+            diff = logits_target - logits
+            l2_mult = diff.detach().abs() / diff.detach().pow(2).mean().sqrt().clamp(min=1e-3)
+            loss_clip = adv_u.abs() * diff.abs() * l2_mult
         else:
             # unclipped loss
-            loss_clip = -unclipped_policy_loss
+            loss_clip = -ratio * adv_u
 
         # entropy bonus for better exploration
         entropy = pd.entropy(logits)
@@ -372,6 +403,7 @@ class PPO(RLBase):
         vf_clip_loss = barron_loss(v_pred_clipped, returns, *self.barron_alpha_c, reduce=False)
         vf_nonclip_loss = barron_loss(values, returns, *self.barron_alpha_c, reduce=False)
         loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)
+        # loss_value = self.value_loss_scale * F.mse_loss(values, values_target, reduction='none')
 
         assert loss_clip.shape == loss_value.shape, (loss_clip.shape, loss_value.shape)
         assert loss_value.shape == loss_ent.shape, (loss_value.shape, loss_ent.shape)
