@@ -237,22 +237,14 @@ class PPO(RLBase):
             returns_mean, returns_std = self._pop_art.statistics
             self._pop_art.update_statistics(data.returns)
             self._train_model.heads.state_values.normalize(returns_mean, returns_std)
-        else:
-            returns_mean, returns_std = 0, 1
-
-        data.state_values = (data.state_values - returns_mean) / returns_std
-        data.returns = (data.returns - returns_mean) / returns_std
+            data.state_values = (data.state_values - returns_mean) / returns_std
+            data.returns = (data.returns - returns_mean) / returns_std
 
         data = AttrDict(states=data.states, logits_old=data.logits, state_values_old=data.state_values,
                         actions=data.actions, advantages=data.advantages, returns=data.returns)
 
         if 'target' in self.constraint:
-            data.target_logits = get_target_logits(self._train_model.pd, data.actions, data.logits_old, self.policy_clip * data.advantages)
-
-            value_diff = data.returns - data.state_values_old
-            value_diff /= self.value_clip * value_diff.pow(2).mean().sqrt()
-            value_diff = barron_loss_derivative(value_diff, *self.barron_alpha_c)
-            data.target_values = data.state_values_old + value_diff
+            data.logits_target = get_target_logits(self._train_model.pd, data.actions, data.logits_old, self.policy_clip * data.advantages)
 
         batches = max(1, math.ceil(self.num_actors * self.horizon / self.batch_size))
 
@@ -327,7 +319,7 @@ class PPO(RLBase):
         Returns: Total loss and KL divergence.
         """
 
-        logits, logits_old, logits_target = batch.logits, batch.logits_old, batch.logits_target
+        logits, logits_old = batch.logits, batch.logits_old
         values, values_old = batch.state_values, batch.state_values_old
         returns = batch.returns
         actions = batch.actions
@@ -362,18 +354,15 @@ class PPO(RLBase):
             clipped_policy_loss = clipped_ratio * adv_u
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
         elif 'target' in self.constraint:
-            # diff_target = logits_target - logits_old
-            # loss_clip = (logits_target - logits) * diff_target / diff_target.pow(2).mean().sqrt().clamp(min=1e-3)
+            diff_cur = batch.logits_target - logits
+            diff_old = batch.logits_target - logits_old
+            diff_old_rms = diff_old.pow(2).mean().sqrt().clamp(min=1e-3)
+
+            # loss_clip = diff_cur * diff_old / diff_old_rms
             # loss_clip = adv_u.abs() * loss_clip.clamp(min=0)
 
-            # loss_clip = F.l1_loss(logits, logits_target, reduction='none')
-
-            # clip_mult = ((logits_target - logits).sign() == (logits_target - logits_old).sign()).float()
-            # loss_clip = adv_u.abs() * clip_mult * F.l1_loss(logits, logits_target, reduction='none')
-
-            diff = logits_target - logits
-            l2_mult = diff.detach().abs() / diff.detach().pow(2).mean().sqrt().clamp(min=1e-3)
-            loss_clip = adv_u.abs() * diff.abs() * l2_mult
+            loss_clip = diff_cur * diff_cur.detach() / diff_old_rms
+            loss_clip = adv_u.abs() * loss_clip
         else:
             # unclipped loss
             loss_clip = -ratio * adv_u
@@ -395,15 +384,10 @@ class PPO(RLBase):
         loss_kl = loss_kl.mean(-1)
 
         # value loss
-        if self.advantage_scaled_clip:
-            vclip = advantages.abs() * value_clip
-            v_pred_clipped = values_old + torch.min(torch.max(values - values_old, -vclip), vclip)
-        else:
-            v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
+        v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
         vf_clip_loss = barron_loss(v_pred_clipped, returns, *self.barron_alpha_c, reduce=False)
         vf_nonclip_loss = barron_loss(values, returns, *self.barron_alpha_c, reduce=False)
         loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)
-        # loss_value = self.value_loss_scale * F.mse_loss(values, values_target, reduction='none')
 
         assert loss_clip.shape == loss_value.shape, (loss_clip.shape, loss_value.shape)
         assert loss_value.shape == loss_ent.shape, (loss_value.shape, loss_ent.shape)

@@ -20,7 +20,7 @@ def get_target_logits(pd, action, logits, change, nsteps=20, lr=0.4, lr_pow=0.8,
     for i in range(nsteps):
         with torch.enable_grad():
             new_logp = pd.logp(action, logits)
-            loss = barron_loss((new_logp - old_logp), target.expand_as(old_logp), reduce=False).sum() + kl_scale * pd.kl(old_logits, logits).pow(2).sum()
+            loss = ((new_logp - old_logp) - target).pow(2).mul_(0.5).sum() + kl_scale * pd.kl(old_logits, logits).pow(2).sum()
 
         loss.backward()
 

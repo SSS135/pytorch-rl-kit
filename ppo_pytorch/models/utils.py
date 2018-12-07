@@ -66,10 +66,10 @@ def image_to_float(x):
     return x if x.dtype.is_floating_point else x.float().div_(255)
 
 
-def multiply_gradient(x: torch.Tensor, mul: float) -> torch.Tensor:
-    x = mul * x
-    x.data /= mul
-    return x
+# def multiply_gradient(x: torch.Tensor, mul: float) -> torch.Tensor:
+#     x = mul * x
+#     x.data /= mul
+#     return x
 
 
 def model_diff(old_model, new_model, max_diff=False) -> float:
