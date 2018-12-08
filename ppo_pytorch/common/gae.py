@@ -1,6 +1,12 @@
 import torch
 
 
+def _check_data(rewards, values, dones):
+    assert len(rewards) == len(dones) == len(values) - 1
+    assert rewards.dim() == dones.dim() == 2
+    assert values.dim() == 3
+
+
 def calc_advantages(rewards, values, dones, reward_discount, advantage_discount):
     """
     Calculate advantages with Global Advantage Estimation
@@ -13,7 +19,9 @@ def calc_advantages(rewards, values, dones, reward_discount, advantage_discount)
 
     Returns: GAE advantages
     """
-    assert len(rewards) == len(values) - 1 == len(dones)
+    _check_data(rewards, values, dones)
+
+    values = values.mean(-1)
 
     gae = 0
     gaes = torch.zeros_like(rewards)
@@ -37,10 +45,12 @@ def calc_returns(rewards, values, dones, reward_discount):
     Returns: Temporal difference returns
 
     """
-    assert len(rewards) == len(values) - 1 == len(dones)
+    _check_data(rewards, values, dones)
+    rewards = rewards.unsqueeze(-1)
+    dones = dones.unsqueeze(-1)
 
     R = values[-1]
-    returns = torch.zeros_like(rewards)
+    returns = rewards.new_zeros((*rewards.shape[:-1], values.shape[-1]))
     for t in reversed(range(len(rewards))):
         nonterminal = 1 - dones[t]
         R = rewards[t] + nonterminal * reward_discount * R

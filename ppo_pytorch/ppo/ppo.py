@@ -1,5 +1,6 @@
 import math
 import pprint
+import random
 from asyncio import Future
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -25,10 +26,11 @@ from ..common.pop_art import PopArt
 from ..common.attr_dict import AttrDict
 from ..common.data_loader import DataLoader
 from ..models import FCActor, Actor
-from ..models.heads import PolicyHead, StateValueHead
+from ..models.heads import PolicyHead, StateValueHead, StateValueQuantileHead
 from ..models.utils import model_diff
 from .steps_processor import StepsProcessor
 from ..common.target_logits import get_target_logits
+from optfn.iqn_loss import huber_quantile_loss
 
 
 class PPO(RLBase):
@@ -164,6 +166,7 @@ class PPO(RLBase):
         self.barron_alpha_c = barron_alpha_c
         self.advantage_scaled_clip = advantage_scaled_clip
         self.use_pop_art = use_pop_art
+        self.num_quantiles = 16
 
         assert len(set(self.constraint) - {'clip', 'kl', 'opt', 'mse', 'target'}) == 0
 
@@ -183,15 +186,34 @@ class PPO(RLBase):
         self._train_executor = ThreadPoolExecutor(max_workers=1)
         self._train_model = self._train_model.to(self.device_eval, non_blocking=True).train()
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
+        self._prev_value_tau = None
 
     def _step(self, rewards, dones, states) -> torch.Tensor:
         with torch.no_grad():
             # run network
-            ac_out = self._take_step(states.to(self.device_eval), dones)
+            states_eval = states.to(self.device_eval)
+            value_head = self._eval_model.heads.state_values
+            iqn = isinstance(value_head, StateValueQuantileHead)
+            if iqn:
+                cur_tau = torch.rand((states.shape[0], self.num_quantiles), device=self.device_eval)
+                prev_value, prev_tau = (torch.zeros_like(cur_tau), torch.full_like(cur_tau, 0.5)) \
+                    if self._prev_value_tau is None else self._prev_value_tau
+                if dones is not None:
+                    prev_value[dones > 0.5] = 0
+                    prev_tau[dones > 0.5] = 0
+                value_head.tau = torch.cat([cur_tau, prev_tau, prev_value], -1)
+                tau = dict(tau=value_head.tau)
+            else:
+                tau = dict()
+
+            ac_out = self._take_step(states_eval, dones)
             actions = self._eval_model.pd.sample(ac_out.logits).cpu()
 
             if not self.disable_training:
-                self._steps_processor.append_head(ac_out, states=states, rewards=rewards, dones=dones, actions=actions)
+                if iqn:
+                    self._prev_value_tau = (ac_out.state_values, cur_tau)
+
+                self._steps_processor.append_head(ac_out, states=states, rewards=rewards, dones=dones, actions=actions, **tau)
 
                 if len(self._steps_processor.data.states) > self.horizon:
                     self._pre_train()
@@ -233,15 +255,20 @@ class PPO(RLBase):
             self._check_save_model()
 
     def _ppo_update(self, data: AttrDict):
+        value_head = self._train_model.heads.state_values
+        iqn = isinstance(value_head, StateValueQuantileHead)
+
         if self.use_pop_art:
             returns_mean, returns_std = self._pop_art.statistics
             self._pop_art.update_statistics(data.returns)
-            self._train_model.heads.state_values.normalize(returns_mean, returns_std)
+            value_head.normalize(returns_mean, returns_std)
             data.state_values = (data.state_values - returns_mean) / returns_std
             data.returns = (data.returns - returns_mean) / returns_std
 
+        tau = dict(tau=data.tau) if iqn else dict()
+
         data = AttrDict(states=data.states, logits_old=data.logits, state_values_old=data.state_values,
-                        actions=data.actions, advantages=data.advantages, returns=data.returns)
+                        actions=data.actions, advantages=data.advantages, returns=data.returns, **tau)
 
         if 'target' in self.constraint:
             data.logits_target = get_target_logits(self._train_model.pd, data.actions, data.logits_old, self.policy_clip * data.advantages)
@@ -296,6 +323,10 @@ class PPO(RLBase):
 
     def _ppo_step(self, batch):
         with torch.enable_grad():
+            value_head = self._train_model.heads.state_values
+            if isinstance(value_head, StateValueQuantileHead):
+                value_head.tau = batch.tau
+
             actor_out = self._train_model(batch.states)
             batch.logits = actor_out.logits
             batch.state_values = actor_out.state_values
@@ -379,15 +410,22 @@ class PPO(RLBase):
         else:
             loss_kl = kl.new(1).zero_()
 
+        # value loss
+        if 'tau' in batch:
+            num_q_per_batch = max(1, int(round(self.num_quantiles / self.ppo_iters)))
+            idx = torch.randperm(self.num_quantiles, device=values.device)[:num_q_per_batch]
+            tau = batch.tau[..., :self.num_quantiles]
+            loss_value = self.value_loss_scale * huber_quantile_loss(values[..., idx], returns[..., idx], tau[..., idx], reduce=False)
+        else:
+            v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
+            vf_clip_loss = barron_loss(v_pred_clipped, returns, *self.barron_alpha_c, reduce=False)
+            vf_nonclip_loss = barron_loss(values, returns, *self.barron_alpha_c, reduce=False)
+            loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)
+
+        loss_value = loss_value.mean(-1)
         loss_clip = loss_clip.mean(-1)
         loss_ent = loss_ent.mean(-1)
         loss_kl = loss_kl.mean(-1)
-
-        # value loss
-        v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
-        vf_clip_loss = barron_loss(v_pred_clipped, returns, *self.barron_alpha_c, reduce=False)
-        vf_nonclip_loss = barron_loss(values, returns, *self.barron_alpha_c, reduce=False)
-        loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)
 
         assert loss_clip.shape == loss_value.shape, (loss_clip.shape, loss_value.shape)
         assert loss_value.shape == loss_ent.shape, (loss_value.shape, loss_ent.shape)
@@ -423,7 +461,7 @@ class PPO(RLBase):
 
     @staticmethod
     def _head_factory(hidden_size, pd):
-        return dict(logits=PolicyHead(hidden_size, pd), state_values=StateValueHead(hidden_size))
+        return dict(logits=PolicyHead(hidden_size, pd), state_values=StateValueQuantileHead(hidden_size))
 
     @property
     def _learning_rate(self):

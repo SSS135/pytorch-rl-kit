@@ -3,6 +3,10 @@ from typing import Tuple
 import torch
 
 
+def clip(x, x_min, x_max):
+    return max(x_min, min(x_max, x))
+
+
 class PopArt:
     def __init__(self, beta=0.95, use_rms=False, eps=(1e-4, 1e6)):
         assert 0 <= beta < 1
@@ -23,10 +27,10 @@ class PopArt:
             square = self._square / bias_corr
             mean = self._mean / bias_corr
             if self.use_rms:
-                rms = max(self.eps[0], min(self.eps[1], square ** 0.5))
+                rms = clip(square ** 0.5, *self.eps)
                 return 0.0, rms
             else:
-                std = max(self.eps[0], min(self.eps[1], (square - mean ** 2) ** 0.5))
+                std = clip((square - mean ** 2) ** 0.5, *self.eps)
                 return mean, std
 
     def update_statistics(self, returns: torch.Tensor):
