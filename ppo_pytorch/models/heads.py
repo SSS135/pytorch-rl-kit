@@ -120,6 +120,10 @@ class StateValueHead(HeadBase):
         self.linear.bias.data += mean
 
 
+def assert_shape(x, shape, *args):
+    assert x.shape == shape, (tuple(x.shape), shape, *args)
+
+
 class StateValueQuantileHead(HeadBase):
     """
     Actor-critic head. Used in PPO / A3C.
@@ -145,19 +149,26 @@ class StateValueQuantileHead(HeadBase):
     def forward(self, x):
         # x - (*xd, n)
         # tau - (*xd, c * 3)
-        cur_prev_tau, prev_value = self.tau.split([self.quantile_dim * 2, self.quantile_dim], -1)
-        assert x.shape[:-1] == prev_value.shape[:-1], (x.shape, prev_value.shape)
+        xd = x.shape[:-1]
+        num_q = self.tau.shape[-1] // 3
+        cur_tau, prev_tau, prev_value = self.tau.chunk(3, -1)
+        assert xd == prev_value.shape[:-1], (x.shape, prev_value.shape)
 
         # (*xd, c, emb)
-        arange = torch.arange(1, 1 + self.quantile_dim, device=x.device, dtype=x.dtype).expand(*prev_value.shape, -1)
+        arange = torch.arange(1, 1 + self.quantile_dim, device=x.device, dtype=x.dtype).expand(*cur_tau.shape, -1)
         # (*xd, c, emb * 2)
-        cos_vec = torch.cos(math.pi * arange * cur_prev_tau.unsqueeze(-1))
+        cur_cos_vec = torch.cos(math.pi * arange * cur_tau.unsqueeze(-1))
+        prev_cos_vec = torch.cos(math.pi * arange * prev_tau.unsqueeze(-1))
+        assert_shape(cur_cos_vec, (*xd, num_q, self.quantile_dim))
         # (*xd, c, emb // 2)
-        value_vec = prev_value.unsqueeze(-1).expand(*cos_vec.shape[:-1], self.quantile_dim // 2)
+        value_vec = prev_value.unsqueeze(-1).expand(*prev_value.shape, self.quantile_dim // 2)
+        assert_shape(value_vec, (*xd, num_q, self.quantile_dim // 2))
         # (*xd, c, emb * 3)
-        all_vec = torch.cat([cos_vec, -value_vec, value_vec], -1)
+        all_vec = torch.cat([cur_cos_vec, prev_cos_vec, -value_vec, value_vec], -1)
+        assert_shape(all_vec, (*xd, num_q, self.quantile_dim * 3))
         # (*xd, c, n)
         tau_emb = F.relu(self.quantile_embedding(all_vec))
+        assert_shape(tau_emb, (*xd, num_q, x.shape[-1]))
         # (*xd, c)
         return self.linear(x.unsqueeze(-2) * tau_emb).squeeze(-1)
 
