@@ -1,3 +1,5 @@
+import math
+
 import torch
 
 
@@ -21,16 +23,22 @@ def calc_advantages(rewards, values, dones, reward_discount, advantage_discount)
     """
     _check_data(rewards, values, dones)
 
+    # adv_mult = (values[1:].std(-1) - values[:-1].std(-1)).abs()
+    # # adv_mult = (values[1:] * reward_discount + rewards.unsqueeze(-1) - values[:-1]).std(-1)
+    # adv_mult /= adv_mult.pow(2).mean().sqrt().add(0.01)
+
     values = values.mean(-1)
 
-    gae = 0
-    gaes = torch.zeros_like(rewards)
+    next_adv = 0
+    advantages = torch.zeros_like(rewards)
     for t in reversed(range(len(rewards))):
         nonterminal = 1 - dones[t]
         td_residual = rewards[t] + reward_discount * nonterminal * values[t + 1] - values[t]
-        gaes[t] = gae = td_residual + advantage_discount * reward_discount * nonterminal * gae
+        advantages[t] = next_adv = td_residual + advantage_discount * reward_discount * nonterminal * next_adv
 
-    return gaes
+    # advantages *= adv_mult
+
+    return advantages
 
 
 def calc_returns(rewards, values, dones, reward_discount):
@@ -56,6 +64,11 @@ def calc_returns(rewards, values, dones, reward_discount):
         R = rewards[t] + nonterminal * reward_discount * R
         returns[t] = R
 
+    # vmean = values[:, 0].mean()
+    # vstd = (values[1:, 0].std(-1) - values[:-1, 0].std(-1)).abs()
+    # vstd2 = (values[1:, 0] * reward_discount + rewards[:, 0] - values[:-1, 0]).std(-1)
+    # print(vmean, 'a', vstd, 'b', vstd2)
+
     return returns
 
 
@@ -69,6 +82,31 @@ def calc_vtrace(rewards, values, dones, probs_ratio, discount, c_max=2.0, p_max=
         targets[i] = values[i] + td[i] + nonterminal[i] * discount * c[i] * (targets[i + 1] - values[i + 1])
     advantages = rewards + nonterminal * discount * targets[1:] - values[:-1]
     return targets[:-1], advantages * p
+
+
+def cumulative_value_mass_step(mass, decay):
+    return math.log(1 + mass * math.log(decay)) / math.log(decay)
+
+
+def cumulative_value_mass_fraction_step(fraction, decay):
+    mass = fraction / (1 - decay)
+    return math.log(1 + mass * math.log(decay)) / math.log(decay)
+
+
+def chunk_value_mass(num_chunks, decay):
+    torch.linspace()
+
+
+def test():
+    print()
+    num_chunks = 10
+    eps = 1 / (num_chunks)
+    print(torch.linspace(eps, 1 - eps, num_chunks - 1))
+
+
+def test_mass():
+    assert math.isclose(cumulative_value_mass_step(50, 0.99), 69.4697, abs_tol=0.001)
+    assert math.isclose(cumulative_value_mass_fraction_step(0.9, 0.99), 233.7181, abs_tol=0.001)
 
 
 def test_vtrace():

@@ -25,7 +25,7 @@ from ..common.rl_base import RLBase
 from ..common.pop_art import PopArt
 from ..common.attr_dict import AttrDict
 from ..common.data_loader import DataLoader
-from ..models import FCActor, Actor
+from ..models import create_ppo_fc_actor, Actor
 from ..models.heads import PolicyHead, StateValueHead, StateValueQuantileHead
 from ..models.utils import model_diff
 from .steps_processor import StepsProcessor
@@ -40,7 +40,7 @@ class PPO(RLBase):
                  horizon=64,
                  ppo_iters=10,
                  batch_size=64,
-                 model_factory=FCActor,
+                 model_factory=create_ppo_fc_actor,
                  optimizer_factory=partial(optim.Adam, lr=3e-4),
                  value_loss_scale=0.5,
                  entropy_loss_scale=0.01,
@@ -57,7 +57,6 @@ class PPO(RLBase):
                  reward_scale=1.0,
                  barron_alpha_c=(1.5, 1),
                  advantage_scaled_clip=True,
-                 hidden_code_type: 'input' or 'first' or 'last'='input',
                  lr_scheduler_factory=None,
                  clip_decay_factory=None,
                  entropy_decay_factory=None,
@@ -122,8 +121,6 @@ class PPO(RLBase):
                 A More General Robust Loss Function https://arxiv.org/abs/1701.03077
                 Default (1, 1.5) will give something in between MSE and pseudo Huber.
             advantage_scaled_clip (bool): Whether to multiply `policy_clip` and `value_clip` by abs(advantages)
-            hidden_code_type (str): Model hidden code type. Not used in PPO.
-                Valid values are 'input' or 'first' or 'last'
             lr_scheduler_factory (Callable[DecayLR]): Learning rate scheduler factory.
             clip_decay_factory (Callable[ValueDecay]): Policy / value clip scheduler factory.
             entropy_decay_factory (Callable[ValueDecay]): `entropy_loss_scale` scheduler factory.
@@ -162,7 +159,6 @@ class PPO(RLBase):
         self.kl_scale = kl_scale
         self.lr_iter_mult = lr_iter_mult
         self.entropy_reward_scale = entropy_reward_scale
-        self.hidden_code_type = hidden_code_type
         self.barron_alpha_c = barron_alpha_c
         self.advantage_scaled_clip = advantage_scaled_clip
         self.use_pop_art = use_pop_art
@@ -171,7 +167,7 @@ class PPO(RLBase):
         assert len(set(self.constraint) - {'clip', 'kl', 'opt', 'mse', 'target'}) == 0
 
         if model_init_path is None:
-            self._train_model: Actor = model_factory(observation_space, action_space, self._head_factory, hidden_code_type=hidden_code_type)
+            self._train_model: Actor = model_factory(observation_space, action_space)
         else:
             self._train_model: Actor = torch.load(model_init_path)
             print(f'loaded model {model_init_path}')
@@ -192,6 +188,7 @@ class PPO(RLBase):
         with torch.no_grad():
             # run network
             states_eval = states.to(self.device_eval)
+
             value_head = self._eval_model.heads.state_values
             iqn = isinstance(value_head, StateValueQuantileHead)
             if iqn:
@@ -200,20 +197,20 @@ class PPO(RLBase):
                     if self._prev_value_tau is None else self._prev_value_tau
                 if dones is not None:
                     prev_value[dones > 0.5] = 0
-                    prev_tau[dones > 0.5] = 0
-                value_head.tau = torch.cat([cur_tau, prev_tau, prev_value], -1)
-                tau = dict(tau=value_head.tau)
+                    prev_tau[dones > 0.5] = 0.5
+                tau_values = torch.cat([cur_tau, prev_tau, prev_value], -1)
+                tau = dict(tau=tau_values)
             else:
                 tau = dict()
 
-            ac_out = self._take_step(states_eval, dones)
-            actions = self._eval_model.pd.sample(ac_out.logits).cpu()
+            ac_out = self._take_step(states_eval, dones, **tau)
+            actions = self._eval_model.heads.logits.pd.sample(ac_out.logits).cpu()
 
             if not self.disable_training:
                 if iqn:
                     self._prev_value_tau = (ac_out.state_values, cur_tau)
 
-                self._steps_processor.append_head(ac_out, states=states, rewards=rewards, dones=dones, actions=actions, **tau)
+                self._steps_processor.append_values(states=states, rewards=rewards, dones=dones, actions=actions, **ac_out, **tau)
 
                 if len(self._steps_processor.data.states) > self.horizon:
                     self._pre_train()
@@ -221,8 +218,8 @@ class PPO(RLBase):
 
             return actions
 
-    def _take_step(self, states, dones):
-        return self._eval_model(states)
+    def _take_step(self, states, dones, **model_params):
+        return self._eval_model(states, **model_params)
 
     def _pre_train(self):
         self._check_log()
@@ -271,7 +268,7 @@ class PPO(RLBase):
                         actions=data.actions, advantages=data.advantages, returns=data.returns, **tau)
 
         if 'target' in self.constraint:
-            data.logits_target = get_target_logits(self._train_model.pd, data.actions, data.logits_old, self.policy_clip * data.advantages)
+            data.logits_target = get_target_logits(self._train_model.heads.logits.pd, data.actions, data.logits_old, self.policy_clip * data.advantages)
 
         batches = max(1, math.ceil(self.num_actors * self.horizon / self.batch_size))
 
@@ -288,13 +285,8 @@ class PPO(RLBase):
                 for loader_iter in range(batches):
                     # prepare batch data
                     batch = AttrDict(data_loader.get_next_batch())
-                    if ppo_iter == self.ppo_iters - 1 and loader_iter == 0:
-                        self._train_model.set_log(self.logger, self._do_log, self.step)
-
-                    loss, kl = self._ppo_step(batch)
+                    loss, kl = self._ppo_step(batch, self._do_log and ppo_iter == self.ppo_iters - 1 and loader_iter == 0)
                     kl_list.append(kl)
-
-                    self._train_model.set_log(self.logger, False, self.step)
 
                 for g in self._optimizer.param_groups:
                     g['lr'] *= self.lr_iter_mult
@@ -319,19 +311,27 @@ class PPO(RLBase):
 
         self._adjust_kl_scale(kl)
 
-        self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
+        self._copy_parameters(self._train_model, self._eval_model)
+        # self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
-    def _ppo_step(self, batch):
+    def _ppo_step(self, batch, do_log):
         with torch.enable_grad():
             value_head = self._train_model.heads.state_values
-            if isinstance(value_head, StateValueQuantileHead):
-                value_head.tau = batch.tau
+            iqn = isinstance(value_head, StateValueQuantileHead)
 
-            actor_out = self._train_model(batch.states)
+            actor_params = AttrDict()
+            if do_log:
+                actor_params.logger = self.logger
+                actor_params.cur_step = self.step
+            if iqn:
+                actor_params.tau = batch.tau
+
+            actor_out = self._train_model(batch.states, **actor_params)
+
             batch.logits = actor_out.logits
             batch.state_values = actor_out.state_values
-            # get loss
-            loss, kl = self._get_ppo_loss(batch)
+
+            loss, kl = self._get_ppo_loss(batch, do_log=do_log)
             loss = loss.mean()
         kl = kl.item()
         if 'kl' not in self.constraint and 'mse' not in self.constraint or kl < 4 * self.kl_target:
@@ -344,7 +344,7 @@ class PPO(RLBase):
 
         return loss, kl
 
-    def _get_ppo_loss(self, batch, pd=None, tag=''):
+    def _get_ppo_loss(self, batch, pd=None, do_log=False, tag=''):
         """
         Single iteration of PPO algorithm.
         Returns: Total loss and KL divergence.
@@ -357,7 +357,7 @@ class PPO(RLBase):
         advantages = batch.advantages
 
         if pd is None:
-            pd = self._train_model.pd
+            pd = self._train_model.heads.logits.pd
 
         # clipping factors
         value_clip = self.value_clip * self._clip_mult
@@ -371,7 +371,7 @@ class PPO(RLBase):
         # log probabilities used for better numerical stability
         logp_old = pd.logp(actions, logits_old)
         logp = pd.logp(actions, logits)
-        ratio = logp - logp_old.detach()
+        ratio = logp - logp_old
 
         adv_u = advantages.unsqueeze(-1)
 
@@ -406,16 +406,17 @@ class PPO(RLBase):
         if 'kl' in self.constraint:
             loss_kl = self.kl_scale * (kl + 10 * (kl - 2 * self.kl_target).clamp(0, 1e6).pow(2))
         elif 'mse' in self.constraint:
-            loss_kl = self.kl_scale * (logits - logits_old).pow(2)
+            loss_kl = self.kl_scale * (logits - logits_old).abs().pow(2.5)
         else:
             loss_kl = kl.new(1).zero_()
 
         # value loss
         if 'tau' in batch:
-            num_q_per_batch = max(1, int(round(self.num_quantiles / self.ppo_iters)))
-            idx = torch.randperm(self.num_quantiles, device=values.device)[:num_q_per_batch]
             tau = batch.tau[..., :self.num_quantiles]
-            loss_value = self.value_loss_scale * huber_quantile_loss(values[..., idx], returns[..., idx], tau[..., idx], reduce=False)
+            loss_value = self.value_loss_scale * huber_quantile_loss(values, returns, tau, reduce=False)
+            # num_q_per_batch = max(1, int(round(self.num_quantiles / self.ppo_iters)))
+            # idx = torch.randperm(self.num_quantiles, device=values.device)[:num_q_per_batch]
+            # loss_value = self.value_loss_scale * huber_quantile_loss(values[..., idx], returns[..., idx], tau[..., idx], reduce=False)
         else:
             v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
             vf_clip_loss = barron_loss(v_pred_clipped, returns, *self.barron_alpha_c, reduce=False)
@@ -435,20 +436,15 @@ class PPO(RLBase):
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_clip.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
 
-        if self._train_model.do_log and tag is not None:
+        if do_log and tag is not None:
             with torch.no_grad():
-                self.logger.add_histogram('loss value' + tag, loss_value, self.frame)
-                self.logger.add_histogram('loss ent' + tag, loss_ent, self.frame)
                 self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame)
                 self.logger.add_scalar('loss entropy' + tag, loss_ent.mean(), self.frame)
-                self.logger.add_scalar('loss value' + tag, loss_value.mean(), self.frame)
-                self.logger.add_histogram('ratio' + tag, ratio, self.frame)
+                self.logger.add_scalar('loss state value' + tag, loss_value.mean(), self.frame)
                 self.logger.add_scalar('ratio mean' + tag, ratio.mean(), self.frame)
                 self.logger.add_scalar('ratio abs mean' + tag, ratio.abs().mean(), self.frame)
                 self.logger.add_scalar('ratio abs max' + tag, ratio.abs().max(), self.frame)
-                if 'clip' in self.constraint:
-                    self.logger.add_histogram('loss clip' + tag, loss_clip, self.frame)
-                    self.logger.add_scalar('loss clip' + tag, loss_clip.mean(), self.frame)
+                self.logger.add_scalar('loss policy' + tag, loss_clip.mean(), self.frame)
 
         return total_loss, kl.mean()
 
@@ -459,9 +455,9 @@ class PPO(RLBase):
         if kl < (1 / threshold) * self.kl_target:
             self.kl_scale = max(1 / limit, self.kl_scale / change)
 
-    @staticmethod
-    def _head_factory(hidden_size, pd):
-        return dict(logits=PolicyHead(hidden_size, pd), state_values=StateValueQuantileHead(hidden_size))
+    # @staticmethod
+    # def _head_factory(hidden_size, pd):
+    #     return dict(logits=PolicyHead(hidden_size, pd), state_values=StateValueQuantileHead(hidden_size))
 
     @property
     def _learning_rate(self):
@@ -528,7 +524,10 @@ class PPO(RLBase):
             self.logger.add_histogram('returns', data.returns, self.frame)
             self.logger.add_histogram('advantages', data.advantages, self.frame)
             self.logger.add_histogram('values', data.state_values, self.frame)
-            if isinstance(self._train_model.pd, DiagGaussianPd):
+            self.logger.add_scalar('value rmse', (data.state_values - data.returns).pow(2).mean().sqrt(), self.frame)
+            self.logger.add_scalar('value abs err', (data.state_values - data.returns).abs().mean(), self.frame)
+            self.logger.add_scalar('value max err', (data.state_values - data.returns).max(), self.frame)
+            if isinstance(self._train_model.heads.logits.pd, DiagGaussianPd):
                 mean, std = data.logits.chunk(2, dim=1)
                 self.logger.add_histogram('logits mean', mean, self.frame)
                 self.logger.add_histogram('logits std', std, self.frame)
@@ -538,8 +537,12 @@ class PPO(RLBase):
                 self.logger.add_histogram(name, param, self.frame)
 
     def _create_steps_processor(self) -> StepsProcessor:
-        return StepsProcessor(self._train_model.pd, self.reward_discount, self.advantage_discount,
+        return StepsProcessor(self._train_model.heads.logits.pd, self.reward_discount, self.advantage_discount,
                               self.reward_scale, True, self.barron_alpha_c, self.entropy_reward_scale)
+
+    def _copy_parameters(self, src, dst):
+        for src, dst in zip(src.state_dict().values(), dst.state_dict().values()):
+            dst.data.copy_(src.data)
 
     def __getstate__(self):
         d = dict(self.__dict__)

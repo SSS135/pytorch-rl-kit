@@ -2,14 +2,16 @@ import math
 
 import torch
 import torch.nn as nn
+from optfn.skip_connections import ResidualBlock
 from torch import autograd
 from torch.autograd import Variable
 
-from .actors import Actor
-from .heads import HeadOutput
+from .actors import FeatureExtractorBase, ModularActor
+from .heads import StateValueQuantileHead, PolicyHead, StateValueHead
+from .norm_factory import NormFactory
 from .utils import make_conv_heatmap, image_to_float
 from ..common.make_grid import make_grid
-from optfn.skip_connections import ResidualBlock
+from ..common.probability_distributions import make_pd
 
 
 class GroupTranspose(nn.Module):
@@ -32,49 +34,50 @@ class ChannelShuffle(nn.Module):
         return input[:, Variable(self.indices)].contiguous()
 
 
-class CNNActor(Actor):
+class CNNFeatureExtractor(FeatureExtractorBase):
     """
     Convolution network.
     """
-    def __init__(self, observation_space, action_space, head_factory, cnn_kind='normal', *args,
-                 cnn_activation=nn.ReLU, fc_activation=nn.ReLU, cnn_hidden_code=False, hidden_code_type='input', **kwargs):
+    def __init__(self, input_shape, cnn_kind='normal', cnn_activation=nn.ReLU, fc_activation=nn.ReLU, **kwargs):
         """
         Args:
-            observation_space: Env's observation space
-            action_space: Env's action space
-            head_factory: Function which accept (hidden vector size, `ProbabilityDistribution`) and return `HeadBase`
+            input_shape: Env's observation space
             cnn_kind: Type of cnn.
                 'normal' - CNN from Nature DQN paper (Mnih et al. 2015)
                 'custom' - largest CNN of custom structure
             cnn_activation: Activation function
         """
-        super().__init__(observation_space, action_space, head_factory, *args, **kwargs)
+        super().__init__(**kwargs)
+        self.input_shape = input_shape
         self.cnn_activation = cnn_activation
         self.linear_activation = fc_activation
         self.cnn_kind = cnn_kind
-        self.cnn_hidden_code = cnn_hidden_code
+        self.convs = None
+        self.linear = None
+        self._create_model()
 
+    def _create_model(self):
         # create convolutional layers
-        if cnn_kind == 'normal': # Nature DQN (1,683,456 parameters)
+        if self.cnn_kind == 'normal': # Nature DQN (1,683,456 parameters)
             self.convs = nn.ModuleList([
-                self._make_cnn_layer(observation_space.shape[0], 32, 8, 4, first_layer=True),
+                self._make_cnn_layer(self.input_shape[0], 32, 8, 4, first_layer=True),
                 self._make_cnn_layer(32, 64, 4, 2),
                 self._make_cnn_layer(64, 64, 3, 1),
             ])
             self.linear = self._make_fc_layer(3136, 512)
-        elif cnn_kind == 'large': # custom (2,066,432 parameters)
+        elif self.cnn_kind == 'large': # custom (2,066,432 parameters)
             nf = 32
             self.convs = nn.ModuleList([
-                self._make_cnn_layer(observation_space.shape[0], nf, 4, 2, 0, first_layer=True),
+                self._make_cnn_layer(self.input_shape[0], nf, 4, 2, 0, first_layer=True),
                 self._make_cnn_layer(nf, nf * 2, 4, 2, 0),
                 self._make_cnn_layer(nf * 2, nf * 4, 4, 2, 1),
                 self._make_cnn_layer(nf * 4, nf * 8, 4, 2, 1),
             ])
             self.linear = self._make_fc_layer(nf * 8 * 4 * 4, 512)
-        elif cnn_kind == 'grouped': # custom grouped (6,950,912 parameters)
+        elif self.cnn_kind == 'grouped': # custom grouped (6,950,912 parameters)
             nf = 32
             self.convs = nn.ModuleList([
-                self._make_cnn_layer(observation_space.shape[0], nf * 4, 4, 2, 0, first_layer=True),
+                self._make_cnn_layer(self.input_shape[0], nf * 4, 4, 2, 0, first_layer=True),
                 ChannelShuffle(nf * 4),
                 self._make_cnn_layer(nf * 4, nf * 8, 4, 2, 0, groups=8),
                 ChannelShuffle(nf * 8),
@@ -85,7 +88,7 @@ class CNNActor(Actor):
                 self._make_cnn_layer(nf * 32, nf * 8, 3, 1, 1, groups=8),
             ])
             self.linear = self._make_fc_layer(nf * 8 * 4 * 4, 512)
-        elif cnn_kind == 'impala':
+        elif self.cnn_kind == 'impala':
             def impala_block(c_in, c_out):
                 return nn.Sequential(
                     nn.Conv2d(c_in, c_out, 3, 1, 1),
@@ -114,20 +117,18 @@ class CNNActor(Actor):
                 nn.ReLU(),
             )
         else:
-            raise ValueError(cnn_kind)
+            raise ValueError(self.cnn_kind)
 
-        # create head
-        self.hidden_code_size = self.linear[0].in_features if cnn_hidden_code else self.linear[0].out_features
-        self._init_heads(self.hidden_code_size)
-
-        self.reset_weights()
+    @property
+    def output_size(self):
+        return self.linear[0].out_features
 
     def _make_fc_layer(self, in_features, out_features, first_layer=False):
-        bias = self.norm is None or not self.norm.disable_bias or not self.norm.allow_fc
+        bias = self.norm_factory is None or not self.norm_factory.disable_bias or not self.norm_factory.allow_fc
         return self._make_layer(nn.Linear(in_features, out_features, bias=bias), first_layer=first_layer)
 
     def _make_cnn_layer(self, *args, first_layer=False, **kwargs):
-        bias = self.norm is None or not self.norm.disable_bias or not self.norm.allow_cnn
+        bias = self.norm_factory is None or not self.norm_factory.disable_bias or not self.norm_factory.allow_cnn
         return self._make_layer(nn.Conv2d(*args, **kwargs, bias=bias), first_layer=first_layer)
 
     def _make_layer(self, transf, first_layer=False):
@@ -135,69 +136,42 @@ class CNNActor(Actor):
         features = transf.out_features if is_linear else transf.out_channels
 
         parts = [transf]
-        if self.norm is not None and \
-                (self.norm.allow_after_first_layer or not first_layer) and \
-                (self.norm.allow_fc if is_linear else self.norm.allow_cnn):
-            func = self.norm.create_fc_norm if is_linear else self.norm.create_cnn_norm
+        if self.norm_factory is not None and \
+                (self.norm_factory.allow_after_first_layer or not first_layer) and \
+                (self.norm_factory.allow_fc if is_linear else self.norm_factory.allow_cnn):
+            func = self.norm_factory.create_fc_norm if is_linear else self.norm_factory.create_cnn_norm
             parts.append(func(features, first_layer))
         parts.append(self.linear_activation() if is_linear else self.cnn_activation())
         return nn.Sequential(*parts)
 
-    def _extract_features(self, x):
-        #x = input - input.median() # * 2 - 1
+    def _extract_features(self, x, logger=None, cur_step=None):
         for i, layer in enumerate(self.convs):
-            # run conv layer
             x = layer(x)
-            # log
-            if self.do_log:
-                self._log_conv_activations(i, x)
-                # self.log_conv_filters(i, layer[0])
+            if logger is not None:
+                self._log_conv_activations(i, x, logger, cur_step)
         return x
 
-    def forward(self, input, hidden_code_input=False, only_hidden_code_output=False):
-        log_policy_attention = self.do_log and input.is_leaf and not hidden_code_input and not only_hidden_code_output
-        if not hidden_code_input:
-            input = image_to_float(input)
-            if log_policy_attention:
-                input.requires_grad = True
+    def forward(self, input, logger=None, cur_step=None, **kwargs):
+        input = image_to_float(input)
 
-            x = self._extract_features(input)
+        x = self._extract_features(input)
+        x = x.view(x.size(0), -1)
+        x = self.linear(x)
 
-            x = x.view(x.size(0), -1)
+        if logger is not None:
+            logger.add_histogram('conv linear', x, cur_step)
 
-            if not self.cnn_hidden_code:
-                x = self.linear(x)
-        else:
-            x = input
+        return x
 
-        hidden_code = x
-        if only_hidden_code_output:
-            return HeadOutput(hidden_code=hidden_code)
-
-        if self.cnn_hidden_code:
-            x = self.linear(x)
-
-        ac_out = self._run_heads(x)
-        ac_out.hidden_code = hidden_code
-
-        if not hidden_code_input:
-            if self.do_log:
-                self.logger.add_histogram('conv linear', x, self._step)
-
-            if log_policy_attention:
-                self._log_policy_attention(input, ac_out)
-
-        return ac_out
-
-    def _log_conv_activations(self, index: int, x: Variable):
+    def _log_conv_activations(self, index: int, x: torch.Tensor, logger, cur_step):
         with torch.no_grad():
             img = x[0].unsqueeze(1).clone()
             img = make_conv_heatmap(img)
             img = make_grid(img, nrow=round(math.sqrt(x.shape[1])), normalize=False, fill_value=0.1)
-            self.logger.add_image('conv activations {} img'.format(index), img, self._step)
-            self.logger.add_histogram('conv activations {} hist'.format(index), x[0], self._step)
+            logger.add_image('conv activations {} img'.format(index), img, cur_step)
+            logger.add_histogram('conv activations {} hist'.format(index), x[0], cur_step)
 
-    def _log_conv_filters(self, index: int, conv: nn.Conv2d):
+    def _log_conv_filters(self, index: int, conv: nn.Conv2d, logger, cur_step):
         with torch.no_grad():
             channels = conv.in_channels * conv.out_channels
             shape = conv.weight.shape
@@ -211,10 +185,10 @@ class CNNActor(Actor):
                 img = img[:channels]
             img = make_conv_heatmap(img, scale=2 * img.std())
             img = make_grid(img, nrow=round(math.sqrt(channels)), normalize=False, fill_value=0.1)
-            self.logger.add_image('conv featrues {} img'.format(index), img, self._step)
-            self.logger.add_histogram('conv features {} hist'.format(index), conv.weight, self._step)
+            logger.add_image('conv featrues {} img'.format(index), img, cur_step)
+            logger.add_histogram('conv features {} hist'.format(index), conv.weight, cur_step)
 
-    def _log_policy_attention(self, states, head_out):
+    def _log_policy_attention(self, states, head_out, logger, cur_step):
         states_grad = autograd.grad(
             head_out.logits.abs().mean() + head_out.state_values.abs().mean(), states,
             only_inputs=True, retain_graph=True)[0]
@@ -224,18 +198,40 @@ class CNNActor(Actor):
             img /= img.view(4, -1).pow(2).mean(1).sqrt_().add_(1e-5).view(4, 1, 1, 1)
             img = img.view(-1, 1, *img.shape[2:]).abs()
             img = make_grid(img, 4, normalize=True, fill_value=0.1)
-            self.logger.add_image('state attention', img, self._step)
+            logger.add_image('state attention', img, cur_step)
 
 
-class Sega_CNNActor(CNNActor):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, cnn_kind='large', **kwargs)
+class Sega_CNNFeatureExtractor(CNNFeatureExtractor):
+    def _create_model(self):
         nf = 32
-        in_c = self.observation_space.shape[0]
+        in_c = self.input_shape[0]
         self.convs = nn.ModuleList([
-            self._make_layer(nn.Conv2d(in_c, nf, 8, 4, 0, bias=self.norm is None)),
-            self._make_layer(nn.Conv2d(nf, nf * 2, 6, 3, 0, bias=self.norm is None)),
-            self._make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 0, bias=self.norm is None)),
+            self._make_layer(nn.Conv2d(in_c, nf, 8, 4, 0, bias=self.norm_factory is None)),
+            self._make_layer(nn.Conv2d(nf, nf * 2, 6, 3, 0, bias=self.norm_factory is None)),
+            self._make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 0, bias=self.norm_factory is None)),
         ])
         self.linear = self._make_layer(nn.Linear(1920, 512))
-        self.reset_weights()
+
+
+def create_ppo_cnn_actor(observation_space, action_space, cnn_kind='normal',
+                         cnn_activation=nn.ReLU, fc_activation=nn.ReLU, norm_factory: NormFactory=None,
+                         iqn=False, split_policy_value_network=False):
+    assert len(observation_space.shape) == 3
+    pd = make_pd(action_space)
+
+    create_fx = lambda: CNNFeatureExtractor(observation_space.shape, cnn_kind,
+                                            cnn_activation, fc_activation, norm_factory=norm_factory)
+
+    if split_policy_value_network:
+        fx_policy, fx_value = create_fx(), create_fx()
+    else:
+        fx_policy = fx_value = create_fx()
+
+    value_head = (StateValueQuantileHead if iqn else StateValueHead)(fx_value.output_size)
+    policy_head = PolicyHead(fx_policy.output_size, pd)
+
+    if split_policy_value_network:
+        models = {fx_policy: dict(logits=policy_head), fx_value: dict(state_values=value_head)}
+    else:
+        models = {fx_policy: dict(logits=policy_head, state_values=value_head)}
+    return ModularActor(models)

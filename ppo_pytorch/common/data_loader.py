@@ -39,7 +39,7 @@ class DataLoader:
         chunk = *([slice(None)] * self.dim), chunk
 
         def extract_chunk(x):
-            return (x[chunk] if x.device == self.device else x[chunk].to(self.device)).contiguous()
+            return x[chunk] if x.device == self.device else x[chunk].to(self.device)
 
         if isinstance(self.data, dict):
             return {k: extract_chunk(v) for k, v in self.data.items()}

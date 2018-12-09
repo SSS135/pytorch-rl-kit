@@ -19,7 +19,7 @@ def make_conv_heatmap(x, scale=0.5):
     return img
 
 
-def weights_init(m, init_alg=init.xavier_uniform_, gain=1):
+def weights_init(m, init_alg=init.xavier_uniform_):
     """
     Initialization function for `Actor`. Xavier init is used by default.
     """
@@ -29,7 +29,7 @@ def weights_init(m, init_alg=init.xavier_uniform_, gain=1):
     norm = classname.find('Norm') != -1
     layer_2d = classname.find('2d') != -1
     if (conv or linear) and hasattr(m, 'weight'):
-        init_alg(m.weight, gain)
+        init_alg(m.weight)
         # if m.bias is not None:
         #     m.bias.data.fill_(0)
     # if norm and hasattr(m, 'weight') and m.weight is not None:

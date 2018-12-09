@@ -1,12 +1,12 @@
 import gym.spaces
 import numpy as np
 
-from .actors import Actor
+from .actors import ModularActor
 from ..common.lstm import LSTM
 from ..common.qrnn import DenseQRNN
 
 
-class RNNActor(Actor):
+class RNNActor(ModularActor):
     def __init__(self, observation_space: gym.Space, action_space: gym.Space, *args,
                  hidden_code_size=128, num_layers=3, rnn_kind='qrnn', **kwargs):
         """

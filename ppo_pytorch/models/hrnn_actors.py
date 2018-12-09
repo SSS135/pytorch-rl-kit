@@ -7,7 +7,7 @@ from ..common.qrnn import DenseQRNN
 from optfn.temporal_group_norm import TemporalGroupNorm
 from torch.autograd import Variable
 
-from .actors import Actor
+from .actors import ModularActor
 from .cnn_actors import CNNActor
 from .utils import image_to_float
 from ..common.probability_distributions import make_pd, BernoulliPd, DiagGaussianPd, FixedStdGaussianPd, BetaPd
@@ -16,7 +16,7 @@ from . import PolicyHead
 from ..common.lstm import LSTM
 
 
-class HRNNActor(Actor):
+class HRNNActor(ModularActor):
     def __init__(self, *args,
                  hidden_code_size=128, num_layers=3, h_action_size=16, rnn_kind='qrnn', **kwargs):
         super().__init__(*args, **kwargs)
