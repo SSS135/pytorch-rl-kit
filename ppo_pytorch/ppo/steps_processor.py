@@ -1,8 +1,9 @@
+import random
 from typing import Dict
 
 from ..common.attr_dict import AttrDict
 from ..common.barron_loss import barron_loss_derivative
-from ..common.gae import calc_returns, calc_advantages
+from ..common.gae import calc_binned_value_targets, calc_advantages, calc_value_targets, assert_equal_tensors
 import torch
 
 
@@ -39,7 +40,7 @@ class StepsProcessor:
 
         self.data.rewards += self._get_entropy_rewards()
 
-        self.data.rewards, self.data.returns, self.data.advantages = \
+        self.data.rewards, self.data.value_targets, self.data.advantages = \
             self._process_rewards(self.data.rewards, self.data.state_values, self.data.dones)
 
         self._drop_excess_data()
@@ -67,15 +68,20 @@ class StepsProcessor:
         return values if torch.is_tensor(values) else torch.stack(values, dim=0)
 
     def _process_rewards(self, rewards, values, dones):
-        norm_rewards = self.reward_scale * rewards
+        norm_rewards = self.reward_scale * rewards * values.shape[2]
 
-        # calculate returns and advantages
-        returns = calc_returns(norm_rewards, values, dones, self.reward_discount)
-        advantages = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
+        # calculate value_targets and advantages
+        value_targets = calc_value_targets(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
+        if random.randrange(50) == 0:
+            print('values', values[0, 0])
+            print('value_targets', value_targets[0, 0])
+        # gae_adv = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
+        advantages = (value_targets - values[:-1]).mean(-1).sum(-1)
+        # assert_equal_tensors(advantages, gae_adv)
         if self.mean_norm:
             advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-3)
         else:
             advantages = advantages / max(advantages.pow(2).mean().sqrt(), 1e-3)
         advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
 
-        return norm_rewards, returns, advantages
+        return norm_rewards, value_targets, advantages

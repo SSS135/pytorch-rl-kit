@@ -182,7 +182,7 @@ class PPO(RLBase):
         self._train_executor = ThreadPoolExecutor(max_workers=1)
         self._train_model = self._train_model.to(self.device_eval, non_blocking=True).train()
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
-        self._prev_value_tau = None
+        self._prev_tau = None
 
     def _step(self, rewards, dones, states) -> torch.Tensor:
         with torch.no_grad():
@@ -193,24 +193,19 @@ class PPO(RLBase):
             iqn = isinstance(value_head, StateValueQuantileHead)
             if iqn:
                 cur_tau = torch.rand((states.shape[0], self.num_quantiles), device=self.device_eval)
-                prev_value, prev_tau = (torch.zeros_like(cur_tau), torch.full_like(cur_tau, 0.5)) \
-                    if self._prev_value_tau is None else self._prev_value_tau
+                prev_tau = cur_tau if self._prev_tau is None else self._prev_tau
                 if dones is not None:
-                    prev_value[dones > 0.5] = 0
-                    prev_tau[dones > 0.5] = 0.5
-                tau_values = torch.cat([cur_tau, prev_tau, prev_value], -1)
-                tau = dict(tau=tau_values)
+                    prev_tau[dones > 0.5] = cur_tau[dones > 0.5]
+                tau_dict = dict(tau=torch.cat([cur_tau, prev_tau], -1))
+                self._prev_tau = cur_tau
             else:
-                tau = dict()
+                tau_dict = dict()
 
-            ac_out = self._take_step(states_eval, dones, **tau)
+            ac_out = self._take_step(states_eval, dones, **tau_dict)
             actions = self._eval_model.heads.logits.pd.sample(ac_out.logits).cpu()
 
             if not self.disable_training:
-                if iqn:
-                    self._prev_value_tau = (ac_out.state_values, cur_tau)
-
-                self._steps_processor.append_values(states=states, rewards=rewards, dones=dones, actions=actions, **ac_out, **tau)
+                self._steps_processor.append_values(states=states, rewards=rewards, dones=dones, actions=actions, **ac_out, **tau_dict)
 
                 if len(self._steps_processor.data.states) > self.horizon:
                     self._pre_train()
@@ -256,16 +251,16 @@ class PPO(RLBase):
         iqn = isinstance(value_head, StateValueQuantileHead)
 
         if self.use_pop_art:
-            returns_mean, returns_std = self._pop_art.statistics
-            self._pop_art.update_statistics(data.returns)
-            value_head.normalize(returns_mean, returns_std)
-            data.state_values = (data.state_values - returns_mean) / returns_std
-            data.returns = (data.returns - returns_mean) / returns_std
+            value_targets_mean, value_targets_std = self._pop_art.statistics
+            self._pop_art.update_statistics(data.value_targets)
+            value_head.normalize(value_targets_mean, value_targets_std)
+            data.state_values = (data.state_values - value_targets_mean) / value_targets_std
+            data.value_targets = (data.value_targets - value_targets_mean) / value_targets_std
 
         tau = dict(tau=data.tau) if iqn else dict()
 
         data = AttrDict(states=data.states, logits_old=data.logits, state_values_old=data.state_values,
-                        actions=data.actions, advantages=data.advantages, returns=data.returns, **tau)
+                        actions=data.actions, advantages=data.advantages, value_targets=data.value_targets, **tau)
 
         if 'target' in self.constraint:
             data.logits_target = get_target_logits(self._train_model.heads.logits.pd, data.actions, data.logits_old, self.policy_clip * data.advantages)
@@ -306,8 +301,8 @@ class PPO(RLBase):
             self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame)
 
         if self.use_pop_art:
-            returns_mean, returns_std = self._pop_art.statistics
-            self._train_model.heads.state_values.unnormalize(returns_mean, returns_std)
+            value_targets_mean, value_targets_std = self._pop_art.statistics
+            self._train_model.heads.state_values.unnormalize(value_targets_mean, value_targets_std)
 
         self._adjust_kl_scale(kl)
 
@@ -347,12 +342,12 @@ class PPO(RLBase):
     def _get_ppo_loss(self, batch, pd=None, do_log=False, tag=''):
         """
         Single iteration of PPO algorithm.
-        Returns: Total loss and KL divergence.
+        value_targets: Total loss and KL divergence.
         """
 
         logits, logits_old = batch.logits, batch.logits_old
         values, values_old = batch.state_values, batch.state_values_old
-        returns = batch.returns
+        value_targets = batch.value_targets
         actions = batch.actions
         advantages = batch.advantages
 
@@ -412,15 +407,15 @@ class PPO(RLBase):
 
         # value loss
         if 'tau' in batch:
-            tau = batch.tau[..., :self.num_quantiles]
-            loss_value = self.value_loss_scale * huber_quantile_loss(values, returns, tau, reduce=False)
+            loss_value = self.value_loss_scale * huber_quantile_loss(
+                values[..., 0], value_targets[..., 0], batch.tau[..., 0].unsqueeze(-1), reduce=False)
             # num_q_per_batch = max(1, int(round(self.num_quantiles / self.ppo_iters)))
             # idx = torch.randperm(self.num_quantiles, device=values.device)[:num_q_per_batch]
-            # loss_value = self.value_loss_scale * huber_quantile_loss(values[..., idx], returns[..., idx], tau[..., idx], reduce=False)
+            # loss_value = self.value_loss_scale * huber_quantile_loss(values[..., idx], value_targets[..., idx], tau[..., idx], reduce=False)
         else:
             v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
-            vf_clip_loss = barron_loss(v_pred_clipped, returns, *self.barron_alpha_c, reduce=False)
-            vf_nonclip_loss = barron_loss(values, returns, *self.barron_alpha_c, reduce=False)
+            vf_clip_loss = barron_loss(v_pred_clipped, value_targets, *self.barron_alpha_c, reduce=False)
+            vf_nonclip_loss = barron_loss(values, value_targets, *self.barron_alpha_c, reduce=False)
             loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)
 
         loss_value = loss_value.mean(-1)
@@ -520,13 +515,15 @@ class PPO(RLBase):
                     img = img.float() / 255
                 img = make_grid(img, nrow=nrow, normalize=False)
                 self.logger.add_image('state', img, self.frame)
-            self.logger.add_histogram('rewards', data.rewards, self.frame)
-            self.logger.add_histogram('returns', data.returns, self.frame)
+            targets = data.value_targets.mean(-2)
+            values = data.state_values.mean(-2)
+            self.logger.add_histogram('rewards', data.rewards / data.value_targets.shape[-2], self.frame)
+            self.logger.add_histogram('value_targets', targets, self.frame)
             self.logger.add_histogram('advantages', data.advantages, self.frame)
-            self.logger.add_histogram('values', data.state_values, self.frame)
-            self.logger.add_scalar('value rmse', (data.state_values - data.returns).pow(2).mean().sqrt(), self.frame)
-            self.logger.add_scalar('value abs err', (data.state_values - data.returns).abs().mean(), self.frame)
-            self.logger.add_scalar('value max err', (data.state_values - data.returns).max(), self.frame)
+            self.logger.add_histogram('values', values, self.frame)
+            self.logger.add_scalar('value rmse', (values - targets).pow(2).mean().sqrt(), self.frame)
+            self.logger.add_scalar('value abs err', (values - targets).abs().mean(), self.frame)
+            self.logger.add_scalar('value max err', (values - targets).abs().max(), self.frame)
             if isinstance(self._train_model.heads.logits.pd, DiagGaussianPd):
                 mean, std = data.logits.chunk(2, dim=1)
                 self.logger.add_histogram('logits mean', mean, self.frame)

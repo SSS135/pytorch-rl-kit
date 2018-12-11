@@ -93,14 +93,15 @@ class StateValueHead(HeadBase):
     Actor-critic head. Used in PPO / A3C.
     """
 
-    def __init__(self, in_features):
+    def __init__(self, in_features, num_bins=1):
         """
         Args:
             in_features: Input feature vector width.
             pd: Action probability distribution.
         """
         super().__init__(in_features)
-        self.linear = nn.Linear(in_features, 1)
+        self.num_bins = num_bins
+        self.linear = nn.Linear(in_features, num_bins)
         self.reset_weights()
 
     def reset_weights(self):
@@ -108,7 +109,7 @@ class StateValueHead(HeadBase):
         self.linear.bias.data.fill_(0)
 
     def forward(self, x, **kwargs):
-        return self.linear(x)
+        return self.linear(x).unsqueeze(-1)
 
     def normalize(self, mean, std):
         self.linear.weight.data /= std
@@ -122,38 +123,34 @@ class StateValueHead(HeadBase):
 
 
 class StateValueQuantileHead(StateValueHead):
-    def __init__(self, in_features, quantile_dim=32):
+    def __init__(self, in_features, tau_dim=32):
         super().__init__(in_features)
-        self.quantile_dim = quantile_dim
-        self.quantile_embedding = nn.Sequential(
-            nn.Linear(quantile_dim * 3, in_features),
-            nn.RReLU(0.0, 0.1)
-        )
+        self.tau_dim = tau_dim
+        self.tau_embedding = nn.Linear(tau_dim * 2, in_features)
         self.reset_weights()
 
     def forward(self, x, tau=None, **kwargs):
         # x - (*xd, n)
-        # tau - (*xd, c * 3)
+        # tau - (*xd, q * 2)
         xd = x.shape[:-1]
-        num_q = tau.shape[-1] // 3
-        cur_tau, prev_tau, prev_value = tau.chunk(3, -1)
-        assert xd == prev_value.shape[:-1], (x.shape, prev_value.shape)
+        num_q = tau.shape[-1] // 2
+        cur_tau, prev_tau = tau.chunk(2, -1)
+        assert xd == cur_tau.shape[:-1], (x.shape, cur_tau.shape)
 
-        # (*xd, c, emb)
-        arange = torch.arange(1, 1 + self.quantile_dim, device=x.device, dtype=x.dtype).expand(*cur_tau.shape, -1)
-        # (*xd, c, emb * 2)
+        # (*xd, q, emb)
+        arange = torch.arange(1, 1 + self.tau_dim, device=x.device, dtype=x.dtype).expand(*cur_tau.shape, -1)
+        # (*xd, q, emb * 2)
         cur_cos_vec = torch.cos(math.pi * arange * cur_tau.unsqueeze(-1))
         prev_cos_vec = torch.cos(math.pi * arange * prev_tau.unsqueeze(-1))
-        assert_shape(cur_cos_vec, (*xd, num_q, self.quantile_dim))
-        # (*xd, c, emb // 2)
-        value_vec = prev_value.unsqueeze(-1).expand(*prev_value.shape, self.quantile_dim // 2)
-        assert_shape(value_vec, (*xd, num_q, self.quantile_dim // 2))
-        # (*xd, c, emb * 3)
-        all_vec = torch.cat([cur_cos_vec, prev_cos_vec, -value_vec, value_vec], -1)
-        assert_shape(all_vec, (*xd, num_q, self.quantile_dim * 3))
-        # (*xd, c, n)
-        tau_emb = self.quantile_embedding(all_vec)
+        assert_shape(cur_cos_vec, (*xd, num_q, self.tau_dim))
+        # (*xd, q, emb * 3)
+        all_vec = torch.cat([cur_cos_vec, prev_cos_vec], -1)
+        assert_shape(all_vec, (*xd, num_q, self.tau_dim * 2))
+        # (*xd, q, n)
+        tau_emb = F.relu(self.tau_embedding(all_vec))
         assert_shape(tau_emb, (*xd, num_q, x.shape[-1]))
 
-        # (*xd, c)
-        return self.linear(x.unsqueeze(-2) * tau_emb).squeeze(-1)
+        # (*xd, bins, q)
+        res = self.linear(x.unsqueeze(-2) * tau_emb).transpose(-1, -2)
+        assert_shape(res, (*xd, self.num_bins, num_q))
+        return res

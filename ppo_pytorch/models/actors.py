@@ -8,7 +8,7 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.init as init
 
-from .heads import HeadBase
+from .heads import HeadBase, StateValueHead, PolicyHead, StateValueQuantileHead
 from .norm_factory import NormFactory
 from .utils import weights_init
 from ..common.probability_distributions import make_pd, ProbabilityDistribution
@@ -16,6 +16,23 @@ from ..common.attr_dict import AttrDict
 import torch
 import torch.nn.functional as F
 import threading
+
+
+def create_ppo_actor(action_space, fx_factory, iqn=False, split_policy_value_network=True):
+    pd = make_pd(action_space)
+
+    if split_policy_value_network:
+        fx_policy, fx_value = fx_factory(), fx_factory()
+    else:
+        fx_policy = fx_value = fx_factory()
+
+    value_head = (StateValueQuantileHead if iqn else StateValueHead)(fx_value.output_size)
+    policy_head = PolicyHead(fx_policy.output_size, pd)
+    if split_policy_value_network:
+        models = {fx_policy: dict(logits=policy_head), fx_value: dict(state_values=value_head)}
+    else:
+        models = {fx_policy: dict(logits=policy_head, state_values=value_head)}
+    return ModularActor(models)
 
 
 class FeatureExtractorBase(nn.Module, metaclass=ABCMeta):

@@ -6,7 +6,7 @@ from optfn.skip_connections import ResidualBlock
 from torch import autograd
 from torch.autograd import Variable
 
-from .actors import FeatureExtractorBase, ModularActor
+from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor
 from .heads import StateValueQuantileHead, PolicyHead, StateValueHead
 from .norm_factory import NormFactory
 from .utils import make_conv_heatmap, image_to_float
@@ -217,21 +217,7 @@ def create_ppo_cnn_actor(observation_space, action_space, cnn_kind='normal',
                          cnn_activation=nn.ReLU, fc_activation=nn.ReLU, norm_factory: NormFactory=None,
                          iqn=False, split_policy_value_network=False):
     assert len(observation_space.shape) == 3
-    pd = make_pd(action_space)
 
-    create_fx = lambda: CNNFeatureExtractor(observation_space.shape, cnn_kind,
-                                            cnn_activation, fc_activation, norm_factory=norm_factory)
-
-    if split_policy_value_network:
-        fx_policy, fx_value = create_fx(), create_fx()
-    else:
-        fx_policy = fx_value = create_fx()
-
-    value_head = (StateValueQuantileHead if iqn else StateValueHead)(fx_value.output_size)
-    policy_head = PolicyHead(fx_policy.output_size, pd)
-
-    if split_policy_value_network:
-        models = {fx_policy: dict(logits=policy_head), fx_value: dict(state_values=value_head)}
-    else:
-        models = {fx_policy: dict(logits=policy_head, state_values=value_head)}
-    return ModularActor(models)
+    def fx_factory(): return CNNFeatureExtractor(observation_space.shape, cnn_kind,
+                                          cnn_activation, fc_activation, norm_factory=norm_factory)
+    return create_ppo_actor(action_space, fx_factory, iqn, split_policy_value_network)
