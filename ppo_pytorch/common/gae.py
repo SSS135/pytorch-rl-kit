@@ -1,9 +1,11 @@
 import math
+from typing import Tuple
 
 import torch
+from torch import Tensor as TT
 
 
-def _check_data(rewards, values, dones):
+def _check_data(rewards: TT, values: TT, dones: TT):
     assert len(rewards) == len(dones) == len(values) - 1
     # (steps, actors)
     assert rewards.dim() == dones.dim() == 2
@@ -11,7 +13,7 @@ def _check_data(rewards, values, dones):
     assert values.dim() == 4
 
 
-def calc_advantages(rewards, values, dones, reward_discount, advantage_discount):
+def calc_advantages(rewards: TT, values: TT, dones: TT, reward_discount: float, advantage_discount: float) -> TT:
     """
     Calculate advantages with Global Advantage Estimation
     Args:
@@ -24,10 +26,6 @@ def calc_advantages(rewards, values, dones, reward_discount, advantage_discount)
     Returns: Advantages with GAE
     """
     _check_data(rewards, values, dones)
-
-    # adv_mult = (values[1:].std(-1) - values[:-1].std(-1)).abs()
-    # # adv_mult = (values[1:] * reward_discount + rewards.unsqueeze(-1) - values[:-1]).std(-1)
-    # adv_mult /= adv_mult.pow(2).mean().sqrt().add(0.01)
 
     values = values.mean(-1).sum(-1)
 
@@ -38,45 +36,10 @@ def calc_advantages(rewards, values, dones, reward_discount, advantage_discount)
         td_residual = rewards[t] + reward_discount * nonterminal * values[t + 1] - values[t]
         advantages[t] = next_adv = td_residual + advantage_discount * reward_discount * nonterminal * next_adv
 
-    # advantages *= adv_mult
-
     return advantages
 
 
-def calc_weighted_advantages(rewards, values, dones, reward_discount, advantage_discount):
-    """
-    Calculate advantages with Global Advantage Estimation
-    Args:
-        rewards: Rewards from environment
-        values: State-values
-        dones: Episode ended flags
-        reward_discount: Discount factor for state-values
-        advantage_discount: Discount factor for advantages
-
-    Returns: Advantages with GAE
-    """
-    _check_data(rewards, values, dones)
-
-    # adv_mult = (values[1:].std(-1) - values[:-1].std(-1)).abs()
-    adv_mult = (values[1:] * reward_discount + rewards.unsqueeze(-1) - values[:-1])
-    adv_mult = adv_mult.abs().mean(-1)
-    adv_mult /= adv_mult.pow(2).mean().sqrt().add(0.01)
-
-    # values = values.mean(-1).sum(-1)
-
-    next_adv = 0
-    advantages = torch.zeros_like(rewards)
-    for t in reversed(range(len(rewards))):
-        nonterminal = 1 - dones[t]
-        td_residual = rewards[t] + reward_discount * nonterminal * values[t + 1] - values[t]
-        advantages[t] = next_adv = td_residual + advantage_discount * reward_discount * nonterminal * next_adv
-
-    advantages *= adv_mult
-
-    return advantages
-
-
-def calc_value_targets(rewards, values, dones, reward_discount, gae_lambda=1.0):
+def calc_value_targets(rewards: TT, values: TT, dones: TT, reward_discount: float, gae_lambda=1.0) -> TT:
     """
     Calculate temporal difference targets
     Args:
@@ -88,6 +51,7 @@ def calc_value_targets(rewards, values, dones, reward_discount, gae_lambda=1.0):
     Returns: Target values (steps, actors, bins, q)
     """
     _check_data(rewards, values, dones)
+    assert values.shape[-2] == 1
 
     rewards = rewards.unsqueeze(-1).unsqueeze(-1)
     dones = dones.unsqueeze(-1).unsqueeze(-1)
@@ -96,25 +60,67 @@ def calc_value_targets(rewards, values, dones, reward_discount, gae_lambda=1.0):
     targets = rewards.new_zeros((values.shape[0] - 1, *values.shape[1:]))
     for t in reversed(range(len(rewards))):
         nonterminal = 1 - dones[t]
-        R = (1 - gae_lambda) * values[t] + gae_lambda * (rewards[t] + nonterminal * reward_discount * R)
+        R = rewards[t] + nonterminal * reward_discount * R
         targets[t] = R
+        R = (1 - gae_lambda) * values[t] + gae_lambda * R
 
     return targets
 
 
-def calc_vtrace(rewards, values, dones, probs_ratio, discount, c_max=2.0, p_max=2.0):
-    c = probs_ratio.clamp(0, c_max)
-    p = probs_ratio.clamp(0, p_max)
-    nonterminal = 1 - dones
-    td = p * (rewards + nonterminal * discount * values[1:] - values[:-1])
-    targets = values.clone()
-    for i in reversed(range(len(rewards))):
-        targets[i] = values[i] + td[i] + nonterminal[i] * discount * c[i] * (targets[i + 1] - values[i + 1])
-    advantages = rewards + nonterminal * discount * targets[1:] - values[:-1]
-    return targets[:-1], advantages * p
+def calc_weighted_advantages(rewards: TT, values: TT, dones: TT, reward_discount: float, advantage_discount: float) -> TT:
+    _check_data(rewards, values, dones)
+
+    # (steps, actors, bins, q)
+    assert values.dim() == 4
+    # (steps, actors)
+    assert rewards.dim() == dones.dim() == 2
+    values = values.mean(-1, keepdim=True)
+    _, num_actors, num_bins, _ = values.shape
+    num_steps = values.shape[0] - 1
+    assert rewards.shape == dones.shape == (num_steps, num_actors)
+
+    # (steps + 1, unbinned_rewards, actors, q)
+    rewards_from_values = split_binned_values(values, reward_discount).transpose_(1, 2)
+    num_unb_rewards = rewards_from_values.shape[1]
+    td_errors = values.new_zeros((num_steps, num_steps + num_unb_rewards, num_actors, 1))
+
+    def get_value_cur(i):
+        raise NotImplementedError
+
+    def get_value_target(step):
+        rfv_begin, rfv_last = rewards_from_values[step + 1, :-1], rewards_from_values[step + 1, -1]
+        rfv_last_split_steps = td_errors.shape[1] - (step + num_unb_rewards)
+        # (steps + unb_rewards, actors, q)
+        v_targ = torch.cat([
+            # (i, 1, 1)
+            rewards.new_zeros((step, 1, 1)),
+            # (1, actors, 1)
+            rewards[step].view(1, -1, 1),
+            # (rfv - 1, actors, q)
+            reward_discount * rfv_begin,
+            # (rfv_last_split_steps, actors, q)
+            reward_discount * split_last_reward(rfv_last, rfv_last_split_steps, reward_discount)
+        ], 0)
+        assert v_targ.shape == td_errors.shape[1:]
+        return v_targ
+
+    # calc td errors
+    for i in range(num_steps):
+        value_cur = get_value_cur(i)
+        value_target = get_value_target(i)
+        td_errors[i] = value_target - value_cur
+
+    # normalize td errors
+    td_errors /= td_errors.abs().sum(0, keepdim=True)
 
 
-def calc_binned_value_targets(rewards, values, dones, reward_discount):
+def split_last_reward(reward: TT, num_steps: int, discount: float) -> TT:
+    # (actors, q) -> (num_steps, actors, q)
+    assert num_steps >= 1
+    raise NotImplementedError
+
+
+def calc_binned_value_targets(rewards: TT, values: TT, dones: TT, reward_discount: float, advantage_discount: float=1.0) -> TT:
     # (steps, actors, bins, q)
     assert values.dim() == 4
     # (steps, actors)
@@ -122,18 +128,20 @@ def calc_binned_value_targets(rewards, values, dones, reward_discount):
     num_steps, num_actors, num_bins, num_q = values.shape
     assert rewards.shape == dones.shape == (num_steps - 1, num_actors)
 
-    # (num_unbinned_rewards, num_actors, num_q)
-    per_step_rewards = split_binned_values(values[-1], reward_discount)
+    # (steps + 1, unbinned_rewards, actors, q)
+    all_per_step_rewards = split_binned_values(values, reward_discount).transpose(1, 2).contiguous()
     # (len(rewards) + num_unbinned_rewards, num_actors, num_q)
-    per_step_rewards = torch.cat([rewards.unsqueeze(-1).expand(*rewards.shape, num_q), per_step_rewards], 0)
+    per_step_rewards = torch.cat([rewards.unsqueeze(-1).expand(*rewards.shape, num_q), all_per_step_rewards[-1]], 0)
     targets = torch.zeros_like(values[:-1])
     for i in reversed(range(len(targets))):
         per_step_rewards[i + 1:] *= reward_discount * (1 - dones[i].unsqueeze(-1))
         targets[i] = values_to_bins(per_step_rewards[i:], num_bins, reward_discount)
+        per_step_rewards[i:] *= advantage_discount
+        per_step_rewards[i:i + all_per_step_rewards.shape[1]] += (1 - advantage_discount) * all_per_step_rewards[i]
     return targets
 
 
-def values_to_bins(values, num_bins, reward_discount):
+def values_to_bins(values: TT, num_bins: int, reward_discount: float) -> TT:
     # (num_steps, num_actors, num_q) -> (num_actors, num_bins, num_q)
     assert values.dim() == 3
     num_steps, num_actors, num_q = values.shape
@@ -147,27 +155,32 @@ def values_to_bins(values, num_bins, reward_discount):
     return bins
 
 
-def split_binned_values(values, reward_discount):
-    # (num_actors, num_bins, num_q) -> (num_steps, num_actors, num_q)
-    assert values.dim() == 3
-    num_actors, num_bins, num_q = values.shape
+def new_discount_weights(self: TT, len: int, discount: float) -> TT:
+    lambdas = discount ** torch.arange(len, device=self.device, dtype=self.dtype)
+    lambdas /= lambdas.mean()
+    return lambdas
+
+
+def split_binned_values(values: TT, reward_discount: float) -> TT:
+    # (num_values, num_actors, num_bins, num_q) -> (num_values, num_actors, num_steps, num_q)
+    assert values.dim() == 4
+    num_values, num_actors, num_bins, num_q = values.shape
     pivots = get_value_pivots(num_bins, reward_discount).tolist()
     assert len(pivots) == num_bins - 1
     step_rewards = []
     for i, pivot in enumerate(pivots):
         start = 0 if i == 0 else pivots[i - 1]
         count = pivot - start
-        cur = values[:, i].div(count).unsqueeze(0).expand(count, num_actors, num_q)
-        lambdas = reward_discount ** torch.arange(count, device=cur.device, dtype=cur.dtype)
-        lambdas /= lambdas.mean()
-        step_rewards.append(cur * lambdas.view(-1, 1, 1))
-    step_rewards.append(values[:, -1].unsqueeze(0))
-    step_rewards = torch.cat(step_rewards, 0)
-    assert step_rewards.shape == ((pivots[-1] + 1) if len(pivots) != 0 else 1, num_actors, num_q)
+        cur = values[:, :, i].div(count).unsqueeze(2).expand(num_values, num_actors, count, num_q)
+        lambdas = new_discount_weights(cur, count, reward_discount).view(1, 1, -1, 1)
+        step_rewards.append(cur * lambdas)
+    step_rewards.append(values[:, :, -1].unsqueeze(2))
+    step_rewards = torch.cat(step_rewards, 2)
+    assert step_rewards.shape == (num_values, num_actors, (pivots[-1] + 1) if len(pivots) != 0 else 1, num_q)
     return step_rewards
 
 
-def get_value_pivots(num_bins, decay):
+def get_value_pivots(num_bins: int, decay: float) -> TT:
     assert num_bins >= 1
     assert 1 >= decay >= 0
     if num_bins == 1:
@@ -175,13 +188,40 @@ def get_value_pivots(num_bins, decay):
     eps = 1 / num_bins
     fraction = torch.linspace(eps, 1 - eps, num_bins - 1)
     mass = fraction / (1 - decay)
-    pivots = torch.log(1 + mass * math.log(decay)) / math.log(decay)
+    pivots = get_step(mass, decay)
     return torch.round(pivots).long()
+
+
+def get_step(mass, decay):
+    return torch.log((decay - 1) * mass + 1) / math.log(decay) - 1
+
+
+def get_mass(step, decay):
+    return (decay ** (step + 1) - 1) / (decay - 1)
+
+
+def calc_vtrace(rewards: TT, values: TT, dones: TT, probs_ratio: TT, discount: float, c_max=2.0, p_max=2.0) -> Tuple[TT, TT]:
+    c = probs_ratio.clamp(0, c_max)
+    p = probs_ratio.clamp(0, p_max)
+    nonterminal = 1 - dones
+    td = p * (rewards + nonterminal * discount * values[1:] - values[:-1])
+    targets = values.clone()
+    for i in reversed(range(len(rewards))):
+        targets[i] = values[i] + td[i] + nonterminal[i] * discount * c[i] * (targets[i + 1] - values[i + 1])
+    advantages = rewards + nonterminal * discount * targets[1:] - values[:-1]
+    return targets[:-1], advantages * p
 
 
 def assert_equal_tensors(a, b, abs_tol=1e-4):
     assert a.shape == b.shape, (a.shape, b.shape)
     assert (a - b).abs().max().item() < abs_tol, (a, b)
+
+
+def test_mass_step():
+    lam = 0.99
+    mass = torch.tensor([1.0, 15, 50, 90])
+    step = get_step(mass, lam)
+    assert_equal_tensors(mass, get_mass(step, lam))
 
 
 def test_binned_value_targets_single_bin():

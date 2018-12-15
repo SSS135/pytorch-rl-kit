@@ -18,7 +18,7 @@ import torch.nn.functional as F
 import threading
 
 
-def create_ppo_actor(action_space, fx_factory, iqn=False, split_policy_value_network=True):
+def create_ppo_actor(action_space, fx_factory, iqn=False, split_policy_value_network=True, num_bins=1):
     pd = make_pd(action_space)
 
     if split_policy_value_network:
@@ -26,7 +26,7 @@ def create_ppo_actor(action_space, fx_factory, iqn=False, split_policy_value_net
     else:
         fx_policy = fx_value = fx_factory()
 
-    value_head = (StateValueQuantileHead if iqn else StateValueHead)(fx_value.output_size)
+    value_head = (StateValueQuantileHead if iqn else StateValueHead)(fx_value.output_size, num_bins=num_bins)
     policy_head = PolicyHead(fx_policy.output_size, pd)
     if split_policy_value_network:
         models = {fx_policy: dict(logits=policy_head), fx_value: dict(state_values=value_head)}

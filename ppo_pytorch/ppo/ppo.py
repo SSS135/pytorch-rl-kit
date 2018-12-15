@@ -56,6 +56,7 @@ class PPO(RLBase):
                  grad_clip_norm=2,
                  reward_scale=1.0,
                  barron_alpha_c=(1.5, 1),
+                 num_quantiles=16,
                  advantage_scaled_clip=True,
                  lr_scheduler_factory=None,
                  clip_decay_factory=None,
@@ -162,7 +163,7 @@ class PPO(RLBase):
         self.barron_alpha_c = barron_alpha_c
         self.advantage_scaled_clip = advantage_scaled_clip
         self.use_pop_art = use_pop_art
-        self.num_quantiles = 16
+        self.num_quantiles = num_quantiles
 
         assert len(set(self.constraint) - {'clip', 'kl', 'opt', 'mse', 'target'}) == 0
 
@@ -407,16 +408,26 @@ class PPO(RLBase):
 
         # value loss
         if 'tau' in batch:
-            loss_value = self.value_loss_scale * huber_quantile_loss(
-                values[..., 0], value_targets[..., 0], batch.tau[..., 0].unsqueeze(-1), reduce=False)
+            v_new = values[..., 0]
+            v_targ = value_targets[..., 0]
+            v_old = values_old[..., 0]
+            tau = batch.tau[..., 0].unsqueeze(-1)
+            vclip = adv_u.abs() * value_clip if self.advantage_scaled_clip else value_clip
+            nonclip = (v_new.detach() - v_old).mul_((v_targ - v_old).sign_()).lt_(vclip)
+            loss_value = self.value_loss_scale * nonclip * huber_quantile_loss(v_new, v_targ, tau, reduce=False)
             # num_q_per_batch = max(1, int(round(self.num_quantiles / self.ppo_iters)))
             # idx = torch.randperm(self.num_quantiles, device=values.device)[:num_q_per_batch]
             # loss_value = self.value_loss_scale * huber_quantile_loss(values[..., idx], value_targets[..., idx], tau[..., idx], reduce=False)
         else:
-            v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
+            if self.advantage_scaled_clip:
+                vclip = adv_u.unsqueeze(-1).abs() * value_clip
+                v_pred_clipped = values_old + torch.min(torch.max(values - values_old, -vclip), vclip)
+            else:
+                v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
             vf_clip_loss = barron_loss(v_pred_clipped, value_targets, *self.barron_alpha_c, reduce=False)
             vf_nonclip_loss = barron_loss(values, value_targets, *self.barron_alpha_c, reduce=False)
             loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)
+            loss_value = loss_value.mean(-1)
 
         loss_value = loss_value.mean(-1)
         loss_clip = loss_clip.mean(-1)
@@ -515,15 +526,18 @@ class PPO(RLBase):
                     img = img.float() / 255
                 img = make_grid(img, nrow=nrow, normalize=False)
                 self.logger.add_image('state', img, self.frame)
-            targets = data.value_targets.mean(-2)
-            values = data.state_values.mean(-2)
+            vsize = data.value_targets.shape[-2] ** 0.5
+            targets = data.value_targets.sum(-2) / vsize
+            values = data.state_values.sum(-2) / vsize
+            v_mean = values.mean(-1)
+            t_mean = targets.mean(-1)
             self.logger.add_histogram('rewards', data.rewards / data.value_targets.shape[-2], self.frame)
             self.logger.add_histogram('value_targets', targets, self.frame)
             self.logger.add_histogram('advantages', data.advantages, self.frame)
             self.logger.add_histogram('values', values, self.frame)
-            self.logger.add_scalar('value rmse', (values - targets).pow(2).mean().sqrt(), self.frame)
-            self.logger.add_scalar('value abs err', (values - targets).abs().mean(), self.frame)
-            self.logger.add_scalar('value max err', (values - targets).abs().max(), self.frame)
+            self.logger.add_scalar('value rmse', (v_mean - t_mean).pow(2).mean().sqrt(), self.frame)
+            self.logger.add_scalar('value abs err', (v_mean - t_mean).abs().mean(), self.frame)
+            self.logger.add_scalar('value max err', (v_mean - t_mean).abs().max(), self.frame)
             if isinstance(self._train_model.heads.logits.pd, DiagGaussianPd):
                 mean, std = data.logits.chunk(2, dim=1)
                 self.logger.add_histogram('logits mean', mean, self.frame)

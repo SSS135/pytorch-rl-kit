@@ -10,7 +10,7 @@ def barron_loss(pred, target, alpha=1.5, c=1, reduce=True):
     """
     assert isinstance(alpha, float) or isinstance(alpha, int)
     assert isinstance(c, float) or isinstance(c, int)
-    assert pred.shape == target.shape
+    assert pred.shape == target.shape, (pred.shape, target.shape)
 
     mse = (target - pred).div_(c).pow_(2)
     if alpha == 2:

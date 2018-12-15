@@ -123,8 +123,8 @@ class StateValueHead(HeadBase):
 
 
 class StateValueQuantileHead(StateValueHead):
-    def __init__(self, in_features, tau_dim=32):
-        super().__init__(in_features)
+    def __init__(self, in_features, num_bins=1, tau_dim=32):
+        super().__init__(in_features, num_bins)
         self.tau_dim = tau_dim
         self.tau_embedding = nn.Linear(tau_dim * 2, in_features)
         self.reset_weights()

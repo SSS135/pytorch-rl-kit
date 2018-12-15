@@ -59,8 +59,9 @@ class FCFeatureExtractor(FeatureExtractorBase):
 
 def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128),
                         activation=nn.Tanh, norm_factory: NormFactory=None,
-                        iqn=False, split_policy_value_network=True):
+                        iqn=False, split_policy_value_network=True, num_bins=1):
     assert len(observation_space.shape) == 1
 
-    def fx_factory(): return FCFeatureExtractor(observation_space.shape[0], hidden_sizes, activation, norm_factory=norm_factory)
-    return create_ppo_actor(action_space, fx_factory, iqn, split_policy_value_network)
+    def fx_factory(): return FCFeatureExtractor(
+        observation_space.shape[0], hidden_sizes, activation, norm_factory=norm_factory)
+    return create_ppo_actor(action_space, fx_factory, iqn, split_policy_value_network, num_bins=num_bins)

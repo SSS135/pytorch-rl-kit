@@ -67,21 +67,31 @@ class StepsProcessor:
     def _to_tensor(self, values):
         return values if torch.is_tensor(values) else torch.stack(values, dim=0)
 
-    def _process_rewards(self, rewards, values, dones):
-        norm_rewards = self.reward_scale * rewards * values.shape[2]
+    def _process_rewards(self, rewards, values, dones, barron_scale=True):
+        norm_rewards = self.reward_scale * rewards * values.shape[2] ** 0.5
 
         # calculate value_targets and advantages
-        value_targets = calc_value_targets(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
+        if values.shape[-2] == 1:
+            value_targets = calc_value_targets(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
+        else:
+            value_targets = calc_binned_value_targets(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
         if random.randrange(50) == 0:
             print('values', values[0, 0])
             print('value_targets', value_targets[0, 0])
-        # gae_adv = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
-        advantages = (value_targets - values[:-1]).mean(-1).sum(-1)
+        advantages = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
+        # advantages = (value_targets - values[:-1]).mean(-1).sum(-1)
         # assert_equal_tensors(advantages, gae_adv)
-        if self.mean_norm:
-            advantages = (advantages - advantages.mean()) / max(advantages.std(), 1e-3)
-        else:
-            advantages = advantages / max(advantages.pow(2).mean().sqrt(), 1e-3)
-        advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
+
+        def adv_norm(advantages):
+            if self.mean_norm:
+                return (advantages - advantages.mean()) / max(advantages.std(), 1e-4)
+            else:
+                return advantages / max(advantages.pow(2).mean().sqrt(), 1e-4)
+
+        advantages = adv_norm(advantages)
+        if barron_scale:
+            advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
+            advantages = adv_norm(advantages)
+        advantages.clamp_(-5, 5)
 
         return norm_rewards, value_targets, advantages
