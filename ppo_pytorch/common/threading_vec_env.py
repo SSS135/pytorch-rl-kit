@@ -8,7 +8,8 @@ from baselines.common.vec_env import VecEnv
 class ThreadingVecEnv:
     def __init__(self, env_fns):
         self.executor = ThreadPoolExecutor(max_workers=os.cpu_count())
-        self.envs = [fn() for fn in env_fns]
+        with ThreadPoolExecutor(max_workers=8 * os.cpu_count()) as start_exec:
+            self.envs = list(start_exec.map(lambda fn: fn(), env_fns))
         env = self.envs[0]
         self.action_space = env.action_space
         self.observation_space = env.observation_space

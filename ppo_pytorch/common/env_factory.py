@@ -122,11 +122,11 @@ class SimplifyFrame(gym.ObservationWrapper):
 
 
 class ObservationNorm(gym.ObservationWrapper):
-    def __init__(self, env, eps=(1e-3, 1e5), absmax=5, scale=True, center=True, single_value=True):
+    def __init__(self, env, eps=(1e-3, 1e5), absmax=5, scale=True, center=True, single_value=False):
         super().__init__(env)
         self._norm = OnlineNormalizer(eps, absmax, scale, center, single_value)
         obs = env.observation_space.shape
         self.observation_space = spaces.Box(low=-absmax, high=absmax, shape=obs, dtype=np.float32)
 
     def observation(self, frame):
-        return self._norm(frame)
+        return self._norm(np.asarray(frame))

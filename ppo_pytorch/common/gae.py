@@ -6,11 +6,11 @@ from torch import Tensor as TT
 
 
 def _check_data(rewards: TT, values: TT, dones: TT):
-    assert len(rewards) == len(dones) == len(values) - 1
+    assert len(rewards) == len(dones) == len(values) - 1, (rewards.shape, dones.shape, values.shape)
     # (steps, actors)
-    assert rewards.dim() == dones.dim() == 2
+    assert rewards.dim() == dones.dim() == 2, (rewards.shape, dones.shape, values.shape)
     # (steps, actors, bins, q)
-    assert values.dim() == 4
+    assert values.dim() == 4, (rewards.shape, dones.shape, values.shape)
 
 
 def calc_advantages(rewards: TT, values: TT, dones: TT, reward_discount: float, advantage_discount: float) -> TT:
@@ -84,22 +84,28 @@ def calc_weighted_advantages(rewards: TT, values: TT, dones: TT, reward_discount
     num_unb_rewards = rewards_from_values.shape[1]
     td_errors = values.new_zeros((num_steps, num_steps + num_unb_rewards, num_actors, 1))
 
-    def get_value_cur(i):
-        raise NotImplementedError
-
-    def get_value_target(step):
-        rfv_begin, rfv_last = rewards_from_values[step + 1, :-1], rewards_from_values[step + 1, -1]
-        rfv_last_split_steps = td_errors.shape[1] - (step + num_unb_rewards)
+    def get_value_cur(step):
         # (steps + unb_rewards, actors, q)
         v_targ = torch.cat([
-            # (i, 1, 1)
-            rewards.new_zeros((step, 1, 1)),
+            # (i, actors, 1) or empty
+            *((rewards.new_zeros((step, 1, 1)).expand(-1, num_actors, 1),) if step != 0 else ()),
+            # (rfv_last_split_steps + unbinned_rewards, actors, q)
+            reward_discount * resize_last_reward(
+                rewards_from_values[step], td_errors.shape[1] - step, reward_discount)
+        ], 0)
+        assert v_targ.shape == td_errors.shape[1:]
+        return v_targ
+
+    def get_value_target(step):
+        # (steps + unb_rewards, actors, q)
+        v_targ = torch.cat([
+            # (i, actors, 1) or empty
+            *((rewards.new_zeros((step, 1, 1)).expand(-1, num_actors, 1),) if step != 0 else ()),
             # (1, actors, 1)
             rewards[step].view(1, -1, 1),
-            # (rfv - 1, actors, q)
-            reward_discount * rfv_begin,
-            # (rfv_last_split_steps, actors, q)
-            reward_discount * split_last_reward(rfv_last, rfv_last_split_steps, reward_discount)
+            # (rfv_last_split_steps + unbinned_rewards, actors, q)
+            reward_discount * resize_last_reward(
+                rewards_from_values[step + 1], td_errors.shape[1] - (step + 1), reward_discount)
         ], 0)
         assert v_targ.shape == td_errors.shape[1:]
         return v_targ
@@ -109,15 +115,37 @@ def calc_weighted_advantages(rewards: TT, values: TT, dones: TT, reward_discount
         value_cur = get_value_cur(i)
         value_target = get_value_target(i)
         td_errors[i] = value_target - value_cur
+        if i != 0:
+            td_errors[:i, i + 1:] *= 1 - dones[i].view(-1, 1)
 
     # normalize td errors
     td_errors /= td_errors.abs().sum(0, keepdim=True)
 
+    advantages = td_errors.sum(1).mean(-1)
+    # for i in reversed(range(num_steps - 1)):
+    #     nonterminal = 1 - dones[i]
+    #     advantages[i] = advantages[i] + advantage_discount * reward_discount * nonterminal * advantages[i + 1]
 
-def split_last_reward(reward: TT, num_steps: int, discount: float) -> TT:
-    # (actors, q) -> (num_steps, actors, q)
-    assert num_steps >= 1
-    raise NotImplementedError
+    return advantages
+
+
+def resize_last_reward(rewards: TT, desired_size: int, discount: float) -> TT:
+    # (steps, actors, q) -> (desired_size, actors, q)
+    cur_size = rewards.shape[0]
+    assert desired_size >= cur_size
+    total_mass = 1 / (1 - discount)
+    cur_last_mass_left = total_mass - get_mass(cur_size - 1, discount)
+    desired_last_mass_left = total_mass - get_mass(desired_size - 1, discount)
+    desired_last_value = rewards[-1] * (desired_last_mass_left / cur_last_mass_left)
+    expanded_values_sum = rewards[-1] - desired_last_value
+    resized_rewards = rewards.new_zeros((desired_size, *rewards.shape[1:]))
+    resized_rewards[:rewards.shape[0] - 1] = rewards[:-1]
+    if desired_size > cur_size:
+        resized_rewards[rewards.shape[0] - 1: -1] = \
+            expanded_values_sum.unsqueeze(0) / (desired_size - cur_size) * \
+            new_discount_weights(rewards, desired_size - cur_size, discount).view(-1, 1, 1)
+    resized_rewards[-1] = desired_last_value
+    return resized_rewards
 
 
 def calc_binned_value_targets(rewards: TT, values: TT, dones: TT, reward_discount: float, advantage_discount: float=1.0) -> TT:
@@ -156,6 +184,7 @@ def values_to_bins(values: TT, num_bins: int, reward_discount: float) -> TT:
 
 
 def new_discount_weights(self: TT, len: int, discount: float) -> TT:
+    assert len > 0
     lambdas = discount ** torch.arange(len, device=self.device, dtype=self.dtype)
     lambdas /= lambdas.mean()
     return lambdas
@@ -200,7 +229,15 @@ def get_mass(step, decay):
     return (decay ** (step + 1) - 1) / (decay - 1)
 
 
-def calc_vtrace(rewards: TT, values: TT, dones: TT, probs_ratio: TT, discount: float, c_max=2.0, p_max=2.0) -> Tuple[TT, TT]:
+def calc_vtrace(rewards: TT, values: TT, dones: TT, probs_ratio: TT, discount: float, c_max=1.5, p_max=1.5) -> Tuple[TT, TT]:
+    _check_data(rewards, values, dones)
+    assert values.shape[-2] == 1, values.shape
+    assert probs_ratio.shape == rewards.shape, (probs_ratio.shape, rewards.shape)
+
+    rewards = rewards.unsqueeze(-1).unsqueeze(-1)
+    dones = dones.unsqueeze(-1).unsqueeze(-1)
+    probs_ratio = probs_ratio.unsqueeze(-1).unsqueeze(-1)
+
     c = probs_ratio.clamp(0, c_max)
     p = probs_ratio.clamp(0, p_max)
     nonterminal = 1 - dones
@@ -221,6 +258,7 @@ def test_mass_step():
     lam = 0.99
     mass = torch.tensor([1.0, 15, 50, 90])
     step = get_step(mass, lam)
+    print('\n', step)
     assert_equal_tensors(mass, get_mass(step, lam))
 
 

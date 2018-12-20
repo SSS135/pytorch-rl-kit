@@ -157,7 +157,7 @@ class PPO(RLBase):
         self.save_intermediate_models = save_intermediate_models
         self.model_save_tag = model_save_tag
         self.kl_target = kl_target
-        self.kl_scale = kl_scale
+        self.kl_scale = self._init_kl_scale = kl_scale
         self.lr_iter_mult = lr_iter_mult
         self.entropy_reward_scale = entropy_reward_scale
         self.barron_alpha_c = barron_alpha_c
@@ -377,13 +377,13 @@ class PPO(RLBase):
                 pclip = adv_u.abs() * policy_clip
                 clipped_ratio = torch.min(torch.max(ratio, -pclip), pclip)
             else:
-                clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
+                clipped_ratio = ratio.clamp_pointwise(-policy_clip, policy_clip)
             clipped_policy_loss = clipped_ratio * adv_u
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
         elif 'target' in self.constraint:
             diff_cur = batch.logits_target - logits
             diff_old = batch.logits_target - logits_old
-            diff_old_rms = diff_old.pow(2).mean().sqrt().clamp(min=1e-3)
+            diff_old_rms = diff_old.pow(2).mean().sqrt().clamp_pointwise(min=1e-3)
 
             # loss_clip = diff_cur * diff_old / diff_old_rms
             # loss_clip = adv_u.abs() * loss_clip.clamp(min=0)
@@ -400,7 +400,13 @@ class PPO(RLBase):
 
         kl = pd.kl(logits_old, logits)
         if 'kl' in self.constraint:
-            loss_kl = self.kl_scale * (kl + 10 * (kl - 2 * self.kl_target).clamp(0, 1e6).pow(2))
+            kl_targets = self.kl_target * adv_u.abs()
+            loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(0.1 * self.kl_scale * self.kl_target)
+            small_kl = (kl < self.kl_target).detach()
+            large_kl = (kl > self.kl_target).detach()
+            loss_kl[small_kl] = 0
+            loss_ent[large_kl] = 0
+            loss_clip[large_kl] = 0
         elif 'mse' in self.constraint:
             loss_kl = self.kl_scale * (logits - logits_old).abs().pow(2.5)
         else:
@@ -423,7 +429,7 @@ class PPO(RLBase):
                 vclip = adv_u.unsqueeze(-1).abs() * value_clip
                 v_pred_clipped = values_old + torch.min(torch.max(values - values_old, -vclip), vclip)
             else:
-                v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
+                v_pred_clipped = values_old + (values - values_old).clamp_pointwise(-value_clip, value_clip)
             vf_clip_loss = barron_loss(v_pred_clipped, value_targets, *self.barron_alpha_c, reduce=False)
             vf_nonclip_loss = barron_loss(values, value_targets, *self.barron_alpha_c, reduce=False)
             loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)
@@ -455,7 +461,7 @@ class PPO(RLBase):
         return total_loss, kl.mean()
 
     def _adjust_kl_scale(self, kl):
-        threshold, change, limit = 1.2, 1.1, 100.0
+        threshold, change, limit = 1.3, 1.2, 1000.0
         if kl > threshold * self.kl_target:
             self.kl_scale = min(limit, self.kl_scale * change)
         if kl < (1 / threshold) * self.kl_target:

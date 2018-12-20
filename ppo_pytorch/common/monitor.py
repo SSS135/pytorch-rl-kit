@@ -20,11 +20,10 @@ class Monitor(gym.Wrapper):
     """
     def __init__(self, env):
         super().__init__(env)
-        self.data: List[dict] = None
+        pnum = self.env.num_players if isinstance(self.env, MultiplayerEnv) else 1
+        self._data = [DefaultDictEx(int) for _ in range(pnum)]
 
     def reset(self, **kwargs):
-        pnum = self.env.num_players if isinstance(self.env, MultiplayerEnv) else 1
-        self.data = [DefaultDictEx(int) for _ in range(pnum)]
         return self.env.reset(**kwargs)
 
     def step(self, action):
@@ -32,13 +31,15 @@ class Monitor(gym.Wrapper):
 
         if isinstance(self.env, MultiplayerEnv):
             for i in range(self.env.num_players):
-                self._add_step_info(self.data[i], info[i], reward[i])
+                self._add_step_info(self._data[i], info[i], reward[i])
                 if done:
-                    self._add_episode_info(info[i], self.data[i])
+                    self._add_episode_info(info[i], self._data[i])
+                    self._data[i] = DefaultDictEx(int)
         else:
-            self._add_step_info(self.data[0], info, reward)
+            self._add_step_info(self._data[0], info, reward)
             if done:
-                self._add_episode_info(info, self.data[0])
+                self._add_episode_info(info, self._data[0])
+                self._data[0] = DefaultDictEx(int)
 
         return state, reward, done, info
 

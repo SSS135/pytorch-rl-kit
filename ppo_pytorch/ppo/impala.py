@@ -13,6 +13,7 @@ from ..common.barron_loss import barron_loss_derivative, barron_loss
 from ..common.data_loader import DataLoader
 from ..common.gae import calc_vtrace
 from ..models.utils import model_diff
+from ..models.heads import StateValueQuantileHead
 
 
 class IMPALA(PPO):
@@ -35,7 +36,7 @@ class IMPALA(PPO):
         with torch.no_grad():
             # run network
             ac_out = self._take_step(states.to(self.device_eval), dones)
-            actions = self._eval_model.pd.sample(ac_out.logits).cpu()
+            actions = self._train_model.heads.logits.pd.sample(ac_out.logits).cpu()
 
             if not self.disable_training:
                 if self._prev_data is not None and self._prev_data[0] is not None:
@@ -82,8 +83,8 @@ class IMPALA(PPO):
         num_samples = data.states.shape[0] * data.states.shape[1]
         num_rollouts = data.states.shape[1]
 
-        data = AttrDict(states=data.states, old_logits=data.logits, actions=data.actions,
-                        old_state_values=data.state_values, rewards=data.rewards, dones=data.dones)
+        data = AttrDict(states=data.states, logits_old=data.logits, state_values_old=data.state_values,
+                        actions=data.actions, rewards=data.rewards, dones=data.dones)
 
         num_batches = num_samples // self.batch_size
         rand_idx = torch.randperm(num_rollouts, device=self.device_train).chunk(num_batches)
@@ -92,16 +93,11 @@ class IMPALA(PPO):
         kl_list = []
 
         with DataLoader(data, rand_idx, self.device_train, 4, dim=1) as data_loader:
-            for loader_iter in range(num_batches):
+            for batch_index in range(num_batches):
                 # prepare batch data
                 batch = AttrDict(data_loader.get_next_batch())
-                if loader_iter == num_batches - 1:
-                    self._train_model.set_log(self.logger, self._do_log, self.step)
-
-                loss, kl = self._impala_step(batch)
+                loss, kl = self._impala_step(batch, self._do_log and batch_index == num_batches - 1)
                 kl_list.append(kl)
-
-                self._train_model.set_log(self.logger, False, self.step)
 
         kl = np.mean(kl_list)
 
@@ -117,13 +113,29 @@ class IMPALA(PPO):
         self._adjust_kl_scale(kl)
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
-    def _impala_step(self, data):
+    def _impala_step(self, batch, do_log=False):
         with torch.enable_grad():
-            actor_out = self._train_model(data.states.reshape(-1, *data.states.shape[2:]))
-            data.logits, data.state_values = [x.view(*data.states.shape[:2], *x.shape[1:])
-                                              for x in (actor_out.logits, actor_out.state_values)]
+            # actor_out = self._train_model(data.states.reshape(-1, *data.states.shape[2:]))
+            # data.logits, data.state_values = [x.view(*data.states.shape[:2], *x.shape[1:])
+            #                                   for x in (actor_out.logits, actor_out.state_values)]
+
+            value_head = self._train_model.heads.state_values
+            iqn = isinstance(value_head, StateValueQuantileHead)
+
+            actor_params = AttrDict()
+            if do_log:
+                actor_params.logger = self.logger
+                actor_params.cur_step = self.step
+            if iqn:
+                actor_params.tau = batch.tau
+
+            actor_out = self._train_model(batch.states, **actor_params)
+
+            batch.logits = actor_out.logits
+            batch.state_values = actor_out.state_values
+
             # get loss
-            loss, kl = self._get_impala_loss(data)
+            loss, kl = self._get_impala_loss(batch, do_log)
             loss = loss.mean()
 
         kl = kl.item()
@@ -137,46 +149,46 @@ class IMPALA(PPO):
 
         return loss, kl
 
-    def _get_impala_loss(self, data, pd=None, tag=''):
+    def _get_impala_loss(self, data, do_log=False, pd=None, tag=''):
         """
         Single iteration of PPO algorithm.
         Returns: Total loss and KL divergence.
         """
 
         if pd is None:
-            pd = self._train_model.pd
+            pd = self._train_model.heads.logits.pd
 
         # action probability ratio
         # log probabilities used for better numerical stability
-        data.old_logp = pd.logp(data.actions, data.old_logits).mean(-1)
+        data.old_logp = pd.logp(data.actions, data.logits_old).mean(-1)
         data.logp = pd.logp(data.actions, data.logits).mean(-1)
         data.probs_ratio = torch.exp(data.logp - data.old_logp.detach())
 
         self._process_rewards(data)
 
         entropy = pd.entropy(data.logits)
-        kl = pd.kl(data.old_logits, data.logits)
+        kl = pd.kl(data.logits_old, data.logits)
         loss_kl = self.kl_scale * (kl + (kl - 2 * self.kl_target).clamp(0, 1e6).pow(2)).mean()
 
         policy_loss = (-data.logp * data.advantages).mean()
         loss_ent = self.entropy_loss_scale * -entropy.mean()
-        loss_value = self.value_loss_scale * barron_loss(data.state_values, data.returns, *self.barron_alpha_c)
+        loss_value = self.value_loss_scale * barron_loss(data.state_values, data.value_targets, *self.barron_alpha_c)
 
         # sum all losses
-        total_loss = policy_loss + loss_value + loss_ent #+ loss_kl
+        total_loss = policy_loss + loss_value + loss_ent + loss_kl
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (policy_loss.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
 
-        if self._train_model.do_log and tag is not None:
+        if do_log and tag is not None:
             with torch.no_grad():
                 self._log_training_data(data)
-                self.logger.add_histogram('loss value' + tag, loss_value, self.frame)
-                self.logger.add_histogram('loss ent' + tag, loss_ent, self.frame)
+                self.logger.add_histogram('loss value hist' + tag, loss_value, self.frame)
+                self.logger.add_histogram('loss ent hist' + tag, loss_ent, self.frame)
                 self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame)
                 self.logger.add_scalar('loss entropy' + tag, loss_ent.mean(), self.frame)
-                self.logger.add_scalar('loss value' + tag, loss_value.mean(), self.frame)
+                self.logger.add_scalar('loss state value' + tag, loss_value.mean(), self.frame)
                 ratio = data.logp - data.old_logp.detach()
-                self.logger.add_histogram('ratio' + tag, ratio, self.frame)
+                self.logger.add_histogram('ratio hist' + tag, ratio, self.frame)
                 self.logger.add_scalar('ratio mean' + tag, ratio.mean(), self.frame)
                 self.logger.add_scalar('ratio abs mean' + tag, ratio.abs().mean(), self.frame)
                 self.logger.add_scalar('ratio abs max' + tag, ratio.abs().max(), self.frame)
@@ -189,8 +201,8 @@ class IMPALA(PPO):
 
         norm_rewards = self.reward_scale * data.rewards
 
-        # calculate returns and advantages
-        returns, advantages = calc_vtrace(
+        # calculate value targets and advantages
+        value_targets, advantages = calc_vtrace(
             norm_rewards, state_values.detach(), data.dones, data.probs_ratio.detach(), self.reward_discount)
 
         mean, square, iter = self._advantage_stats
@@ -211,7 +223,7 @@ class IMPALA(PPO):
             advantages = advantages / max(rms, 1e-3)
         advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
 
-        data.returns, data.advantages, data.rewards = returns, advantages, norm_rewards
+        data.value_targets, data.advantages, data.rewards = value_targets, advantages, norm_rewards
 
     def drop_collected_steps(self):
         self._prev_data = None

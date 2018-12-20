@@ -326,6 +326,7 @@ class MixturePd(ProbabilityDistribution):
 
     def logp(self, x, prob):
         logw, mix_prob = self._split_prob(prob)
+        # FIXME: replace F.log_softmax(logw, -1) with self._cpd.logp(cat_act, logw)
         logp = self._mix_pd.logp(x.unsqueeze(-2), mix_prob).mean(-1, keepdim=True) + F.log_softmax(logw, -1).unsqueeze(-1)
         return logp.mean(-2)
 
