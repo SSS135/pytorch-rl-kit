@@ -80,9 +80,12 @@ def calc_weighted_advantages(rewards: TT, values: TT, dones: TT, reward_discount
     assert rewards.shape == dones.shape == (num_steps, num_actors)
 
     # (steps + 1, unbinned_rewards, actors, q)
-    rewards_from_values = split_binned_values(values, reward_discount).transpose_(1, 2)
+    rewards_from_values = split_binned_values(values, reward_discount).transpose_(1, 2).contiguous()
     num_unb_rewards = rewards_from_values.shape[1]
     td_errors = values.new_zeros((num_steps, num_steps + num_unb_rewards, num_actors, 1))
+
+    # (num_steps + num_unb_rewards, num_actors, 1)
+    per_step_rewards = torch.cat([rewards.unsqueeze(-1).expand(*rewards.shape, 1), rewards_from_values[-1]], 0)
 
     def get_value_cur(step):
         # (steps + unb_rewards, actors, q)
@@ -90,7 +93,7 @@ def calc_weighted_advantages(rewards: TT, values: TT, dones: TT, reward_discount
             # (i, actors, 1) or empty
             *((rewards.new_zeros((step, 1, 1)).expand(-1, num_actors, 1),) if step != 0 else ()),
             # (rfv_last_split_steps + unbinned_rewards, actors, q)
-            reward_discount * resize_last_reward(
+            resize_last_reward(
                 rewards_from_values[step], td_errors.shape[1] - step, reward_discount)
         ], 0)
         assert v_targ.shape == td_errors.shape[1:]
@@ -101,25 +104,47 @@ def calc_weighted_advantages(rewards: TT, values: TT, dones: TT, reward_discount
         v_targ = torch.cat([
             # (i, actors, 1) or empty
             *((rewards.new_zeros((step, 1, 1)).expand(-1, num_actors, 1),) if step != 0 else ()),
-            # (1, actors, 1)
-            rewards[step].view(1, -1, 1),
-            # (rfv_last_split_steps + unbinned_rewards, actors, q)
-            reward_discount * resize_last_reward(
-                rewards_from_values[step + 1], td_errors.shape[1] - (step + 1), reward_discount)
+            per_step_rewards[step:],
+            # # (1, actors, 1)
+            # rewards[step].view(1, -1, 1),
+            # # (rfv_last_split_steps + unbinned_rewards, actors, q)
+            # reward_discount * resize_last_reward(
+            #     rewards_from_values[step + 1], td_errors.shape[1] - (step + 1), reward_discount)
         ], 0)
         assert v_targ.shape == td_errors.shape[1:]
         return v_targ
 
     # calc td errors
-    for i in range(num_steps):
+    for i in reversed(range(num_steps)):
+        per_step_rewards[i + 1:] *= reward_discount * (1 - dones[i].unsqueeze(-1))
+        # targets[i] = values_to_bins(per_step_rewards[i:], num_bins, reward_discount)
+
         value_cur = get_value_cur(i)
         value_target = get_value_target(i)
         td_errors[i] = value_target - value_cur
-        if i != 0:
-            td_errors[:i, i + 1:] *= 1 - dones[i].view(-1, 1)
+
+        per_step_rewards[i:] *= advantage_discount
+        per_step_rewards[i:] += (1 - advantage_discount) * resize_last_reward(
+                rewards_from_values[i], td_errors.shape[1] - i, reward_discount)
+
+    # for i in reversed(range(num_steps - 1)):
+    #     td_errors[i] += advantage_discount * td_errors[i + 1]
+
+    ep_start = [0] * num_actors
+    dones_list = dones.cpu().tolist()
+    for step in range(0, num_steps):
+        for ac_i in range(num_actors):
+            if dones_list[step][ac_i]:
+                slc = (slice(ep_start[ac_i], step + 1), None, ac_i)
+                td = td_errors[slc]
+                td_sum = td.abs().sum(0, keepdim=True)
+                td /= (td_sum + 1e-6)
+                td *= td_sum.sum(1, keepdim=True) / (td.abs().sum(0, keepdim=True).sum(1, keepdim=True) + 1e-6)
+                td_errors[slc] = td
+                ep_start[ac_i] = step + 1
 
     # normalize td errors
-    td_errors /= td_errors.abs().sum(0, keepdim=True)
+    # td_errors /= td_errors.abs().sum(0, keepdim=True)
 
     advantages = td_errors.sum(1).mean(-1)
     # for i in reversed(range(num_steps - 1)):

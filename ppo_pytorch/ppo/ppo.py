@@ -377,13 +377,13 @@ class PPO(RLBase):
                 pclip = adv_u.abs() * policy_clip
                 clipped_ratio = torch.min(torch.max(ratio, -pclip), pclip)
             else:
-                clipped_ratio = ratio.clamp_pointwise(-policy_clip, policy_clip)
+                clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
             clipped_policy_loss = clipped_ratio * adv_u
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
         elif 'target' in self.constraint:
             diff_cur = batch.logits_target - logits
             diff_old = batch.logits_target - logits_old
-            diff_old_rms = diff_old.pow(2).mean().sqrt().clamp_pointwise(min=1e-3)
+            diff_old_rms = diff_old.pow(2).mean().sqrt().clamp(min=1e-3)
 
             # loss_clip = diff_cur * diff_old / diff_old_rms
             # loss_clip = adv_u.abs() * loss_clip.clamp(min=0)
@@ -429,7 +429,7 @@ class PPO(RLBase):
                 vclip = adv_u.unsqueeze(-1).abs() * value_clip
                 v_pred_clipped = values_old + torch.min(torch.max(values - values_old, -vclip), vclip)
             else:
-                v_pred_clipped = values_old + (values - values_old).clamp_pointwise(-value_clip, value_clip)
+                v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
             vf_clip_loss = barron_loss(v_pred_clipped, value_targets, *self.barron_alpha_c, reduce=False)
             vf_nonclip_loss = barron_loss(values, value_targets, *self.barron_alpha_c, reduce=False)
             loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)
