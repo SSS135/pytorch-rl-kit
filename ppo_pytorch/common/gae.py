@@ -105,11 +105,6 @@ def calc_weighted_advantages(rewards: TT, values: TT, dones: TT, reward_discount
             # (i, actors, 1) or empty
             *((rewards.new_zeros((step, 1, 1)).expand(-1, num_actors, 1),) if step != 0 else ()),
             per_step_rewards[step:],
-            # # (1, actors, 1)
-            # rewards[step].view(1, -1, 1),
-            # # (rfv_last_split_steps + unbinned_rewards, actors, q)
-            # reward_discount * resize_last_reward(
-            #     rewards_from_values[step + 1], td_errors.shape[1] - (step + 1), reward_discount)
         ], 0)
         assert v_targ.shape == td_errors.shape[1:]
         return v_targ
@@ -117,7 +112,6 @@ def calc_weighted_advantages(rewards: TT, values: TT, dones: TT, reward_discount
     # calc td errors
     for i in reversed(range(num_steps)):
         per_step_rewards[i + 1:] *= reward_discount * (1 - dones[i].unsqueeze(-1))
-        # targets[i] = values_to_bins(per_step_rewards[i:], num_bins, reward_discount)
 
         value_cur = get_value_cur(i)
         value_target = get_value_target(i)
@@ -126,9 +120,6 @@ def calc_weighted_advantages(rewards: TT, values: TT, dones: TT, reward_discount
         per_step_rewards[i:] *= advantage_discount
         per_step_rewards[i:] += (1 - advantage_discount) * resize_last_reward(
                 rewards_from_values[i], td_errors.shape[1] - i, reward_discount)
-
-    # for i in reversed(range(num_steps - 1)):
-    #     td_errors[i] += advantage_discount * td_errors[i + 1]
 
     ep_start = [0] * num_actors
     dones_list = dones.cpu().tolist()
@@ -143,13 +134,7 @@ def calc_weighted_advantages(rewards: TT, values: TT, dones: TT, reward_discount
                 td_errors[slc] = td
                 ep_start[ac_i] = step + 1
 
-    # normalize td errors
-    # td_errors /= td_errors.abs().sum(0, keepdim=True)
-
     advantages = td_errors.sum(1).mean(-1)
-    # for i in reversed(range(num_steps - 1)):
-    #     nonterminal = 1 - dones[i]
-    #     advantages[i] = advantages[i] + advantage_discount * reward_discount * nonterminal * advantages[i + 1]
 
     return advantages
 
