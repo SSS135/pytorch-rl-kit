@@ -190,41 +190,36 @@ class DDPG(RLBase):
             self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame)
 
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
-        self._blend_models(self._train_model, self._target_model, self.target_model_blend)
+        self._target_model = deepcopy(self._train_model)
+        # self._blend_models(self._train_model, self._target_model, self.target_model_blend)
 
     def _blend_models(self, src, dst, factor):
         for src, dst in zip(src.state_dict().values(), dst.state_dict().values()):
             dst.data.mul_(factor).add_((1 - factor) * src.data)
 
     def _batch_update(self, batch, do_log=False):
-        for p in self._train_model.parameters():
-            p.grad = None
+        self._train_model.zero_grad()
 
         actor_loss = self._actor_step(batch, do_log)
         actor_loss.backward()
         self._critic_optimizer.zero_grad()
         for group in self._critic_optimizer.param_groups:
             for p in group['params']:
-                p.grad = None
-                assert p.grad is None or p.sum().item() == 0, p
-        if self.grad_clip_norm is not None:
-            clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
-        self._actor_optimizer.step()
-        self._train_model.zero_grad()
-
-        for p in self._train_model.parameters():
-            p.grad = None
+                assert p.grad is None or p.grad.sum().item() == 0, p
+        # if self.grad_clip_norm is not None:
+        #     clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
 
         critc_loss = self._critic_step(batch, do_log)
         critc_loss.backward()
-        self._actor_optimizer.zero_grad()
-        for group in self._actor_optimizer.param_groups:
-            for p in group['params']:
-                p.grad = None
-                assert p.grad is None or p.sum().item() == 0, p
+        # for group in self._actor_optimizer.param_groups:
+        #     for p in group['params']:
+        #         assert p.grad is None or p.grad.sum().item() == 0, p
         if self.grad_clip_norm is not None:
             clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
+
+        self._actor_optimizer.step()
         self._critic_optimizer.step()
+
         self._train_model.zero_grad()
 
         return actor_loss + critc_loss
@@ -270,8 +265,10 @@ class DDPG(RLBase):
             actor_params.actions = self._train_model.heads.logits.pd.sample(logits)
             state_values = self._train_model(data.states[0], evaluate_heads=['state_values'], **actor_params).state_values
             return -state_values.mean()
-            # logits_grad = torch.autograd.grad(state_values, logits, -torch.ones_like(state_values), only_inputs=True)[0]
-            # return (logits * logits_grad.detach()).mean()
+
+        # logits_grad = torch.autograd.grad(state_values, logits, -torch.ones_like(state_values), only_inputs=True)[0]
+        # with torch.enable_grad():
+        #     return (logits * logits_grad.detach()).mean()
 
     def drop_collected_steps(self):
         self._prev_data = None

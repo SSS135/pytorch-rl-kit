@@ -19,7 +19,7 @@ def make_pd(space: gym.Space):
         return CategoricalPd(space.n)
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
-        return LinearPd(space.shape[0])
+        return LinearTanhPd(space.shape[0])
         # return FixedStdGaussianPd(space.shape[0], 0.3)
         # return BetaPd(space.shape[0], 1)
         # return DiagGaussianPd(space.shape[0])
@@ -418,7 +418,7 @@ class FixedStdGaussianPd(ProbabilityDistribution):
         return mean + self.std * torch.randn_like(mean)
 
 
-class LinearPd(ProbabilityDistribution):
+class LinearTanhPd(ProbabilityDistribution):
     def __init__(self, d):
         super().__init__(locals())
         self.d = d
@@ -440,16 +440,16 @@ class LinearPd(ProbabilityDistribution):
         return torch.float
 
     def logp(self, x, mean):
-        return torch.zeros_like(x)
+        return -(x - mean.tanh()).pow(2)
 
     def kl(self, mean1, mean2):
-        return torch.zeros_like(mean1)
+        return (mean1 - mean2).pow(2)
 
     def entropy(self, mean):
-        return torch.zeros_like(mean)
+        return mean.pow(2)
 
     def sample(self, mean):
-        return mean
+        return mean.tanh()
 
 
 class TransactionPd(ProbabilityDistribution):
