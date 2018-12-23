@@ -7,6 +7,7 @@ from .heads import StateValueQuantileHead, PolicyHead, StateValueHead
 from .norm_factory import NormFactory, GroupNormFactory, BatchNormFactory
 from ..common.probability_distributions import make_pd
 from optfn.skip_connections import ResidualBlock
+import torch
 
 
 def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm: NormFactory = None):
@@ -48,13 +49,13 @@ class FCFeatureExtractor(FeatureExtractorBase):
     def output_size(self):
         return self.hidden_sizes[-1]
 
-    def forward(self, input, logger=None, cur_step=None, **kwargs):
-        x = input
+    def forward(self, input: torch.Tensor, logger=None, cur_step=None, **kwargs):
+        x = input.view(-1, input.shape[-1])
         for i, layer in enumerate(self.model):
             x = layer(x)
             if logger is not None:
                 logger.add_histogram(f'layer {i} output', x, cur_step)
-        return x
+        return x.view(*input.shape[:-1], -1)
 
 
 def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128),
@@ -67,11 +68,10 @@ def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128)
     return create_ppo_actor(action_space, fx_factory, iqn, split_policy_value_network, num_bins=num_bins)
 
 
-def create_ddpg_fc_actor(observation_space, action_space, hidden_sizes=(128, 128),
-                         activation=nn.Tanh, norm_factory: NormFactory = GroupNormFactory(),
-                         iqn=False):
+def create_ddpg_fc_actor(observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU,
+                         norm_factory: NormFactory = BatchNormFactory()):
     assert len(observation_space.shape) == 1
 
     def fx_factory(): return FCFeatureExtractor(
         observation_space.shape[0], hidden_sizes, activation, norm_factory=norm_factory)
-    return create_ppo_actor(action_space, fx_factory, iqn, split_policy_value_network=True, num_bins=1)
+    return create_ppo_actor(action_space, fx_factory, iqn=False, split_policy_value_network=True, num_bins=1)

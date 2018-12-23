@@ -45,8 +45,8 @@ class DDPG(RLBase):
                  batch_size=128,
                  num_batches=4,
                  value_target_steps=1,
-                 replay_buffer_size=32*1024,
-                 target_model_blend=0.99,
+                 replay_buffer_size=128*1024,
+                 target_model_blend=0.01,
                  model_factory=create_ppo_fc_actor,
                  actor_optimizer_factory=partial(optim.Adam, lr=1e-4),
                  critic_optimizer_factory=partial(optim.Adam, lr=1e-3),
@@ -88,8 +88,7 @@ class DDPG(RLBase):
         self.model_save_interval = model_save_interval
         self.save_intermediate_models = save_intermediate_models
         self.use_pop_art = use_pop_art
-        
-        assert self.batch_size % self.train_interval == 0
+
         assert isinstance(action_space, gym.spaces.Box), action_space
 
         if model_init_path is None:
@@ -102,8 +101,10 @@ class DDPG(RLBase):
         self._target_model = deepcopy(self._train_model)
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
-        self._actor_optimizer: torch.optim.Optimizer = actor_optimizer_factory(self._train_model.head_parameters('logits'))
-        self._critic_optimizer: torch.optim.Optimizer = actor_optimizer_factory(self._train_model.head_parameters('state_values'))
+        self._actor_optimizer: torch.optim.Optimizer = \
+            actor_optimizer_factory(self._train_model.head_parameters('logits'))
+        self._critic_optimizer: torch.optim.Optimizer = \
+            critic_optimizer_factory(self._train_model.head_parameters('state_values'))
         self._actor_lr_scheduler = lr_scheduler_factory(self._actor_optimizer) if lr_scheduler_factory is not None else None
         self._critic_lr_scheduler = lr_scheduler_factory(self._critic_optimizer) if lr_scheduler_factory is not None else None
         self._entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
@@ -121,18 +122,17 @@ class DDPG(RLBase):
         with torch.no_grad():
             # run network
             ac_out = self._eval_model(states.to(self.device_eval), evaluate_heads=['logits'])
-            actions = self._eval_model.heads.logits.pd.sample(ac_out.logits).cpu()
-            actions = actions + 0.3 * torch.randn_like(actions)
+            actions = self._eval_model.heads.logits.pd.sample(ac_out.logits + 0.3 * torch.randn_like(ac_out.logits)).cpu()
 
             if not self.disable_training:
-                if self._prev_data is not None and self._prev_data[0] is not None:
-                    self._replay_buffer.push(**ac_out, states=states, actions=actions,
-                                             rewards=self._prev_data[0], dones=self._prev_data[1])
+                if self._prev_data is not None and self._prev_data['rewards'] is not None:
+                    self._replay_buffer.push(**ac_out, states=states, actions=actions, **self._prev_data)
 
                 self._eval_steps += 1
-                self._prev_data = (rewards, dones)
+                self._prev_data = dict(rewards=rewards, dones=dones)
 
-                if self._eval_steps >= self.train_interval and len(self._replay_buffer) >= self.num_batches * self.num_actors:
+                min_replay_size = self.batch_size * self.num_batches * (self.value_target_steps + 1)
+                if self.frame > 1024 and self._eval_steps >= self.train_interval and len(self._replay_buffer) >= min_replay_size:
                     self._eval_steps = 0
                     self._pre_train()
                     self._train()
@@ -166,7 +166,9 @@ class DDPG(RLBase):
     def _create_data(self):
         # (steps, actors, *)
         data = self._replay_buffer.sample(self.batch_size * self.num_batches, self.value_target_steps + 1)
-        return AttrDict(data)
+        data = AttrDict(data)
+        data.rewards = self.reward_scale * data.rewards
+        return data
 
     def _ddpg_update(self, data: AttrDict):
         num_rollouts = data.states.shape[1]
@@ -182,6 +184,7 @@ class DDPG(RLBase):
                 # prepare batch data
                 batch = AttrDict(data_loader.get_next_batch())
                 loss = self._batch_update(batch, self._do_log and batch_index == self.num_batches - 1)
+                self._blend_models(self._train_model, self._target_model, self.target_model_blend)
 
         if self._do_log:
             self.logger.add_scalar('learning rate', self._actor_optimizer.param_groups[0]['lr'], self.frame)
@@ -190,24 +193,16 @@ class DDPG(RLBase):
             self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame)
 
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
-        self._target_model = deepcopy(self._train_model)
-        # self._blend_models(self._train_model, self._target_model, self.target_model_blend)
+        # self._target_model = deepcopy(self._train_model)
 
     def _blend_models(self, src, dst, factor):
         for src, dst in zip(src.state_dict().values(), dst.state_dict().values()):
-            dst.data.mul_(factor).add_((1 - factor) * src.data)
+            if dst.dtype == torch.long:
+                dst.data.copy_(src.data)
+            else:
+                dst.data.lerp_(src.data, factor)
 
     def _batch_update(self, batch, do_log=False):
-        self._train_model.zero_grad()
-
-        actor_loss = self._actor_step(batch, do_log)
-        actor_loss.backward()
-        self._critic_optimizer.zero_grad()
-        for group in self._critic_optimizer.param_groups:
-            for p in group['params']:
-                assert p.grad is None or p.grad.sum().item() == 0, p
-        # if self.grad_clip_norm is not None:
-        #     clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
 
         critc_loss = self._critic_step(batch, do_log)
         critc_loss.backward()
@@ -216,10 +211,18 @@ class DDPG(RLBase):
         #         assert p.grad is None or p.grad.sum().item() == 0, p
         if self.grad_clip_norm is not None:
             clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
-
-        self._actor_optimizer.step()
         self._critic_optimizer.step()
+        self._train_model.zero_grad()
 
+        actor_loss = self._actor_step(batch, do_log)
+        actor_loss.backward()
+        # self._critic_optimizer.zero_grad()
+        # for group in self._critic_optimizer.param_groups:
+        #     for p in group['params']:
+        #         assert p.grad is None or p.grad.sum().item() == 0, p
+        if self.grad_clip_norm is not None:
+            clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
+        self._actor_optimizer.step()
         self._train_model.zero_grad()
 
         return actor_loss + critc_loss
@@ -258,17 +261,17 @@ class DDPG(RLBase):
 
         actor_params = AttrDict()
         if iqn:
-            actor_params.tau = data.tau[0]
+            actor_params.tau = data.tau[-1]
 
         with torch.enable_grad():
-            logits = self._train_model(data.states[0], evaluate_heads=['logits']).logits
+            logits = self._train_model(data.states[-1], evaluate_heads=['logits']).logits
             actor_params.actions = self._train_model.heads.logits.pd.sample(logits)
-            state_values = self._train_model(data.states[0], evaluate_heads=['state_values'], **actor_params).state_values
-            return -state_values.mean()
+            state_values = self._train_model(data.states[-1], evaluate_heads=['state_values'], **actor_params).state_values
+            # return -state_values.mean()
 
-        # logits_grad = torch.autograd.grad(state_values, logits, -torch.ones_like(state_values), only_inputs=True)[0]
-        # with torch.enable_grad():
-        #     return (logits * logits_grad.detach()).mean()
+        logits_grad = torch.autograd.grad(state_values, logits, -torch.ones_like(state_values), only_inputs=True)[0]
+        with torch.enable_grad():
+            return (logits * logits_grad.detach()).mean()
 
     def drop_collected_steps(self):
         self._prev_data = None

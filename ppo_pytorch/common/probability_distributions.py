@@ -417,6 +417,10 @@ class FixedStdGaussianPd(ProbabilityDistribution):
     def sample(self, mean):
         return mean + self.std * torch.randn_like(mean)
 
+    # @property
+    # def init_column_norm(self):
+    #     return 1.0
+
 
 class LinearTanhPd(ProbabilityDistribution):
     def __init__(self, d):
@@ -450,6 +454,10 @@ class LinearTanhPd(ProbabilityDistribution):
 
     def sample(self, mean):
         return mean.tanh()
+
+    # @property
+    # def init_column_norm(self):
+    #     return 1.0
 
 
 class TransactionPd(ProbabilityDistribution):
