@@ -76,6 +76,8 @@ def model_diff(old_model, new_model, max_diff=False) -> float:
     norm = 0
     param_count = 0
     for old, new in zip(old_model.state_dict().values(), new_model.state_dict().values()):
+        if old.dtype in (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64):
+            continue
         if max_diff:
             norm = max(norm, (new - old).abs().max().item())
             param_count = 1

@@ -19,8 +19,9 @@ def make_pd(space: gym.Space):
         return CategoricalPd(space.n)
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
+        return LinearPd(space.shape[0])
         # return FixedStdGaussianPd(space.shape[0], 0.3)
-        return BetaPd(space.shape[0], 1)
+        # return BetaPd(space.shape[0], 1)
         # return DiagGaussianPd(space.shape[0])
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
     elif isinstance(space, gym.spaces.MultiBinary):
@@ -414,7 +415,41 @@ class FixedStdGaussianPd(ProbabilityDistribution):
         return mean.new_zeros(mean.shape)
 
     def sample(self, mean):
-        return torch.normal(mean, self.std)
+        return mean + self.std * torch.randn_like(mean)
+
+
+class LinearPd(ProbabilityDistribution):
+    def __init__(self, d):
+        super().__init__(locals())
+        self.d = d
+
+    @property
+    def prob_vector_len(self):
+        return self.d
+
+    @property
+    def action_vector_len(self):
+        return self.d
+
+    @property
+    def input_vector_len(self):
+        return self.d
+
+    @property
+    def dtype(self):
+        return torch.float
+
+    def logp(self, x, mean):
+        return torch.zeros_like(x)
+
+    def kl(self, mean1, mean2):
+        return torch.zeros_like(mean1)
+
+    def entropy(self, mean):
+        return torch.zeros_like(mean)
+
+    def sample(self, mean):
+        return mean
 
 
 class TransactionPd(ProbabilityDistribution):

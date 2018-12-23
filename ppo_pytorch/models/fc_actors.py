@@ -4,7 +4,7 @@ import torch.nn as nn
 
 from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor
 from .heads import StateValueQuantileHead, PolicyHead, StateValueHead
-from .norm_factory import NormFactory
+from .norm_factory import NormFactory, GroupNormFactory, BatchNormFactory
 from ..common.probability_distributions import make_pd
 from optfn.skip_connections import ResidualBlock
 
@@ -65,3 +65,13 @@ def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128)
     def fx_factory(): return FCFeatureExtractor(
         observation_space.shape[0], hidden_sizes, activation, norm_factory=norm_factory)
     return create_ppo_actor(action_space, fx_factory, iqn, split_policy_value_network, num_bins=num_bins)
+
+
+def create_ddpg_fc_actor(observation_space, action_space, hidden_sizes=(128, 128),
+                         activation=nn.Tanh, norm_factory: NormFactory = GroupNormFactory(),
+                         iqn=False):
+    assert len(observation_space.shape) == 1
+
+    def fx_factory(): return FCFeatureExtractor(
+        observation_space.shape[0], hidden_sizes, activation, norm_factory=norm_factory)
+    return create_ppo_actor(action_space, fx_factory, iqn, split_policy_value_network=True, num_bins=1)

@@ -1,13 +1,10 @@
 import math
 import pprint
-import random
 from asyncio import Future
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from functools import partial
-from pathlib import Path
 from typing import Optional
-import os, errno
 
 import gym.spaces
 import numpy as np
@@ -15,18 +12,19 @@ import torch
 import torch.autograd
 import torch.nn.functional as F
 import torch.optim as optim
+from ..common.model_saver import ModelSaver
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 
-from ..common.barron_loss import barron_loss, barron_loss_derivative
+from ..common.barron_loss import barron_loss
 from ..common.opt_clip import opt_clip
-from ..common.probability_distributions import DiagGaussianPd
+from ..common.probability_distributions import DiagGaussianPd, CategoricalPd
 from ..common.rl_base import RLBase
 from ..common.pop_art import PopArt
 from ..common.attr_dict import AttrDict
 from ..common.data_loader import DataLoader
 from ..models import create_ppo_fc_actor, Actor
-from ..models.heads import PolicyHead, StateValueHead, StateValueQuantileHead
+from ..models.heads import StateValueQuantileHead
 from ..models.utils import model_diff
 from .steps_processor import StepsProcessor
 from ..common.target_logits import get_target_logits
@@ -183,6 +181,8 @@ class PPO(RLBase):
         self._train_executor = ThreadPoolExecutor(max_workers=1)
         self._train_model = self._train_model.to(self.device_eval, non_blocking=True).train()
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
+        self._model_saver = ModelSaver(model_save_folder, model_save_tag, model_save_interval,
+                                       save_intermediate_models, self.actor_index)
         self._prev_tau = None
 
     def _step(self, rewards, dones, states) -> torch.Tensor:
@@ -245,7 +245,7 @@ class PPO(RLBase):
         with torch.no_grad():
             self._log_training_data(data)
             self._ppo_update(data)
-            self._check_save_model()
+            self._model_saver.check_save_model(self._train_model, self.frame)
 
     def _ppo_update(self, data: AttrDict):
         value_head = self._train_model.heads.state_values
@@ -486,38 +486,6 @@ class PPO(RLBase):
     def drop_collected_steps(self):
         self._steps_processor = self._create_steps_processor()
 
-    def _check_save_model(self):
-        if self.model_save_interval is None or \
-           self._last_model_save_frame + self.model_save_interval > self.frame:
-            return
-
-        self._create_save_folder()
-        path = self._get_save_path()
-        self._save_model(path)
-
-    def _save_model(self, path):
-        # print(f'saving model at {self.frame} step to {path}')
-        model = deepcopy(self._train_model).cpu()
-        try:
-            torch.save(model, path)
-        except OSError as e:
-            print('error while saving model', e)
-
-    def _get_save_path(self):
-        self._last_model_save_frame = self.frame
-        if self.save_intermediate_models:
-            name = f'{self.model_save_tag}_{self.actor_index}_{self.frame}'
-        else:
-            name = f'{self.model_save_tag}_{self.actor_index}'
-        return Path(self.model_save_folder) / (name + '.pth')
-
-    def _create_save_folder(self):
-        try:
-            os.makedirs(self.model_save_folder)
-        except OSError as e:
-            if e.errno != errno.EEXIST:
-                raise
-
     def _log_training_data(self, data: AttrDict):
         if self._do_log:
             if data.states.dim() == 4:
@@ -548,8 +516,9 @@ class PPO(RLBase):
                 mean, std = data.logits.chunk(2, dim=1)
                 self.logger.add_histogram('logits mean', mean, self.frame)
                 self.logger.add_histogram('logits std', std, self.frame)
-            else:
-                self.logger.add_histogram('logits', F.log_softmax(data.logits, dim=-1), self.frame)
+            elif isinstance(self._train_model.heads.logits.pd, CategoricalPd):
+                self.logger.add_histogram('logits log_softmax', F.log_softmax(data.logits, dim=-1), self.frame)
+            self.logger.add_histogram('logits', data.logits, self.frame)
             for name, param in self._train_model.named_parameters():
                 self.logger.add_histogram(name, param, self.frame)
 

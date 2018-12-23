@@ -93,22 +93,26 @@ class StateValueHead(HeadBase):
     Actor-critic head. Used in PPO / A3C.
     """
 
-    def __init__(self, in_features, num_bins=1):
+    def __init__(self, in_features, pd: ProbabilityDistribution = None, num_bins=1):
         """
         Args:
             in_features: Input feature vector width.
             pd: Action probability distribution.
         """
         super().__init__(in_features)
+        self.pd = pd
         self.num_bins = num_bins
         self.linear = nn.Linear(in_features, num_bins)
+        self.action_linear = nn.Linear(pd.input_vector_len, in_features) if pd is not None else None
         self.reset_weights()
 
     def reset_weights(self):
         normalized_columns_initializer_(self.linear.weight.data, 1.0)
         self.linear.bias.data.fill_(0)
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, actions=None, **kwargs):
+        if actions is not None:
+            x = x * self.action_linear(self.pd.to_inputs(actions)).sigmoid()
         return self.linear(x).unsqueeze(-1)
 
     def normalize(self, mean, std):

@@ -3,7 +3,7 @@ from functools import partial
 import torch.optim as optim
 
 from ..common import DecayLR, ValueDecay
-from ..models import create_ppo_fc_actor, create_ppo_cnn_actor
+from ..models import create_ppo_fc_actor, create_ppo_cnn_actor, create_ddpg_fc_actor
 
 
 def create_fc_kwargs(learning_decay_frames=5e5, **kwargs):
@@ -39,6 +39,32 @@ def create_fc_kwargs(learning_decay_frames=5e5, **kwargs):
     defaults.update(kwargs)
     return defaults
 
+
+def create_ddpg_fc_kwargs(learning_decay_frames=5e5, **kwargs):
+    """
+    Get hyperparameters for simple envs like CartPole or Acrobot
+    Args:
+        **kwargs: Any arguments accepted by `PPO`
+
+    Returns: Parameters to initialize PPO
+    """
+
+    defaults = dict(
+        actor_optimizer_factory=partial(optim.Adam, lr=1e-4),
+        critic_optimizer_factory=partial(optim.Adam, lr=5e-4),
+        model_factory=create_ddpg_fc_actor,
+        cuda_eval=True,
+        cuda_train=True,
+    )
+    schedulers = dict(
+        lr_scheduler_factory=partial(
+            DecayLR, start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=False),
+        entropy_decay_factory=partial(
+            ValueDecay, start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=True, temp=2),
+    ) if learning_decay_frames is not None else dict()
+    defaults.update(schedulers)
+    defaults.update(kwargs)
+    return defaults
 
 # def create_hqrnn_kwargs(**kwargs):
 #     """
