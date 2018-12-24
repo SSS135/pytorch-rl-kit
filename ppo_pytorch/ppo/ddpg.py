@@ -56,7 +56,7 @@ class DDPG(RLBase):
                  grad_clip_norm=2,
                  reward_scale=1.0,
                  barron_alpha_c=(1.5, 1),
-                 num_quantiles=16,
+                 num_quantiles=1,
                  lr_scheduler_factory=None,
                  entropy_decay_factory=None,
                  model_save_folder='./models',
@@ -122,7 +122,8 @@ class DDPG(RLBase):
         with torch.no_grad():
             # run network
             ac_out = self._eval_model(states.to(self.device_eval), evaluate_heads=['logits'])
-            actions = self._eval_model.heads.logits.pd.sample(ac_out.logits + 0.3 * torch.randn_like(ac_out.logits)).cpu()
+            noise = 0.3 * torch.randn_like(ac_out.logits) if not self.disable_training else 0
+            actions = self._eval_model.heads.logits.pd.sample(ac_out.logits + noise).cpu()
 
             if not self.disable_training:
                 if self._prev_data is not None and self._prev_data['rewards'] is not None:
@@ -203,12 +204,8 @@ class DDPG(RLBase):
                 dst.data.lerp_(src.data, factor)
 
     def _batch_update(self, batch, do_log=False):
-
         critc_loss = self._critic_step(batch, do_log)
         critc_loss.backward()
-        # for group in self._actor_optimizer.param_groups:
-        #     for p in group['params']:
-        #         assert p.grad is None or p.grad.sum().item() == 0, p
         if self.grad_clip_norm is not None:
             clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
         self._critic_optimizer.step()
@@ -216,10 +213,6 @@ class DDPG(RLBase):
 
         actor_loss = self._actor_step(batch, do_log)
         actor_loss.backward()
-        # self._critic_optimizer.zero_grad()
-        # for group in self._critic_optimizer.param_groups:
-        #     for p in group['params']:
-        #         assert p.grad is None or p.grad.sum().item() == 0, p
         if self.grad_clip_norm is not None:
             clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
         self._actor_optimizer.step()
@@ -228,12 +221,11 @@ class DDPG(RLBase):
         return actor_loss + critc_loss
 
     def _critic_step(self, data: AttrDict, do_log):
-        value_head = self._target_model.heads.state_values
-        iqn = isinstance(value_head, StateValueQuantileHead)
+        iqn = self.num_quantiles > 1
 
         actor_params = AttrDict()
         if iqn:
-            actor_params.tau = data.tau[-1]
+            actor_params.tau = torch.rand(data.rewards.shape[1], self.num_quantiles, device=self.device_train)
 
         logits = self._target_model(data.states[-1], evaluate_heads=['logits']).logits
         actor_params.actions = self._target_model.heads.logits.pd.sample(logits)
@@ -245,29 +237,28 @@ class DDPG(RLBase):
             targets = rewards[i] + self.reward_discount * (1 - dones[i]) * targets
 
         actor_params = AttrDict()
-        if iqn:
-            actor_params.tau = data.tau[0]
         actor_params.actions = data.actions[0]
+        if iqn:
+            actor_params.tau = torch.rand(data.rewards.shape[1], self.num_quantiles, device=self.device_train)
 
         with torch.enable_grad():
             state_values = self._train_model(data.states[0], evaluate_heads=['state_values'], **actor_params).state_values
-            loss = barron_loss(state_values, targets, *self.barron_alpha_c)
+            if iqn:
+                loss = huber_quantile_loss(state_values, targets, actor_params.tau)
+            else:
+                loss = barron_loss(state_values, targets, *self.barron_alpha_c)
 
         return loss
 
     def _actor_step(self, data: AttrDict, do_log):
-        value_head = self._train_model.heads.state_values
-        iqn = isinstance(value_head, StateValueQuantileHead)
-
         actor_params = AttrDict()
-        if iqn:
-            actor_params.tau = data.tau[-1]
+        if self.num_quantiles > 1:
+            actor_params.tau = torch.rand(data.rewards.shape[1], self.num_quantiles, device=self.device_train)
 
         with torch.enable_grad():
-            logits = self._train_model(data.states[-1], evaluate_heads=['logits']).logits
+            logits = self._train_model(data.states[0], evaluate_heads=['logits']).logits
             actor_params.actions = self._train_model.heads.logits.pd.sample(logits)
-            state_values = self._train_model(data.states[-1], evaluate_heads=['state_values'], **actor_params).state_values
-            # return -state_values.mean()
+            state_values = self._train_model(data.states[0], evaluate_heads=['state_values'], **actor_params).state_values
 
         logits_grad = torch.autograd.grad(state_values, logits, -torch.ones_like(state_values), only_inputs=True)[0]
         with torch.enable_grad():

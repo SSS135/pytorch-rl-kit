@@ -3,9 +3,9 @@ from typing import List, Callable
 import torch.nn as nn
 
 from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor
-from .heads import StateValueQuantileHead, PolicyHead, StateValueHead
+from .heads import StateValueQuantileHead, PolicyHead, StateValueHead, InputActionValueHead
 from .norm_factory import NormFactory, GroupNormFactory, BatchNormFactory
-from ..common.probability_distributions import make_pd
+from ..common.probability_distributions import make_pd, LinearTanhPd
 from optfn.skip_connections import ResidualBlock
 import torch
 
@@ -69,9 +69,25 @@ def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128)
 
 
 def create_ddpg_fc_actor(observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU,
-                         norm_factory: NormFactory = BatchNormFactory()):
+                         norm_factory: NormFactory = None):
     assert len(observation_space.shape) == 1
+    split_policy_value_network = True
+    num_bins = 1
 
     def fx_factory(): return FCFeatureExtractor(
         observation_space.shape[0], hidden_sizes, activation, norm_factory=norm_factory)
-    return create_ppo_actor(action_space, fx_factory, iqn=False, split_policy_value_network=True, num_bins=1)
+
+    pd = LinearTanhPd(action_space.shape[0])
+
+    if split_policy_value_network:
+        fx_policy, fx_value = fx_factory(), fx_factory()
+    else:
+        fx_policy = fx_value = fx_factory()
+
+    value_head = InputActionValueHead(fx_value.output_size, pd=pd, num_bins=num_bins)
+    policy_head = PolicyHead(fx_policy.output_size, pd=pd)
+    if split_policy_value_network:
+        models = {fx_policy: dict(logits=policy_head), fx_value: dict(state_values=value_head)}
+    else:
+        models = {fx_policy: dict(logits=policy_head, state_values=value_head)}
+    return ModularActor(models)

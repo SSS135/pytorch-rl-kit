@@ -19,9 +19,9 @@ def make_pd(space: gym.Space):
         return CategoricalPd(space.n)
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
-        return LinearTanhPd(space.shape[0])
+        # return LinearTanhPd(space.shape[0])
         # return FixedStdGaussianPd(space.shape[0], 0.3)
-        # return BetaPd(space.shape[0], 1)
+        return BetaPd(space.shape[0], 1)
         # return DiagGaussianPd(space.shape[0])
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
     elif isinstance(space, gym.spaces.MultiBinary):
