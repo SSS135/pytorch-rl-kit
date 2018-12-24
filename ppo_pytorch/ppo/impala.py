@@ -11,7 +11,7 @@ from .replay_buffer import ReplayBuffer
 from ..common.attr_dict import AttrDict
 from ..common.barron_loss import barron_loss_derivative, barron_loss
 from ..common.data_loader import DataLoader
-from ..common.gae import calc_vtrace
+from ..common.gae import calc_vtrace, calc_advantages
 from ..models.utils import model_diff
 from ..models.heads import StateValueQuantileHead
 
@@ -64,7 +64,7 @@ class IMPALA(PPO):
         with torch.no_grad():
             # self._log_training_data(data)
             self._impala_update(data)
-            self._check_save_model()
+            self._model_saver.check_save_model(self._train_model, self.frame)
 
     def _create_data(self):
         # rand_actors = self.batch_size * self.off_policy_batches // self.horizon
@@ -115,10 +115,6 @@ class IMPALA(PPO):
 
     def _impala_step(self, batch, do_log=False):
         with torch.enable_grad():
-            # actor_out = self._train_model(data.states.reshape(-1, *data.states.shape[2:]))
-            # data.logits, data.state_values = [x.view(*data.states.shape[:2], *x.shape[1:])
-            #                                   for x in (actor_out.logits, actor_out.state_values)]
-
             value_head = self._train_model.heads.state_values
             iqn = isinstance(value_head, StateValueQuantileHead)
 
@@ -160,24 +156,40 @@ class IMPALA(PPO):
 
         # action probability ratio
         # log probabilities used for better numerical stability
-        data.old_logp = pd.logp(data.actions, data.logits_old).mean(-1)
-        data.logp = pd.logp(data.actions, data.logits).mean(-1)
-        data.probs_ratio = torch.exp(data.logp - data.old_logp.detach())
+        data.old_logp = pd.logp(data.actions, data.logits_old)
+        data.logp = pd.logp(data.actions, data.logits)
+        data.probs_ratio = (data.logp - data.old_logp).detach().mean(-1).exp()
 
         self._process_rewards(data)
 
+        adv_u = data.advantages.unsqueeze(-1)
         entropy = pd.entropy(data.logits)
         kl = pd.kl(data.logits_old, data.logits)
-        loss_kl = self.kl_scale * (kl + (kl - 2 * self.kl_target).clamp(0, 1e6).pow(2)).mean()
+        loss_ent = self.entropy_loss_scale * -entropy
+        loss_policy = -data.logp * adv_u
+        loss_value = self.value_loss_scale * barron_loss(data.state_values, data.value_targets, *self.barron_alpha_c, reduce=False)
 
-        policy_loss = (-data.logp * data.advantages).mean()
-        loss_ent = self.entropy_loss_scale * -entropy.mean()
-        loss_value = self.value_loss_scale * barron_loss(data.state_values, data.value_targets, *self.barron_alpha_c)
+        kl_targets = self.kl_target * adv_u.abs()
+        loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(0.001 * self.kl_scale * self.kl_target)
+        small_kl = kl.detach() < self.kl_target
+        large_kl = kl.detach() > self.kl_target
+        loss_kl[small_kl] = 0
+        loss_ent[large_kl] = 0
+        loss_policy[large_kl] = 0
+
+        assert loss_ent.shape == loss_policy.shape, (loss_ent.shape, loss_policy.shape)
+        assert loss_policy.shape == loss_kl.shape, (loss_policy.shape, loss_kl.shape)
+        assert loss_policy.shape[:-1] == loss_value.shape[:-2], (loss_policy.shape, loss_value.shape)
+
+        loss_ent = loss_ent.mean()
+        loss_policy = loss_policy.mean()
+        loss_kl = loss_kl.mean()
+        loss_value = loss_value.mean()
 
         # sum all losses
-        total_loss = policy_loss + loss_value + loss_ent + loss_kl
+        total_loss = loss_policy + loss_value + loss_ent + loss_kl
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
-            (policy_loss.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
+            (loss_policy.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
 
         if do_log and tag is not None:
             with torch.no_grad():
@@ -187,7 +199,7 @@ class IMPALA(PPO):
                 self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame)
                 self.logger.add_scalar('loss entropy' + tag, loss_ent.mean(), self.frame)
                 self.logger.add_scalar('loss state value' + tag, loss_value.mean(), self.frame)
-                ratio = data.logp - data.old_logp.detach()
+                ratio = (data.logp - data.old_logp).mean(-1)
                 self.logger.add_histogram('ratio hist' + tag, ratio, self.frame)
                 self.logger.add_scalar('ratio mean' + tag, ratio.mean(), self.frame)
                 self.logger.add_scalar('ratio abs mean' + tag, ratio.abs().mean(), self.frame)
@@ -196,14 +208,16 @@ class IMPALA(PPO):
         return total_loss, kl.mean()
 
     def _process_rewards(self, data, mean_norm=True):
-        state_values = data.state_values
+        state_values = data.state_values.detach()
         data.update({k: v[:-1] for k, v in data.items()})
 
         norm_rewards = self.reward_scale * data.rewards
 
         # calculate value targets and advantages
         value_targets, advantages = calc_vtrace(
-            norm_rewards, state_values.detach(), data.dones, data.probs_ratio.detach(), self.reward_discount)
+            norm_rewards, state_values, data.dones, data.probs_ratio.detach(), self.reward_discount, 1.5, 1.5)
+        noncorr_adv = calc_advantages(norm_rewards, state_values, data.dones, self.reward_discount, self.advantage_discount)
+        advantages += 1.0 * noncorr_adv.clamp(min=0)
 
         mean, square, iter = self._advantage_stats
         mean = self._advantage_momentum * mean + (1 - self._advantage_momentum) * advantages.mean().item()

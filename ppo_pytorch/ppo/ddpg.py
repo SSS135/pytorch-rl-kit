@@ -38,6 +38,14 @@ from ..common.model_saver import ModelSaver
 import torch.autograd
 
 
+def blend_models(src, dst, factor):
+    for src, dst in zip(src.state_dict().values(), dst.state_dict().values()):
+        if dst.dtype == torch.long:
+            dst.data.copy_(src.data)
+        else:
+            dst.data.lerp_(src.data, factor)
+
+
 class DDPG(RLBase):
     def __init__(self, observation_space, action_space,
                  reward_discount=0.99,
@@ -132,7 +140,7 @@ class DDPG(RLBase):
                 self._eval_steps += 1
                 self._prev_data = dict(rewards=rewards, dones=dones)
 
-                min_replay_size = self.batch_size * self.num_batches * (self.value_target_steps + 1)
+                min_replay_size = self.batch_size * (self.value_target_steps + 1)
                 if self.frame > 1024 and self._eval_steps >= self.train_interval and len(self._replay_buffer) >= min_replay_size:
                     self._eval_steps = 0
                     self._pre_train()
@@ -185,7 +193,7 @@ class DDPG(RLBase):
                 # prepare batch data
                 batch = AttrDict(data_loader.get_next_batch())
                 loss = self._batch_update(batch, self._do_log and batch_index == self.num_batches - 1)
-                self._blend_models(self._train_model, self._target_model, self.target_model_blend)
+                blend_models(self._train_model, self._target_model, self.target_model_blend)
 
         if self._do_log:
             self.logger.add_scalar('learning rate', self._actor_optimizer.param_groups[0]['lr'], self.frame)
@@ -195,13 +203,6 @@ class DDPG(RLBase):
 
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
         # self._target_model = deepcopy(self._train_model)
-
-    def _blend_models(self, src, dst, factor):
-        for src, dst in zip(src.state_dict().values(), dst.state_dict().values()):
-            if dst.dtype == torch.long:
-                dst.data.copy_(src.data)
-            else:
-                dst.data.lerp_(src.data, factor)
 
     def _batch_update(self, batch, do_log=False):
         critc_loss = self._critic_step(batch, do_log)
@@ -244,7 +245,7 @@ class DDPG(RLBase):
         with torch.enable_grad():
             state_values = self._train_model(data.states[0], evaluate_heads=['state_values'], **actor_params).state_values
             if iqn:
-                loss = huber_quantile_loss(state_values, targets, actor_params.tau)
+                loss = huber_quantile_loss(state_values, targets, actor_params.tau, k=1.0)
             else:
                 loss = barron_loss(state_values, targets, *self.barron_alpha_c)
 

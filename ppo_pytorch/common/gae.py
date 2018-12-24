@@ -256,7 +256,13 @@ def calc_vtrace(rewards: TT, values: TT, dones: TT, probs_ratio: TT, discount: f
     for i in reversed(range(len(rewards))):
         targets[i] = values[i] + td[i] + nonterminal[i] * discount * c[i] * (targets[i + 1] - values[i + 1])
     advantages = rewards + nonterminal * discount * targets[1:] - values[:-1]
-    return targets[:-1], advantages * p
+
+    assert targets.shape == values.shape, (targets.shape, values.shape)
+    assert advantages.shape == rewards.shape, (advantages.shape, rewards.shape)
+
+    advantages = (advantages * p).mean(-1).mean(-1)
+
+    return targets[:-1], advantages
 
 
 def assert_equal_tensors(a, b, abs_tol=1e-4):

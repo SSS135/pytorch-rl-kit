@@ -69,7 +69,7 @@ def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128)
 
 
 def create_ddpg_fc_actor(observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU,
-                         norm_factory: NormFactory = None):
+                         norm_factory: NormFactory = BatchNormFactory()):
     assert len(observation_space.shape) == 1
     split_policy_value_network = True
     num_bins = 1
