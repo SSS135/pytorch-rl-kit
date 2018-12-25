@@ -214,10 +214,10 @@ class IMPALA(PPO):
         norm_rewards = self.reward_scale * data.rewards
 
         # calculate value targets and advantages
-        value_targets, advantages = calc_vtrace(
-            norm_rewards, state_values, data.dones, data.probs_ratio.detach(), self.reward_discount, 1.5, 1.5)
-        noncorr_adv = calc_advantages(norm_rewards, state_values, data.dones, self.reward_discount, self.advantage_discount)
-        advantages += 1.0 * noncorr_adv.clamp(min=0)
+        value_targets, advantages, p = calc_vtrace(
+            norm_rewards, state_values, data.dones, data.probs_ratio.detach(), self.reward_discount, 1.0, 1.0)
+        # noncorr_adv = calc_advantages(norm_rewards, state_values, data.dones, self.reward_discount, self.advantage_discount)
+        # advantages += 0.3 * noncorr_adv.clamp(min=0)
 
         mean, square, iter = self._advantage_stats
         mean = self._advantage_momentum * mean + (1 - self._advantage_momentum) * advantages.mean().item()
@@ -235,7 +235,7 @@ class IMPALA(PPO):
         else:
             rms = square ** 0.5
             advantages = advantages / max(rms, 1e-3)
-        advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
+        advantages = p * barron_loss_derivative(advantages, *self.barron_alpha_c)
 
         data.value_targets, data.advantages, data.rewards = value_targets, advantages, norm_rewards
 

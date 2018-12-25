@@ -239,7 +239,7 @@ def get_mass(step, decay):
     return (decay ** (step + 1) - 1) / (decay - 1)
 
 
-def calc_vtrace(rewards: TT, values: TT, dones: TT, probs_ratio: TT, discount: float, c_max=1.5, p_max=1.5) -> Tuple[TT, TT]:
+def calc_vtrace(rewards: TT, values: TT, dones: TT, probs_ratio: TT, discount: float, c_max=1.5, p_max=1.5) -> Tuple[TT, TT, TT]:
     _check_data(rewards, values, dones)
     assert values.shape[-2] == 1, values.shape
     assert probs_ratio.shape == rewards.shape, (probs_ratio.shape, rewards.shape)
@@ -260,9 +260,7 @@ def calc_vtrace(rewards: TT, values: TT, dones: TT, probs_ratio: TT, discount: f
     assert targets.shape == values.shape, (targets.shape, values.shape)
     assert advantages.shape == rewards.shape, (advantages.shape, rewards.shape)
 
-    advantages = (advantages * p).mean(-1).mean(-1)
-
-    return targets[:-1], advantages
+    return targets[:-1], advantages.mean(-1).mean(-1), p.mean(-1).mean(-1)
 
 
 def assert_equal_tensors(a, b, abs_tol=1e-4):
