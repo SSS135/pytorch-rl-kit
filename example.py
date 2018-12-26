@@ -47,7 +47,7 @@ if __name__ == '__main__':
     gym_wrap = EnvTrainer(
         rl_alg_factory,
         env_factory,
-        log_path=args.tensorboard_path,
+        log_root_path=args.tensorboard_path,
     )
 
     print('Training on {} for {} steps, CUDA {}'.format(

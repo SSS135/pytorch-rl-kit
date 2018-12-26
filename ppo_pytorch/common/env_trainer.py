@@ -4,7 +4,7 @@ from typing import Callable
 
 import numpy as np
 
-from .tensorboard_env_logger import TensorboardEnvLogger
+from .tensorboard_env_logger import TensorboardEnvLogger, get_log_dir
 import torch
 
 
@@ -12,8 +12,9 @@ class EnvTrainer:
     def __init__(self,
                  rl_alg_factory: Callable,
                  env_factory: Callable,
+                 log_root_path,
                  log_interval=10 * 1024,
-                 log_path=None,
+                 alg_name='RL',
                  tag=''):
         """
         Simplifies training of RL algorithms with gym environments.
@@ -22,26 +23,27 @@ class EnvTrainer:
             env: Environment factory.
                 Accepted values are environment name, function which returns `gym.Env`, `gym.Env` object
             log_interval: Tensorboard logging interval in frames.
-            log_path: Tensorboard output directory.
+            log_root_path: Tensorboard output directory.
         """
         self._init_args = locals()
         self.rl_alg_factory = rl_alg_factory
         self.env = env_factory()
         self.frame = 0
 
-        self.rl_alg = rl_alg_factory(self.env.observation_space, self.env.action_space, log_interval=log_interval)
+        assert log_root_path is not None
+
+        env_name = self.env.env_name
+        log_dir = get_log_dir(log_root_path, alg_name, env_name, tag)
+
+        self.rl_alg = rl_alg_factory(self.env.observation_space, self.env.action_space,
+                                     log_interval=log_interval, model_save_folder=log_dir)
         self.env.set_num_envs(self.rl_alg.num_actors)
         self.states = self.env.reset()
         self.all_rewards = []
 
-        if log_path is not None:
-            env_name = self.env.env_name
-            alg_name = type(self.rl_alg).__name__
-            self.logger = TensorboardEnvLogger(alg_name, env_name, log_path, self.env.num_envs, log_interval, tag=tag)
-            self.logger.add_text('EnvTrainer', pprint.pformat(self._init_args))
-            self.rl_alg.logger = self.logger
-        else:
-            self.logger = None
+        self.logger = TensorboardEnvLogger(alg_name, env_name, log_dir, self.env.num_envs, log_interval, tag=tag)
+        self.logger.add_text('EnvTrainer', pprint.pformat(self._init_args))
+        self.rl_alg.logger = self.logger
 
     def step(self, always_log=False):
         """Do single step of RL alg"""

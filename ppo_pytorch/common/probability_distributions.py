@@ -25,8 +25,9 @@ def make_pd(space: gym.Space):
         # return DiagGaussianPd(space.shape[0])
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
     elif isinstance(space, gym.spaces.MultiBinary):
-        gym.spaces.MultiDiscrete()
         return BernoulliPd(space.n)
+    elif isinstance(space, gym.spaces.MultiDiscrete):
+        return MultiCategoricalPd(space.nvec)
     else:
         raise TypeError(space)
 
@@ -136,6 +137,77 @@ class CategoricalPd(ProbabilityDistribution):
         return F.softmax(prob.reshape(-1, prob.shape[-1]), dim=-1).multinomial(1).reshape(*prob.shape[:-1], -1)
 
     def to_inputs(self, action):
+        with torch.no_grad():
+            onehot = torch.zeros((*action.shape[:-1], self.n), device=action.device)
+            onehot.scatter_(dim=-1, index=action, value=1)
+            onehot = onehot - 1 / self.n
+        return onehot
+
+
+class MultiCategoricalPd(ProbabilityDistribution):
+    def __init__(self, sizes):
+        super().__init__(locals())
+        self.sizes = list(sizes)
+
+    @property
+    def prob_vector_len(self):
+        return sum(self.sizes)
+
+    @property
+    def action_vector_len(self):
+        return len(self.sizes)
+
+    @property
+    def input_vector_len(self):
+        return sum(self.sizes)
+
+    @property
+    def dtype(self):
+        return torch.int64
+
+    def logp(self, all_actions, all_logits):
+        split_logits = all_logits.split(self.sizes, -1)
+        all_logp = []
+        for logits, a in zip(split_logits, all_actions.unbind(-1)):
+            logp = F.log_softmax(logits, dim=-1)
+            logp = logp.gather(dim=-1, index=a.unsqueeze(-1) if a.dim() == 1 else a)
+            all_logp.append(logp)
+        return torch.stack(all_logp, -1).mean(-1)
+
+    def kl(self, all_logits0, all_logits1):
+        split_logits0 = all_logits0.split(self.sizes, -1)
+        split_logits1 = all_logits1.split(self.sizes, -1)
+        all_kl = []
+        for logits0, logits1 in zip(split_logits0, split_logits1):
+            logp0 = F.log_softmax(logits0, dim=-1)
+            logp1 = F.log_softmax(logits1, dim=-1)
+            kl = (logp0.exp() * (logp0 - logp1)).sum(dim=-1, keepdim=True)
+            all_kl.append(kl)
+        return torch.stack(all_kl, -1).mean(-1)
+
+    def entropy(self, all_logits):
+        split_logits = all_logits.split(self.sizes, -1)
+        all_ent = []
+        for logits in split_logits:
+            a = logits - logits.max(dim=-1, keepdim=True)[0]
+            ea = a.exp()
+            z = ea.sum(dim=-1, keepdim=True)
+            po = ea / z
+            ent = torch.sum(po * (torch.log(z) - a), dim=-1, keepdim=True)
+            all_ent.append(ent)
+        return torch.stack(all_ent, -1).mean(-1)
+
+    def sample(self, all_logits):
+        split_logits = all_logits.split(self.sizes, -1)
+        all_actions = []
+        for logits in split_logits:
+            probs = F.softmax(logits.reshape(-1, logits.shape[-1]), dim=-1)
+            action = probs.multinomial(1).reshape(*logits.shape[:-1], -1)
+            all_actions.append(action)
+        return torch.cat(all_actions, -1)
+
+    def to_inputs(self, action):
+        raise NotImplementedError
         with torch.no_grad():
             onehot = torch.zeros((*action.shape[:-1], self.n), device=action.device)
             onehot.scatter_(dim=-1, index=action, value=1)

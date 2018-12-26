@@ -9,30 +9,36 @@ import numpy as np
 Reward = namedtuple('Reward', 'info, episode, frame')
 
 
+def get_log_dir(log_root_dir, alg_name, env_name, tag):
+    timestr = time.strftime('%Y-%m-%d_%H-%M-%S')
+    dir_name = f'{alg_name}_{env_name}_{tag}_{timestr}_'
+    return tempfile.mkdtemp('', dir_name, log_root_dir)
+
+
 class TensorboardEnvLogger:
     def __init__(self,
                  alg_name,
                  env_name,
-                 log_path,
+                 log_dir,
                  env_count,
                  log_interval=10 * 1024,
                  reward_std_episodes=100,
-                 tag='',):
+                 tag='', ):
         """
         Tensorboard logger. Does logging of environment episode information
             and wrapping logger calls for classes inherited from `RLBase`.
         Args:
             alg_name: RL algorithm name
             env_name: Env name
-            log_path: Tensorboard logging path
+            log_dir: Tensorboard logging path
             env_count: Number of parallely running envs.
             log_time_interval: Logging interval in seconds.
             reward_std_episodes: Reward statistics calculation window.
         """
-        assert log_path is not None
+        assert log_dir is not None
         from tensorboardX import SummaryWriter  # to remove dependency if not used
         self.log_interval = log_interval
-        self.log_path = log_path
+        self.log_dir = log_dir
         self.alg_name = alg_name
         self.env_name = env_name
         self.tag = tag
@@ -45,11 +51,8 @@ class TensorboardEnvLogger:
         self.episode = 0
         self.frame = 0
         self.last_log_frame = 0
-        timestr = time.strftime('%Y-%m-%d_%H-%M-%S')
-        dir_name = f'{self.alg_name}_{self.env_name}_{tag}_{timestr}_'
-        path = tempfile.mkdtemp('', dir_name, self.log_path)
-        self.logger = SummaryWriter(path)
-        self.episodes_file = open(os.path.join(path, 'episodes'), 'a')
+        self.logger = SummaryWriter(log_dir)
+        self.episodes_file = open(os.path.join(log_dir, 'episodes'), 'a')
 
     def step(self, infos: dict or list, force_log: bool):
         """

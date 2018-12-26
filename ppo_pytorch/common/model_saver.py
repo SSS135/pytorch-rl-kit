@@ -7,7 +7,7 @@ import torch
 
 
 class ModelSaver:
-    def __init__(self, model_save_folder, model_save_tag,
+    def __init__(self, model_save_folder, model_save_tag=None,
                  model_save_interval=100_000, save_intermediate_models=False, actor_index=0):
         self.model_save_folder = model_save_folder
         self.model_save_interval = model_save_interval
@@ -17,16 +17,16 @@ class ModelSaver:
         self._last_model_save_frame = 0
 
     def check_save_model(self, model, frame):
-        if self.model_save_interval is None or \
+        if self.model_save_interval is None or self.model_save_folder is None or \
            self._last_model_save_frame + self.model_save_interval > frame:
             return
 
         self._create_save_folder()
         path = self._get_save_path(frame)
-        self._save_model(model, path)
+        self._save_model(model, path, frame)
 
-    def _save_model(self, model, path):
-        # print(f'saving model at {self.frame} step to {path}')
+    def _save_model(self, model, path, frame):
+        print(f'saving model at {frame} step to {path}')
         model = deepcopy(model).cpu()
         try:
             torch.save(model, path)
@@ -35,10 +35,11 @@ class ModelSaver:
 
     def _get_save_path(self, frame):
         self._last_model_save_frame = frame
+        tag = '' if self.model_save_tag is None else self.model_save_tag
         if self.save_intermediate_models:
-            name = f'{self.model_save_tag}_{self.actor_index}_{frame}'
+            name = f'{tag}_{self.actor_index}_{frame}'
         else:
-            name = f'{self.model_save_tag}_{self.actor_index}'
+            name = f'{tag}_{self.actor_index}'
         return Path(self.model_save_folder) / (name + '.pth')
 
     def _create_save_folder(self):
