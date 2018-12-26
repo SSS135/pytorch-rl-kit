@@ -72,15 +72,11 @@ class StepsProcessor:
 
         # calculate value_targets and advantages
         if values.shape[-2] == 1:
-            value_targets = calc_value_targets(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
-            advantages = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
+            value_targets = calc_value_targets(norm_rewards, values, dones, self.reward_discount, self.reward_discount)
+            advantages = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.reward_discount)
         else:
-            value_targets = calc_binned_value_targets(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
-            advantages = calc_weighted_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
-
-        if random.randrange(50) == 0:
-            print('values', values[0, 0])
-            print('value_targets', value_targets[0, 0])
+            value_targets = calc_binned_value_targets(norm_rewards, values, dones, self.reward_discount, self.reward_discount)
+            advantages = calc_weighted_advantages(norm_rewards, values, dones, self.reward_discount, self.reward_discount)
 
         def adv_norm(advantages):
             if self.mean_norm:

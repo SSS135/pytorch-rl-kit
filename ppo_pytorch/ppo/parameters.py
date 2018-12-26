@@ -50,11 +50,6 @@ def create_ddpg_fc_kwargs(learning_decay_frames=5e5, **kwargs):
     """
 
     defaults = dict(
-        actor_optimizer_factory=partial(optim.Adam, lr=1e-4),
-        critic_optimizer_factory=partial(optim.Adam, lr=5e-4),
-        model_factory=create_ddpg_fc_actor,
-        cuda_eval=True,
-        cuda_train=True,
     )
     schedulers = dict(
         lr_scheduler_factory=partial(

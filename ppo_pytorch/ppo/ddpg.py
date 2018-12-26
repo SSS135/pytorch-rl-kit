@@ -49,29 +49,26 @@ def blend_models(src, dst, factor):
 class DDPG(RLBase):
     def __init__(self, observation_space, action_space,
                  reward_discount=0.99,
-                 train_interval=128,
+                 train_interval=16,
                  batch_size=128,
-                 num_batches=4,
+                 num_batches=16,
                  value_target_steps=1,
                  replay_buffer_size=128*1024,
-                 target_model_blend=0.01,
+                 target_model_blend=0.005,
+                 train_noise_scale=0.2,
+                 train_noise_clip=0.5,
+                 critic_iters=2,
                  model_factory=create_ppo_fc_actor,
-                 actor_optimizer_factory=partial(optim.Adam, lr=1e-4),
+                 actor_optimizer_factory=partial(optim.Adam, lr=1e-3),
                  critic_optimizer_factory=partial(optim.Adam, lr=1e-3),
-                 entropy_loss_scale=0.01,
-                 cuda_eval=False,
-                 cuda_train=False,
-                 grad_clip_norm=2,
+                 cuda_eval=True,
+                 cuda_train=True,
+                 grad_clip_norm=None,
                  reward_scale=1.0,
                  barron_alpha_c=(1.5, 1),
                  num_quantiles=1,
                  lr_scheduler_factory=None,
                  entropy_decay_factory=None,
-                 model_save_folder='./models',
-                 model_save_tag='ppo_model',
-                 model_save_interval=100_000,
-                 model_init_path=None,
-                 save_intermediate_models=False,
                  use_pop_art=False,
                  **kwargs):
         super().__init__(observation_space, action_space, **kwargs)
@@ -83,27 +80,25 @@ class DDPG(RLBase):
         self.value_target_steps = value_target_steps
         self.replay_buffer_size = replay_buffer_size
         self.target_model_blend = target_model_blend
+        self.train_noise_scale = train_noise_scale
+        self.train_noise_clip = train_noise_clip
+        self.critic_iters = critic_iters
         self.model_factory = model_factory
-        self.entropy_loss_scale = entropy_loss_scale
         self.device_eval = torch.device('cuda' if cuda_eval else 'cpu')
         self.device_train = torch.device('cuda' if cuda_train else 'cpu')
         self.grad_clip_norm = grad_clip_norm
         self.reward_scale = reward_scale
         self.barron_alpha_c = barron_alpha_c
         self.num_quantiles = num_quantiles
-        self.model_save_folder = model_save_folder
-        self.model_save_tag = model_save_tag
-        self.model_save_interval = model_save_interval
-        self.save_intermediate_models = save_intermediate_models
         self.use_pop_art = use_pop_art
 
         assert isinstance(action_space, gym.spaces.Box), action_space
 
-        if model_init_path is None:
+        if self.model_init_path is None:
             self._train_model: ModularActor = model_factory(observation_space, action_space)
         else:
-            self._train_model: ModularActor = torch.load(model_init_path)
-            print(f'loaded model {model_init_path}')
+            self._train_model: ModularActor = torch.load(self.model_init_path)
+            print(f'loaded model {self.model_init_path}')
 
         self._train_model = self._train_model.to(self.device_train).train()
         self._target_model = deepcopy(self._train_model)
@@ -112,26 +107,25 @@ class DDPG(RLBase):
         self._actor_optimizer: torch.optim.Optimizer = \
             actor_optimizer_factory(self._train_model.head_parameters('logits'))
         self._critic_optimizer: torch.optim.Optimizer = \
-            critic_optimizer_factory(self._train_model.head_parameters('state_values'))
+            critic_optimizer_factory(self._train_model.head_parameters('state_values_1', 'state_values_2'))
         self._actor_lr_scheduler = lr_scheduler_factory(self._actor_optimizer) if lr_scheduler_factory is not None else None
         self._critic_lr_scheduler = lr_scheduler_factory(self._critic_optimizer) if lr_scheduler_factory is not None else None
         self._entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
         self._replay_buffer = ReplayBuffer(replay_buffer_size)
-        self._model_saver = ModelSaver(model_save_folder, model_save_tag, model_save_interval,
-                                       save_intermediate_models, self.actor_index)
         self._pop_art = PopArt()
         self._train_executor = ThreadPoolExecutor(max_workers=1)
         self._eval_steps = 0
         self._prev_data = None
         self._last_model_save_frame = 0
         self._train_future: Optional[Future] = None
+        self._update_iter = 0
 
     def _step(self, rewards, dones, states) -> torch.Tensor:
         with torch.no_grad():
             # run network
             ac_out = self._eval_model(states.to(self.device_eval), evaluate_heads=['logits'])
-            noise = 0.3 * torch.randn_like(ac_out.logits) if not self.disable_training else 0
-            actions = self._eval_model.heads.logits.pd.sample(ac_out.logits + noise).cpu()
+            noise = 0.1 * torch.randn(ac_out.logits.shape) if not self.disable_training else 0
+            actions = self._eval_model.heads.logits.pd.sample(ac_out.logits).cpu() + noise
 
             if not self.disable_training:
                 if self._prev_data is not None and self._prev_data['rewards'] is not None:
@@ -193,7 +187,9 @@ class DDPG(RLBase):
                 # prepare batch data
                 batch = AttrDict(data_loader.get_next_batch())
                 loss = self._batch_update(batch, self._do_log and batch_index == self.num_batches - 1)
-                blend_models(self._train_model, self._target_model, self.target_model_blend)
+                if self._do_actor_update:
+                    blend_models(self._train_model, self._target_model, self.target_model_blend)
+                self._update_iter += 1
 
         if self._do_log:
             self.logger.add_scalar('learning rate', self._actor_optimizer.param_groups[0]['lr'], self.frame)
@@ -202,7 +198,10 @@ class DDPG(RLBase):
             self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame)
 
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
-        # self._target_model = deepcopy(self._train_model)
+
+    @property
+    def _do_actor_update(self):
+        return self._update_iter % self.critic_iters == 0
 
     def _batch_update(self, batch, do_log=False):
         critc_loss = self._critic_step(batch, do_log)
@@ -212,12 +211,15 @@ class DDPG(RLBase):
         self._critic_optimizer.step()
         self._train_model.zero_grad()
 
-        actor_loss = self._actor_step(batch, do_log)
-        actor_loss.backward()
-        if self.grad_clip_norm is not None:
-            clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
-        self._actor_optimizer.step()
-        self._train_model.zero_grad()
+        if self._do_actor_update:
+            actor_loss = self._actor_step(batch, do_log)
+            actor_loss.backward()
+            if self.grad_clip_norm is not None:
+                clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
+            self._actor_optimizer.step()
+            self._train_model.zero_grad()
+        else:
+            actor_loss = 0
 
         return actor_loss + critc_loss
 
@@ -229,8 +231,10 @@ class DDPG(RLBase):
             actor_params.tau = torch.rand(data.rewards.shape[1], self.num_quantiles, device=self.device_train)
 
         logits = self._target_model(data.states[-1], evaluate_heads=['logits']).logits
-        actor_params.actions = self._target_model.heads.logits.pd.sample(logits)
-        targets = self._target_model(data.states[-1], evaluate_heads=['state_values'], **actor_params).state_values
+        action_noise = torch.randn_like(logits).mul_(self.train_noise_scale).clamp_(-self.train_noise_clip, self.train_noise_clip)
+        actor_params.actions = self._target_model.heads.logits.pd.sample(logits) + action_noise
+        ac_out = self._target_model(data.states[-1], evaluate_heads=['state_values_1', 'state_values_2'], **actor_params)
+        targets = torch.min(ac_out.state_values_1, ac_out.state_values_2)
 
         rewards = data.rewards.unsqueeze(-1).unsqueeze(-1)
         dones = data.dones.unsqueeze(-1).unsqueeze(-1)
@@ -243,23 +247,28 @@ class DDPG(RLBase):
             actor_params.tau = torch.rand(data.rewards.shape[1], self.num_quantiles, device=self.device_train)
 
         with torch.enable_grad():
-            state_values = self._train_model(data.states[0], evaluate_heads=['state_values'], **actor_params).state_values
+            ac_out = self._train_model(data.states[0], evaluate_heads=['state_values_1', 'state_values_2'], **actor_params)
+            state_values_1, state_values_2 = ac_out.state_values_1, ac_out.state_values_2
             if iqn:
-                loss = huber_quantile_loss(state_values, targets, actor_params.tau, k=1.0)
+                loss = huber_quantile_loss(state_values_1, targets, actor_params.tau, k=1.0) + \
+                       huber_quantile_loss(state_values_2, targets, actor_params.tau, k=1.0)
             else:
-                loss = barron_loss(state_values, targets, *self.barron_alpha_c)
+                loss = barron_loss(state_values_1, targets, *self.barron_alpha_c) + \
+                       barron_loss(state_values_2, targets, *self.barron_alpha_c)
 
         return loss
 
     def _actor_step(self, data: AttrDict, do_log):
+        iqn = self.num_quantiles > 1
+
         actor_params = AttrDict()
-        if self.num_quantiles > 1:
+        if iqn:
             actor_params.tau = torch.rand(data.rewards.shape[1], self.num_quantiles, device=self.device_train)
 
         with torch.enable_grad():
             logits = self._train_model(data.states[0], evaluate_heads=['logits']).logits
             actor_params.actions = self._train_model.heads.logits.pd.sample(logits)
-            state_values = self._train_model(data.states[0], evaluate_heads=['state_values'], **actor_params).state_values
+            state_values = self._train_model(data.states[0], evaluate_heads=['state_values_1'], **actor_params).state_values_1
 
         logits_grad = torch.autograd.grad(state_values, logits, -torch.ones_like(state_values), only_inputs=True)[0]
         with torch.enable_grad():

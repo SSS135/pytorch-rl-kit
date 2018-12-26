@@ -12,7 +12,6 @@ import torch
 import torch.autograd
 import torch.nn.functional as F
 import torch.optim as optim
-from ..common.model_saver import ModelSaver
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 
@@ -54,16 +53,11 @@ class PPO(RLBase):
                  grad_clip_norm=2,
                  reward_scale=1.0,
                  barron_alpha_c=(1.5, 1),
-                 num_quantiles=16,
+                 num_quantiles=1,
                  advantage_scaled_clip=True,
                  lr_scheduler_factory=None,
                  clip_decay_factory=None,
                  entropy_decay_factory=None,
-                 model_save_folder='./models',
-                 model_save_tag='ppo_model',
-                 model_save_interval=100_000,
-                 model_init_path=None,
-                 save_intermediate_models=False,
                  use_pop_art=False,
                  **kwargs):
         """
@@ -150,10 +144,6 @@ class PPO(RLBase):
         self.model_factory = model_factory
         self.constraint = (constraint,) if isinstance(constraint, str) else constraint
         self.reward_scale = reward_scale
-        self.model_save_folder = model_save_folder
-        self.model_save_interval = model_save_interval
-        self.save_intermediate_models = save_intermediate_models
-        self.model_save_tag = model_save_tag
         self.kl_target = kl_target
         self.kl_scale = self._init_kl_scale = kl_scale
         self.lr_iter_mult = lr_iter_mult
@@ -165,11 +155,11 @@ class PPO(RLBase):
 
         assert len(set(self.constraint) - {'clip', 'kl', 'opt', 'mse', 'target'}) == 0
 
-        if model_init_path is None:
+        if self.model_init_path is None:
             self._train_model: Actor = model_factory(observation_space, action_space)
         else:
-            self._train_model: Actor = torch.load(model_init_path)
-            print(f'loaded model {model_init_path}')
+            self._train_model: Actor = torch.load(self.model_init_path)
+            print(f'loaded model {self.model_init_path}')
         self._optimizer = optimizer_factory(self._train_model.parameters())
         self._lr_scheduler = lr_scheduler_factory(self._optimizer) if lr_scheduler_factory is not None else None
         self._clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
@@ -181,8 +171,6 @@ class PPO(RLBase):
         self._train_executor = ThreadPoolExecutor(max_workers=1)
         self._train_model = self._train_model.to(self.device_eval, non_blocking=True).train()
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
-        self._model_saver = ModelSaver(model_save_folder, model_save_tag, model_save_interval,
-                                       save_intermediate_models, self.actor_index)
         self._prev_tau = None
 
     def _step(self, rewards, dones, states) -> torch.Tensor:

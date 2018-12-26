@@ -4,6 +4,7 @@ from typing import Optional
 import gym
 import torch
 from gym.spaces import Discrete
+from .model_saver import ModelSaver
 
 
 class RLStep(Enum):
@@ -20,7 +21,12 @@ class RLBase:
                  num_actors=1,
                  log_interval: float=None,
                  disable_training=False,
-                 actor_index=0):
+                 model_save_folder=None,
+                 model_save_tag=None,
+                 model_save_interval=100_000,
+                 model_init_path=None,
+                 save_intermediate_models=False,
+                 actor_index=0,):
         """
         Base class for all reinforcement learning algorithms. Supports running parallely on multiple envs.
         Args:
@@ -34,6 +40,11 @@ class RLBase:
         self.log_interval = log_interval
         self.disable_training = disable_training
         self.actor_index = actor_index
+        self.model_save_folder = model_save_folder
+        self.model_save_interval = model_save_interval
+        self.save_intermediate_models = save_intermediate_models
+        self.model_save_tag = model_save_tag
+        self.model_init_path = model_init_path
 
         self.step_type = RLStep.EVAL
         self.cur_states, self.prev_states, self.rewards, self.dones = [None] * 4
@@ -41,6 +52,9 @@ class RLBase:
         self._last_log_frame = 0
         self._do_log = False
         self.step = 0
+
+        self._model_saver = ModelSaver(model_save_folder, model_save_tag, model_save_interval,
+                                       save_intermediate_models, self.actor_index)
 
     @property
     def frame(self):

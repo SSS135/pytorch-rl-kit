@@ -25,6 +25,7 @@ def make_pd(space: gym.Space):
         # return DiagGaussianPd(space.shape[0])
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
     elif isinstance(space, gym.spaces.MultiBinary):
+        gym.spaces.MultiDiscrete()
         return BernoulliPd(space.n)
     else:
         raise TypeError(space)
@@ -85,7 +86,7 @@ class ProbabilityDistribution:
 
     @property
     def init_column_norm(self):
-        return 0.01
+        return 0.1
 
     def __repr__(self):
         str_args = str.join(', ', [f'{k}={v}' for k, v in self._init_args.items()])
