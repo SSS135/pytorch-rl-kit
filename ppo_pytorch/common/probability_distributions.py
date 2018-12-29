@@ -170,9 +170,9 @@ class MultiCategoricalPd(ProbabilityDistribution):
         all_logp = []
         for logits, a in zip(split_logits, all_actions.unbind(-1)):
             logp = F.log_softmax(logits, dim=-1)
-            logp = logp.gather(dim=-1, index=a.unsqueeze(-1) if a.dim() == 1 else a)
+            logp = logp.gather(dim=-1, index=a.unsqueeze(-1))
             all_logp.append(logp)
-        return torch.stack(all_logp, -1).mean(-1)
+        return torch.cat(all_logp, -1)
 
     def kl(self, all_logits0, all_logits1):
         split_logits0 = all_logits0.split(self.sizes, -1)
@@ -183,7 +183,7 @@ class MultiCategoricalPd(ProbabilityDistribution):
             logp1 = F.log_softmax(logits1, dim=-1)
             kl = (logp0.exp() * (logp0 - logp1)).sum(dim=-1, keepdim=True)
             all_kl.append(kl)
-        return torch.stack(all_kl, -1).mean(-1)
+        return torch.cat(all_kl, -1)
 
     def entropy(self, all_logits):
         split_logits = all_logits.split(self.sizes, -1)
@@ -195,7 +195,7 @@ class MultiCategoricalPd(ProbabilityDistribution):
             po = ea / z
             ent = torch.sum(po * (torch.log(z) - a), dim=-1, keepdim=True)
             all_ent.append(ent)
-        return torch.stack(all_ent, -1).mean(-1)
+        return torch.cat(all_ent, -1)
 
     def sample(self, all_logits):
         split_logits = all_logits.split(self.sizes, -1)

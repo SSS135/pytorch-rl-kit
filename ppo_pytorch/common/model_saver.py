@@ -35,7 +35,7 @@ class ModelSaver:
 
     def _get_save_path(self, frame):
         self._last_model_save_frame = frame
-        tag = '' if self.model_save_tag is None else self.model_save_tag
+        tag = 'model' if self.model_save_tag is None else self.model_save_tag
         if self.save_intermediate_models:
             name = f'{tag}_{self.actor_index}_{frame}'
         else:

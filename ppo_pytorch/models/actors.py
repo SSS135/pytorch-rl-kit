@@ -58,7 +58,7 @@ class Actor(nn.Module, metaclass=ABCMeta):
                 m.reset_weights()
 
     @abstractmethod
-    def forward(self, input, **kwargs):
+    def forward(self, input, **kwargs) -> AttrDict:
         pass
 
     @property
@@ -86,7 +86,7 @@ class ModularActor(Actor):
         self._head_modules = nn.ModuleDict(self._heads)
         self._fx_modules = nn.ModuleList(self.models.keys())
 
-    def forward(self, input, evaluate_heads: Collection[str]=None, **kwargs):
+    def forward(self, input, evaluate_heads: Collection[str]=None, **kwargs) -> AttrDict:
         output = AttrDict()
         for fx, heads in self.models.items():
             if evaluate_heads is not None and len(set(evaluate_heads) & set(heads.keys())) == 0:

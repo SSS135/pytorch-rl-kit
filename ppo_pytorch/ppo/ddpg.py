@@ -31,19 +31,11 @@ from ..models.utils import model_diff
 from .steps_processor import StepsProcessor
 from ..common.target_logits import get_target_logits
 from optfn.iqn_loss import huber_quantile_loss
-from .ppo import PPO
 from .replay_buffer import ReplayBuffer
 from ..common.gae import calc_vtrace
 from ..common.model_saver import ModelSaver
 import torch.autograd
-
-
-def blend_models(src, dst, factor):
-    for src, dst in zip(src.state_dict().values(), dst.state_dict().values()):
-        if dst.dtype == torch.long:
-            dst.data.copy_(src.data)
-        else:
-            dst.data.lerp_(src.data, factor)
+from .utils import blend_models
 
 
 class DDPG(RLBase):

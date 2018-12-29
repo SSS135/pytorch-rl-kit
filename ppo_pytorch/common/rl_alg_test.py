@@ -72,6 +72,7 @@ def simulate(input: SimInput):
     rl_alg_factory = partial(input.alg_class, **input.alg_params)
     input.wrap_params['rl_alg_factory'] = rl_alg_factory
     input.wrap_params['env_factory'] = env_factory
+    input.wrap_params['alg_name'] = input.alg_class.__name__
     gym_wrap = EnvTrainer(**input.wrap_params)
     gym_wrap.logger.add_text('hparams', pprint.pformat(input.hyper_params))
     gym_wrap.logger.add_text('wrap_params', pprint.pformat(input.wrap_params))
