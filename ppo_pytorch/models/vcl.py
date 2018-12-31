@@ -10,17 +10,20 @@ class VCL(nn.Module):
         self.sample_size = sample_size
         self.vcl_beta = nn.Parameter(torch.Tensor(num_features))
         self.extra_loss = None
-        self.reset_parameters()
+        self.reset_weights()
 
-    def reset_parameters(self):
+    def reset_weights(self):
         self.vcl_beta.data.fill_(1)
 
-    def forward(self, input):
+    def forward(self, input: torch.Tensor):
         self.vcl_beta.data.clamp_(min=1e-3)
         slices = torch.split(input, self.sample_size, dim=0)
         var_a = slices[0].var(dim=0).abs()
-        var_b = slices[-1].var(dim=0).abs()
+        var_b = slices[-2].var(dim=0).abs()
         self.extra_loss = (1 - var_a / (var_b + self.vcl_beta)).pow(2).mean()
+        if torch.isnan(self.extra_loss) and not torch.isnan(input.sum()):
+            raise Exception(f'vcl loss diverged. loss {self.extra_loss.mean()}, '
+                            f'input {input.mean()}, var_a {var_a.mean()}, var_b {var_b.mean()}')
         return input
 
     def extra_repr(self):
