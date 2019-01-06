@@ -6,7 +6,8 @@ import torch
 import torch.nn.functional as F
 
 from .utils import normalized_columns_initializer_
-from ..common.probability_distributions import ProbabilityDistribution, CategoricalPd
+from ..common.probability_distributions import ProbabilityDistribution, CategoricalPd, MultiCategoricalPd, \
+    BetaPd, FixedStdGaussianPd, DiagGaussianPd, LinearTanhPd
 from ..common.attr_dict import AttrDict
 
 
@@ -88,6 +89,36 @@ class PolicyHead(HeadBase):
         return self.linear(x)
 
 
+class RepeatPolicyHead(HeadBase):
+    """
+    Actor-critic head. Used in PPO / A3C.
+    """
+
+    def __init__(self, in_features, num_repeats, pd: ProbabilityDistribution):
+        """
+        Args:
+            in_features: Input feature vector width.
+            pd: Action probability distribution.
+        """
+        super().__init__(in_features)
+        self.pd = pd
+        self.num_repeats = num_repeats
+        self.linear = nn.Linear(in_features, self.pd.prob_vector_len // num_repeats)
+        self.reset_weights()
+
+    def reset_weights(self):
+        normalized_columns_initializer_(self.linear.weight.data, self.pd.init_column_norm)
+        self.linear.bias.data.fill_(0)
+
+    def forward(self, x, **kwargs):
+        assert x.shape[-2:] == (self.num_repeats, self.in_features)
+        x = self.linear(x)
+        if isinstance(self.pd, BetaPd) or isinstance(self.pd, DiagGaussianPd):
+            x = x.transpose(-1, -2)
+        x = x.reshape(*x.shape[:-2], self.pd.prob_vector_len)
+        return x
+
+
 class StateValueHead(HeadBase):
     """
     Actor-critic head. Used in PPO / A3C.
@@ -161,7 +192,7 @@ class InputActionValueHead(HeadBase):
             cos_vec = torch.cos(math.pi * arange * tau.unsqueeze(-1))
             assert_shape(cos_vec, (*xd, num_q, self.tau_dim))
             # (*xd, q, n)
-            tau_emb = F.relu(self.tau_embedding(cos_vec))
+            tau_emb = 2 * self.tau_embedding(cos_vec).sigmoid()
             assert_shape(tau_emb, (*xd, num_q, x.shape[-1]))
 
             # (*xd, (prob + 1) * bins, q)

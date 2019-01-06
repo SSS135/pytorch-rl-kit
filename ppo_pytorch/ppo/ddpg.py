@@ -50,6 +50,7 @@ class DDPG(RLBase):
                  train_noise_scale=0.2,
                  train_noise_clip=0.5,
                  critic_iters=2,
+                 random_policy_frames=10000,
                  model_factory=create_ppo_fc_actor,
                  actor_optimizer_factory=partial(optim.Adam, lr=1e-3),
                  critic_optimizer_factory=partial(optim.Adam, lr=1e-3),
@@ -75,6 +76,7 @@ class DDPG(RLBase):
         self.train_noise_scale = train_noise_scale
         self.train_noise_clip = train_noise_clip
         self.critic_iters = critic_iters
+        self.random_policy_frames = random_policy_frames
         self.model_factory = model_factory
         self.device_eval = torch.device('cuda' if cuda_eval else 'cpu')
         self.device_train = torch.device('cuda' if cuda_train else 'cpu')
@@ -118,10 +120,12 @@ class DDPG(RLBase):
             ac_out = self._eval_model(states.to(self.device_eval), evaluate_heads=['logits'])
             noise = 0.1 * torch.randn(ac_out.logits.shape) if not self.disable_training else 0
             actions = self._eval_model.heads.logits.pd.sample(ac_out.logits).cpu() + noise
+            if self.frame < self.random_policy_frames:
+                actions.data.uniform_(-1, 1)
 
             if not self.disable_training:
                 if self._prev_data is not None and self._prev_data['rewards'] is not None:
-                    self._replay_buffer.push(**ac_out, states=states, actions=actions, **self._prev_data)
+                    self._replay_buffer.push(logits=ac_out.logits, states=states, actions=actions, **self._prev_data)
 
                 self._eval_steps += 1
                 self._prev_data = dict(rewards=rewards, dones=dones)

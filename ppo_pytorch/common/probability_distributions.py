@@ -257,7 +257,7 @@ class BernoulliPd(ProbabilityDistribution):
 
 
 class DiagGaussianPd(ProbabilityDistribution):
-    def __init__(self, d, eps=1e-6):
+    def __init__(self, d, eps=0.01):
         super().__init__(locals())
         self.d = d
         self.eps = eps
@@ -371,6 +371,7 @@ class BetaPd(ProbabilityDistribution):
 
 class MixturePd(ProbabilityDistribution):
     def __init__(self, d, num_mixtures=8, pd_type: Callable=DiagGaussianPd, eps=1e-6):
+        raise NotImplementedError
         args = locals()
 
         self.d = d
