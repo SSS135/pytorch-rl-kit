@@ -3,7 +3,7 @@ from typing import Dict
 
 from ..common.attr_dict import AttrDict
 from ..common.barron_loss import barron_loss_derivative
-from ..common.gae import calc_binned_value_targets, calc_advantages, calc_value_targets, calc_weighted_advantages, calc_advantages_noreward
+from ..common.gae import calc_advantages, calc_value_targets, calc_advantages_noreward
 import torch
 
 
@@ -68,15 +68,11 @@ class StepsProcessor:
         return values if torch.is_tensor(values) else torch.stack(values, dim=0)
 
     def _process_rewards(self, rewards, values, dones, barron_scale=True):
-        norm_rewards = self.reward_scale * rewards * values.shape[2] ** 0.5
+        norm_rewards = self.reward_scale * rewards
 
         # calculate value_targets and advantages
-        if values.shape[-2] == 1:
-            value_targets = calc_value_targets(norm_rewards, values, dones, self.reward_discount, self.reward_discount)
-            advantages = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
-        else:
-            value_targets = calc_binned_value_targets(norm_rewards, values, dones, self.reward_discount, self.reward_discount)
-            advantages = calc_weighted_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
+        value_targets = calc_value_targets(norm_rewards, values, dones, self.reward_discount, self.reward_discount)
+        advantages = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
 
         def adv_norm(advantages):
             if self.mean_norm:

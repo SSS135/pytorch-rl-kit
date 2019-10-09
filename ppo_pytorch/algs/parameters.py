@@ -3,7 +3,7 @@ from functools import partial
 import torch.optim as optim
 
 from ..common import DecayLR, ValueDecay
-from ..actors import create_ppo_fc_actor, create_ppo_cnn_actor, create_ddpg_fc_actor
+from ..actors import create_ppo_fc_actor, create_ppo_cnn_actor, create_td3_fc_actor
 
 
 def create_fc_kwargs(learning_decay_frames=5e5, **kwargs):

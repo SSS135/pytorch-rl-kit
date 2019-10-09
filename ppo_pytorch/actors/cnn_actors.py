@@ -7,7 +7,6 @@ from torch import autograd
 from torch.autograd import Variable
 
 from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor
-from .heads import StateValueQuantileHead, PolicyHead, StateValueHead
 from .norm_factory import NormFactory
 from .utils import make_conv_heatmap, image_to_float
 from ..common.make_grid import make_grid

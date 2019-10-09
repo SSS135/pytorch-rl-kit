@@ -23,11 +23,9 @@ from ..common.pop_art import PopArt
 from ..common.attr_dict import AttrDict
 from ..common.data_loader import DataLoader
 from ..actors import create_ppo_fc_actor, Actor
-from ..actors.heads import StateValueQuantileHead
 from ..actors.utils import model_diff
 from .steps_processor import StepsProcessor
 from ..common.target_logits import get_target_logits
-from optfn.iqn_loss import huber_quantile_loss
 
 
 class PPO(RLBase):
@@ -53,7 +51,6 @@ class PPO(RLBase):
                  grad_clip_norm=2,
                  reward_scale=1.0,
                  barron_alpha_c=(1.5, 1),
-                 num_quantiles=1,
                  advantage_scaled_clip=True,
                  lr_scheduler_factory=None,
                  clip_decay_factory=None,
@@ -151,7 +148,6 @@ class PPO(RLBase):
         self.barron_alpha_c = barron_alpha_c
         self.advantage_scaled_clip = advantage_scaled_clip
         self.use_pop_art = use_pop_art
-        self.num_quantiles = num_quantiles
 
         assert len(set(self.constraint) - {'clip', 'kl', 'opt', 'mse', 'target'}) == 0
 
@@ -171,30 +167,18 @@ class PPO(RLBase):
         self._train_executor = ThreadPoolExecutor(max_workers=1)
         self._train_model = self._train_model.to(self.device_eval, non_blocking=True).train()
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
-        self._prev_tau = None
 
     def _step(self, rewards, dones, states) -> torch.Tensor:
         with torch.no_grad():
             # run network
             states_eval = states.to(self.device_eval)
 
-            value_head = self._eval_model.heads.state_values
-            iqn = isinstance(value_head, StateValueQuantileHead)
-            if iqn:
-                cur_tau = torch.rand((states.shape[0], self.num_quantiles), device=self.device_eval)
-                prev_tau = cur_tau if self._prev_tau is None else self._prev_tau
-                if dones is not None:
-                    prev_tau[dones > 0.5] = cur_tau[dones > 0.5]
-                tau_dict = dict(tau=torch.cat([cur_tau, prev_tau], -1))
-                self._prev_tau = cur_tau
-            else:
-                tau_dict = dict()
-
-            ac_out = self._take_step(states_eval, dones, **tau_dict)
+            ac_out = self._take_step(states_eval, dones)
             actions = self._eval_model.heads.logits.pd.sample(ac_out.logits).cpu()
 
             if not self.disable_training:
-                self._steps_processor.append_values(states=states, rewards=rewards, dones=dones, actions=actions, **ac_out, **tau_dict)
+                ac_out.state_values = ac_out.state_values.squeeze(-1)
+                self._steps_processor.append_values(states=states, rewards=rewards, dones=dones, actions=actions, **ac_out)
 
                 if len(self._steps_processor.data.states) > self.horizon:
                     self._pre_train()
@@ -237,7 +221,6 @@ class PPO(RLBase):
 
     def _ppo_update(self, data: AttrDict):
         value_head = self._train_model.heads.state_values
-        iqn = isinstance(value_head, StateValueQuantileHead)
 
         if self.use_pop_art:
             value_targets_mean, value_targets_std = self._pop_art.statistics
@@ -246,10 +229,8 @@ class PPO(RLBase):
             data.state_values = (data.state_values - value_targets_mean) / value_targets_std
             data.value_targets = (data.value_targets - value_targets_mean) / value_targets_std
 
-        tau = dict(tau=data.tau) if iqn else dict()
-
         data = AttrDict(states=data.states, logits_old=data.logits, state_values_old=data.state_values,
-                        actions=data.actions, advantages=data.advantages, value_targets=data.value_targets, **tau)
+                        actions=data.actions, advantages=data.advantages, value_targets=data.value_targets)
 
         if 'target' in self.constraint:
             data.logits_target = get_target_logits(self._train_model.heads.logits.pd, data.actions, data.logits_old, self.policy_clip * data.advantages)
@@ -300,20 +281,15 @@ class PPO(RLBase):
 
     def _ppo_step(self, batch, do_log):
         with torch.enable_grad():
-            value_head = self._train_model.heads.state_values
-            iqn = isinstance(value_head, StateValueQuantileHead)
-
             actor_params = AttrDict()
             if do_log:
                 actor_params.logger = self.logger
                 actor_params.cur_step = self.step
-            if iqn:
-                actor_params.tau = batch.tau
 
             actor_out = self._train_model(batch.states, **actor_params)
 
             batch.logits = actor_out.logits
-            batch.state_values = actor_out.state_values
+            batch.state_values = actor_out.state_values.squeeze(-1)
 
             loss, kl = self._get_ppo_loss(batch, do_log=do_log)
             loss = loss.mean()
@@ -401,29 +377,15 @@ class PPO(RLBase):
             loss_kl = kl.new(1).zero_()
 
         # value loss
-        if 'tau' in batch:
-            v_new = values[..., 0]
-            v_targ = value_targets[..., 0]
-            v_old = values_old[..., 0]
-            tau = batch.tau[..., 0].unsqueeze(-1)
-            vclip = adv_u.abs() * value_clip if self.advantage_scaled_clip else value_clip
-            nonclip = (v_new.detach() - v_old).mul_((v_targ - v_old).sign_()).lt_(vclip)
-            loss_value = self.value_loss_scale * nonclip * huber_quantile_loss(v_new, v_targ, tau, reduce=False)
-            # num_q_per_batch = max(1, int(round(self.num_quantiles / self.ppo_iters)))
-            # idx = torch.randperm(self.num_quantiles, device=values.device)[:num_q_per_batch]
-            # loss_value = self.value_loss_scale * huber_quantile_loss(values[..., idx], value_targets[..., idx], tau[..., idx], reduce=False)
+        if self.advantage_scaled_clip:
+            vclip = advantages.abs() * value_clip
+            v_pred_clipped = values_old + torch.min(torch.max(values - values_old, -vclip), vclip)
         else:
-            if self.advantage_scaled_clip:
-                vclip = adv_u.unsqueeze(-1).abs() * value_clip
-                v_pred_clipped = values_old + torch.min(torch.max(values - values_old, -vclip), vclip)
-            else:
-                v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
-            vf_clip_loss = barron_loss(v_pred_clipped, value_targets, *self.barron_alpha_c, reduce=False)
-            vf_nonclip_loss = barron_loss(values, value_targets, *self.barron_alpha_c, reduce=False)
-            loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)
-            loss_value = loss_value.mean(-1)
+            v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
+        vf_clip_loss = barron_loss(v_pred_clipped, value_targets, *self.barron_alpha_c, reduce=False)
+        vf_nonclip_loss = barron_loss(values, value_targets, *self.barron_alpha_c, reduce=False)
+        loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)
 
-        loss_value = loss_value.mean(-1)
         loss_clip = loss_clip.mean(-1)
         loss_ent = loss_ent.mean(-1)
         loss_kl = loss_kl.mean(-1)
@@ -455,10 +417,6 @@ class PPO(RLBase):
         if kl < (1 / threshold) * self.kl_target:
             self.kl_scale = max(1 / limit, self.kl_scale / change)
 
-    # @staticmethod
-    # def _head_factory(hidden_size, pd):
-    #     return dict(logits=PolicyHead(hidden_size, pd), state_values=StateValueQuantileHead(hidden_size))
-
     @property
     def _learning_rate(self):
         return self._optimizer.param_groups[0]['lr']
@@ -488,12 +446,11 @@ class PPO(RLBase):
                     img = img.float() / 255
                 img = make_grid(img, nrow=nrow, normalize=False)
                 self.logger.add_image('state', img, self.frame)
-            vsize = data.value_targets.shape[-2] ** 0.5
-            targets = data.value_targets.sum(-2) / vsize
-            values = data.state_values.sum(-2) / vsize
+            targets = data.value_targets
+            values = data.state_values
             v_mean = values.mean(-1)
             t_mean = targets.mean(-1)
-            self.logger.add_histogram('rewards', data.rewards / data.value_targets.shape[-2], self.frame)
+            self.logger.add_histogram('rewards', data.rewards, self.frame)
             self.logger.add_histogram('value_targets', targets, self.frame)
             self.logger.add_histogram('advantages', data.advantages, self.frame)
             self.logger.add_histogram('values', values, self.frame)

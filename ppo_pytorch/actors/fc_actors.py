@@ -4,7 +4,7 @@ from typing import List, Callable
 import torch.nn as nn
 
 from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor
-from .heads import PolicyHead, InputActionValueHead, StateValueHead
+from .heads import PolicyHead, StateValueHead
 from .norm_factory import NormFactory, BatchNormFactory
 from ..common.probability_distributions import LinearTanhPd, ProbabilityDistribution
 import torch
@@ -105,18 +105,18 @@ class FCActionFeatureExtractor(FeatureExtractorBase):
 
 def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128),
                         activation=nn.Tanh, norm_factory: NormFactory=None,
-                        iqn=False, split_policy_value_network=True, num_bins=1):
+                        split_policy_value_network=True, num_values=1):
     assert len(observation_space.shape) == 1
 
     def fx_factory(): return FCFeatureExtractor(
         observation_space.shape[0], hidden_sizes, activation, norm_factory=norm_factory)
-    return create_ppo_actor(action_space, fx_factory, iqn, split_policy_value_network, num_bins=num_bins)
+    return create_ppo_actor(action_space, fx_factory, split_policy_value_network, num_out=num_values)
 
 
-def create_ddpg_fc_actor(observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU,
-                         norm_factory: NormFactory = None):
+def create_td3_fc_actor(observation_space, action_space, hidden_sizes=(400, 300), activation=nn.ReLU,
+                        norm_factory: NormFactory = None):
     assert len(observation_space.shape) == 1
-    num_bins = 1
+    num_q = 1
 
     pd = LinearTanhPd(action_space.shape[0], action_space.high[0])
 
@@ -128,8 +128,8 @@ def create_ddpg_fc_actor(observation_space, action_space, hidden_sizes=(256, 256
 
     fx_policy, fx_value_1, fx_value_2 = fx_policy_factory(), fx_value_factory(), fx_value_factory()
 
-    value_head_1 = StateValueHead(fx_value_1.output_size, pd=pd, num_bins=num_bins)
-    value_head_2 = StateValueHead(fx_value_2.output_size, pd=pd, num_bins=num_bins)
+    value_head_1 = StateValueHead(fx_value_1.output_size, pd=pd, num_out=num_q)
+    value_head_2 = StateValueHead(fx_value_2.output_size, pd=pd, num_out=num_q)
     policy_head = PolicyHead(fx_policy.output_size, pd=pd)
     models = {
         fx_policy: dict(logits=policy_head),

@@ -13,7 +13,6 @@ from ..common.barron_loss import barron_loss_derivative, barron_loss
 from ..common.data_loader import DataLoader
 from ..common.gae import calc_vtrace, calc_advantages
 from ..actors.utils import model_diff
-from ..actors.heads import StateValueQuantileHead
 
 
 class IMPALA(PPO):
@@ -116,14 +115,11 @@ class IMPALA(PPO):
     def _impala_step(self, batch, do_log=False):
         with torch.enable_grad():
             value_head = self._train_model.heads.state_values
-            iqn = isinstance(value_head, StateValueQuantileHead)
 
             actor_params = AttrDict()
             if do_log:
                 actor_params.logger = self.logger
                 actor_params.cur_step = self.step
-            if iqn:
-                actor_params.tau = batch.tau
 
             actor_out = self._train_model(batch.states, **actor_params)
 

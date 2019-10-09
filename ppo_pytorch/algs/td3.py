@@ -15,7 +15,7 @@ from torchvision.utils import make_grid
 
 from .replay_buffer import ReplayBuffer
 from .utils import blend_models
-from ..actors import ModularActor, create_ddpg_fc_actor
+from ..actors import ModularActor, create_td3_fc_actor
 from ..actors.utils import model_diff
 from ..common.attr_dict import AttrDict
 from ..common.barron_loss import barron_loss
@@ -38,7 +38,7 @@ class TD3(RLBase):
                  train_noise_clip=0.5,
                  critic_iters=2,
                  random_policy_frames=1000,
-                 model_factory=create_ddpg_fc_actor,
+                 model_factory=create_td3_fc_actor,
                  actor_optimizer_factory=partial(optim.Adam, lr=3e-4),
                  critic_optimizer_factory=partial(optim.Adam, lr=3e-4),
                  cuda_eval=True,
@@ -46,7 +46,6 @@ class TD3(RLBase):
                  grad_clip_norm=None,
                  reward_scale=1.0,
                  # barron_alpha_c=(1.5, 1),
-                 # num_quantiles=1,
                  lr_scheduler_factory=None,
                  entropy_decay_factory=None,
                  # use_pop_art=False,
@@ -71,7 +70,6 @@ class TD3(RLBase):
         self.grad_clip_norm = grad_clip_norm
         self.reward_scale = reward_scale
         # self.barron_alpha_c = barron_alpha_c
-        # self.num_quantiles = num_quantiles
         # self.use_pop_art = use_pop_art
 
         assert isinstance(action_space, gym.spaces.Box), action_space
@@ -209,8 +207,6 @@ class TD3(RLBase):
         return actor_loss + critc_loss
 
     def _critic_step(self, data: AttrDict, do_log):
-        # iqn = self.num_quantiles > 1
-
         actor_params = AttrDict()
 
         pd = self._target_model.heads.logits.pd
@@ -223,8 +219,8 @@ class TD3(RLBase):
         ac_out = self._target_model(data.states[-1], evaluate_heads=['state_values_1', 'state_values_2'], **actor_params)
         targets = torch.min(ac_out.state_values_1, ac_out.state_values_2)
 
-        rewards = data.rewards.unsqueeze(-1).unsqueeze(-1)
-        dones = data.dones.unsqueeze(-1).unsqueeze(-1)
+        rewards = data.rewards.unsqueeze(-1)
+        dones = data.dones.unsqueeze(-1)
         for i in reversed(range(self.value_target_steps)):
             targets = rewards[i] + self.reward_discount * (1 - dones[i]) * targets
 
@@ -238,11 +234,7 @@ class TD3(RLBase):
         return loss
 
     def _actor_step(self, data: AttrDict, do_log):
-        # iqn = self.num_quantiles > 1
-
         actor_params = AttrDict()
-        # if iqn:
-        #     actor_params.tau = torch.rand(data.rewards.shape[1], self.num_quantiles, device=self.device_train)
 
         with torch.enable_grad():
             logits = self._train_model(data.states[0], evaluate_heads=['logits']).logits
