@@ -7,7 +7,7 @@ from torch.nn.utils import clip_grad_norm_
 
 from .ppo_rnn import PPO_RNN
 from ..common.probability_distributions import DiagGaussianPd
-from ..models import HRNNActor
+from ..actors import HRNNActor
 
 RNNData = namedtuple('RNNData', 'memory, dones, action_l2, cur_l1, probs_l2, values_l2')
 

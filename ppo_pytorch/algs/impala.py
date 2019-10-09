@@ -12,8 +12,8 @@ from ..common.attr_dict import AttrDict
 from ..common.barron_loss import barron_loss_derivative, barron_loss
 from ..common.data_loader import DataLoader
 from ..common.gae import calc_vtrace, calc_advantages
-from ..models.utils import model_diff
-from ..models.heads import StateValueQuantileHead
+from ..actors.utils import model_diff
+from ..actors.heads import StateValueQuantileHead
 
 
 class IMPALA(PPO):

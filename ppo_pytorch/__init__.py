@@ -1,3 +1,3 @@
 from . import common
-from . import models
-from . import ppo
+from . import actors
+from . import algs

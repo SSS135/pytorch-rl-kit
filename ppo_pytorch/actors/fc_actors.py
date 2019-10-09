@@ -113,11 +113,12 @@ def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128)
     return create_ppo_actor(action_space, fx_factory, iqn, split_policy_value_network, num_bins=num_bins)
 
 
-def create_ddpg_fc_actor(observation_space, action_space, hidden_sizes=(400, 300), activation=nn.ReLU,
-                         norm_factory: NormFactory = BatchNormFactory()):
+def create_ddpg_fc_actor(observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU,
+                         norm_factory: NormFactory = None):
     assert len(observation_space.shape) == 1
     num_bins = 1
-    pd = LinearTanhPd(action_space.shape[0])
+
+    pd = LinearTanhPd(action_space.shape[0], action_space.high[0])
 
     def fx_policy_factory(): return FCFeatureExtractor(
         observation_space.shape[0], hidden_sizes, activation, norm_factory=norm_factory)

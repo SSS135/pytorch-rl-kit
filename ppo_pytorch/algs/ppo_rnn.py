@@ -4,9 +4,9 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 
 from .ppo import PPO
-from ..models import RNNActor
-from ..models.heads import HeadOutput
-from ..models.utils import image_to_float
+from ..actors import RNNActor
+from ..actors.heads import HeadOutput
+from ..actors.utils import image_to_float
 from ..common.attr_dict import AttrDict
 
 

@@ -3,7 +3,7 @@ from typing import Dict
 
 from ..common.attr_dict import AttrDict
 from ..common.barron_loss import barron_loss_derivative
-from ..common.gae import calc_binned_value_targets, calc_advantages, calc_value_targets, calc_weighted_advantages
+from ..common.gae import calc_binned_value_targets, calc_advantages, calc_value_targets, calc_weighted_advantages, calc_advantages_noreward
 import torch
 
 

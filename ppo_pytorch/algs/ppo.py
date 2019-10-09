@@ -22,9 +22,9 @@ from ..common.rl_base import RLBase
 from ..common.pop_art import PopArt
 from ..common.attr_dict import AttrDict
 from ..common.data_loader import DataLoader
-from ..models import create_ppo_fc_actor, Actor
-from ..models.heads import StateValueQuantileHead
-from ..models.utils import model_diff
+from ..actors import create_ppo_fc_actor, Actor
+from ..actors.heads import StateValueQuantileHead
+from ..actors.utils import model_diff
 from .steps_processor import StepsProcessor
 from ..common.target_logits import get_target_logits
 from optfn.iqn_loss import huber_quantile_loss

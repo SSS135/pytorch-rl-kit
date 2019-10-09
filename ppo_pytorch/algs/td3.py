@@ -1,44 +1,30 @@
-import math
-import pprint
-import random
 from asyncio import Future
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from functools import partial
-from pathlib import Path
 from typing import Optional
-import os, errno
 
 import gym.spaces
-import numpy as np
 import torch
+import torch.autograd
 import torch.autograd
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 
-from ..common.barron_loss import barron_loss, barron_loss_derivative
-from ..common.opt_clip import opt_clip
+from .replay_buffer import ReplayBuffer
+from .utils import blend_models
+from ..actors import ModularActor, create_ddpg_fc_actor
+from ..actors.utils import model_diff
+from ..common.attr_dict import AttrDict
+from ..common.barron_loss import barron_loss
+from ..common.data_loader import DataLoader
 from ..common.probability_distributions import DiagGaussianPd, CategoricalPd
 from ..common.rl_base import RLBase
-from ..common.pop_art import PopArt
-from ..common.attr_dict import AttrDict
-from ..common.data_loader import DataLoader
-from ..models import create_ppo_fc_actor, ModularActor
-from ..models.heads import PolicyHead, StateValueHead, StateValueQuantileHead
-from ..models.utils import model_diff
-from .steps_processor import StepsProcessor
-from ..common.target_logits import get_target_logits
-from optfn.iqn_loss import huber_quantile_loss
-from .replay_buffer import ReplayBuffer
-from ..common.gae import calc_vtrace
-from ..common.model_saver import ModelSaver
-import torch.autograd
-from .utils import blend_models
 
 
-class DDPG(RLBase):
+class TD3(RLBase):
     def __init__(self, observation_space, action_space,
                  reward_discount=0.99,
                  train_interval=16,
@@ -48,21 +34,22 @@ class DDPG(RLBase):
                  replay_buffer_size=128*1024,
                  target_model_blend=0.005,
                  train_noise_scale=0.2,
+                 expl_noise_scale=0.1,
                  train_noise_clip=0.5,
                  critic_iters=2,
-                 random_policy_frames=10000,
-                 model_factory=create_ppo_fc_actor,
-                 actor_optimizer_factory=partial(optim.Adam, lr=1e-3),
-                 critic_optimizer_factory=partial(optim.Adam, lr=1e-3),
+                 random_policy_frames=1000,
+                 model_factory=create_ddpg_fc_actor,
+                 actor_optimizer_factory=partial(optim.Adam, lr=3e-4),
+                 critic_optimizer_factory=partial(optim.Adam, lr=3e-4),
                  cuda_eval=True,
                  cuda_train=True,
                  grad_clip_norm=None,
                  reward_scale=1.0,
-                 barron_alpha_c=(1.5, 1),
-                 num_quantiles=1,
+                 # barron_alpha_c=(1.5, 1),
+                 # num_quantiles=1,
                  lr_scheduler_factory=None,
                  entropy_decay_factory=None,
-                 use_pop_art=False,
+                 # use_pop_art=False,
                  **kwargs):
         super().__init__(observation_space, action_space, **kwargs)
         self._init_args = locals()
@@ -74,6 +61,7 @@ class DDPG(RLBase):
         self.replay_buffer_size = replay_buffer_size
         self.target_model_blend = target_model_blend
         self.train_noise_scale = train_noise_scale
+        self.expl_noise_scale = expl_noise_scale
         self.train_noise_clip = train_noise_clip
         self.critic_iters = critic_iters
         self.random_policy_frames = random_policy_frames
@@ -82,9 +70,9 @@ class DDPG(RLBase):
         self.device_train = torch.device('cuda' if cuda_train else 'cpu')
         self.grad_clip_norm = grad_clip_norm
         self.reward_scale = reward_scale
-        self.barron_alpha_c = barron_alpha_c
-        self.num_quantiles = num_quantiles
-        self.use_pop_art = use_pop_art
+        # self.barron_alpha_c = barron_alpha_c
+        # self.num_quantiles = num_quantiles
+        # self.use_pop_art = use_pop_art
 
         assert isinstance(action_space, gym.spaces.Box), action_space
 
@@ -106,8 +94,8 @@ class DDPG(RLBase):
         self._critic_lr_scheduler = lr_scheduler_factory(self._critic_optimizer) if lr_scheduler_factory is not None else None
         self._entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
         self._replay_buffer = ReplayBuffer(replay_buffer_size)
-        self._pop_art = PopArt()
-        self._train_executor = ThreadPoolExecutor(max_workers=1)
+        # self._pop_art = PopArt()
+        # self._train_executor = ThreadPoolExecutor(max_workers=1)
         self._eval_steps = 0
         self._prev_data = None
         self._last_model_save_frame = 0
@@ -118,17 +106,18 @@ class DDPG(RLBase):
         with torch.no_grad():
             # run network
             ac_out = self._eval_model(states.to(self.device_eval), evaluate_heads=['logits'])
-            noise = 0.1 * torch.randn(ac_out.logits.shape) if not self.disable_training else 0
-            actions = self._eval_model.heads.logits.pd.sample(ac_out.logits).cpu() + noise
+            noise = self.expl_noise_scale * torch.randn(ac_out.logits.shape) if not self.disable_training else 0
+            pd = self._eval_model.heads.logits.pd
+            actions = (pd.sample(ac_out.logits).cpu() + noise).clamp(-pd.max_action, pd.max_action)
             if self.frame < self.random_policy_frames:
-                actions.data.uniform_(-1, 1)
+                actions.data.uniform_(-pd.max_action, pd.max_action)
 
             if not self.disable_training:
-                if self._prev_data is not None and self._prev_data['rewards'] is not None:
-                    self._replay_buffer.push(logits=ac_out.logits, states=states, actions=actions, **self._prev_data)
+                if self._prev_data is not None and rewards is not None:
+                    self._replay_buffer.push(rewards=rewards, dones=dones, **self._prev_data)
 
                 self._eval_steps += 1
-                self._prev_data = dict(rewards=rewards, dones=dones)
+                self._prev_data = dict(logits=ac_out.logits, states=states, actions=actions)
 
                 min_replay_size = self.batch_size * (self.value_target_steps + 1)
                 if self.frame > 1024 and self._eval_steps >= self.train_interval and len(self._replay_buffer) >= min_replay_size:
@@ -151,15 +140,15 @@ class DDPG(RLBase):
 
     def _train(self):
         data = self._create_data()
-        self._train_async(data)
+        self._do_train(data)
         # if self._train_future is not None:
         #     self._train_future.result()
         # self._train_future = self._train_executor.submit(self._train_async, data)
 
-    def _train_async(self, data):
+    def _do_train(self, data):
         with torch.no_grad():
             self._log_training_data(data)
-            self._ddpg_update(data)
+            self._td3_update(data)
             self._model_saver.check_save_model(self._train_model, self.frame)
 
     def _create_data(self):
@@ -169,7 +158,7 @@ class DDPG(RLBase):
         data.rewards = self.reward_scale * data.rewards
         return data
 
-    def _ddpg_update(self, data: AttrDict):
+    def _td3_update(self, data: AttrDict):
         num_rollouts = data.states.shape[1]
 
         data = AttrDict(states=data.states, actions=data.actions, rewards=data.rewards, dones=data.dones)
@@ -220,15 +209,17 @@ class DDPG(RLBase):
         return actor_loss + critc_loss
 
     def _critic_step(self, data: AttrDict, do_log):
-        iqn = self.num_quantiles > 1
+        # iqn = self.num_quantiles > 1
 
         actor_params = AttrDict()
-        if iqn:
-            actor_params.tau = torch.rand(data.rewards.shape[1], self.num_quantiles, device=self.device_train)
 
+        pd = self._target_model.heads.logits.pd
         logits = self._target_model(data.states[-1], evaluate_heads=['logits']).logits
-        action_noise = torch.randn_like(logits).mul_(self.train_noise_scale).clamp_(-self.train_noise_clip, self.train_noise_clip)
-        actor_params.actions = self._target_model.heads.logits.pd.sample(logits) + action_noise
+        action_noise = torch.normal(0, self.train_noise_scale, size=logits.shape, device=self.device_train)\
+            .clamp_(-self.train_noise_clip, self.train_noise_clip)
+        actor_params.actions = (pd.sample(logits) + action_noise)\
+            .clamp_(-pd.max_action, pd.max_action)
+
         ac_out = self._target_model(data.states[-1], evaluate_heads=['state_values_1', 'state_values_2'], **actor_params)
         targets = torch.min(ac_out.state_values_1, ac_out.state_values_2)
 
@@ -239,36 +230,25 @@ class DDPG(RLBase):
 
         actor_params = AttrDict()
         actor_params.actions = data.actions[0]
-        if iqn:
-            actor_params.tau = torch.rand(data.rewards.shape[1], self.num_quantiles, device=self.device_train)
 
         with torch.enable_grad():
             ac_out = self._train_model(data.states[0], evaluate_heads=['state_values_1', 'state_values_2'], **actor_params)
-            state_values_1, state_values_2 = ac_out.state_values_1, ac_out.state_values_2
-            if iqn:
-                loss = huber_quantile_loss(state_values_1, targets, actor_params.tau, k=1.0) + \
-                       huber_quantile_loss(state_values_2, targets, actor_params.tau, k=1.0)
-            else:
-                loss = barron_loss(state_values_1, targets, *self.barron_alpha_c) + \
-                       barron_loss(state_values_2, targets, *self.barron_alpha_c)
+            loss = F.mse_loss(ac_out.state_values_1, targets) + F.mse_loss(ac_out.state_values_2, targets)
 
         return loss
 
     def _actor_step(self, data: AttrDict, do_log):
-        iqn = self.num_quantiles > 1
+        # iqn = self.num_quantiles > 1
 
         actor_params = AttrDict()
-        if iqn:
-            actor_params.tau = torch.rand(data.rewards.shape[1], self.num_quantiles, device=self.device_train)
+        # if iqn:
+        #     actor_params.tau = torch.rand(data.rewards.shape[1], self.num_quantiles, device=self.device_train)
 
         with torch.enable_grad():
             logits = self._train_model(data.states[0], evaluate_heads=['logits']).logits
             actor_params.actions = self._train_model.heads.logits.pd.sample(logits)
             state_values = self._train_model(data.states[0], evaluate_heads=['state_values_1'], **actor_params).state_values_1
-
-        logits_grad = torch.autograd.grad(state_values, logits, -torch.ones_like(state_values), only_inputs=True)[0]
-        with torch.enable_grad():
-            return (logits * logits_grad.detach()).mean()
+            return -state_values.mean()
 
     def drop_collected_steps(self):
         self._prev_data = None

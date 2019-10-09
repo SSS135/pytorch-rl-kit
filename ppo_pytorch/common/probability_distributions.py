@@ -497,9 +497,10 @@ class FixedStdGaussianPd(ProbabilityDistribution):
 
 
 class LinearTanhPd(ProbabilityDistribution):
-    def __init__(self, d):
+    def __init__(self, d, max_action):
         super().__init__(locals())
         self.d = d
+        self.max_action = max_action
 
     @property
     def prob_vector_len(self):
@@ -518,7 +519,7 @@ class LinearTanhPd(ProbabilityDistribution):
         return torch.float
 
     def logp(self, x, mean):
-        return -(x - mean.tanh()).pow(2)
+        return -(x - self.max_action * mean.tanh()).pow(2)
 
     def kl(self, mean1, mean2):
         return (mean1 - mean2).pow(2)
@@ -527,7 +528,7 @@ class LinearTanhPd(ProbabilityDistribution):
         return mean.pow(2)
 
     def sample(self, mean):
-        return mean.tanh()
+        return self.max_action * mean.tanh()
 
     # @property
     # def init_column_norm(self):

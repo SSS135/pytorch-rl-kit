@@ -23,6 +23,7 @@ class ReplayBuffer:
         self._num_actors = next(iter(sample.values())).shape[0]
         assert self._sample_capacity % self._num_actors == 0
         self._horizon_capacity = self._sample_capacity // self._num_actors
+        # (buf_size, num_actors, *)
         self._data = {k: v.cpu().new_zeros((self._horizon_capacity, *v.shape)) for k, v in sample.items()}
 
     def _add_sample(self, sample):

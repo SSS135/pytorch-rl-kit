@@ -5,7 +5,7 @@ from functools import partial
 
 import torch
 from ppo_pytorch.common import EnvTrainer, AtariVecEnv, SimpleVecEnv
-from ppo_pytorch.ppo import PPO, create_atari_kwargs, create_fc_kwargs
+from ppo_pytorch.algs import PPO, create_atari_kwargs, create_fc_kwargs
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PPO runner')
