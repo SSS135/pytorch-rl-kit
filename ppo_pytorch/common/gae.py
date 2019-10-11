@@ -91,7 +91,7 @@ def calc_vtrace(rewards: TT, values: TT, dones: TT, probs_ratio: TT, discount: f
     assert targets.shape == values.shape, (targets.shape, values.shape)
     assert advantages.shape == rewards.shape, (advantages.shape, rewards.shape)
 
-    return targets[:-1], advantages.mean(-1).mean(-1), p.mean(-1).mean(-1)
+    return targets[:-1], advantages, p
 
 
 def assert_equal_tensors(a, b, abs_tol=1e-4):

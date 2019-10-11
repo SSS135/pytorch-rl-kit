@@ -28,22 +28,22 @@ class IMPALA(PPO):
         self._replay_buffer = ReplayBuffer(replay_buf_size)
         self._prev_data = None
         self._eval_steps = 0
-        self._advantage_stats = (0, 1, 0)
+        self._advantage_stats = (0, 0, 0)
         self._advantage_momentum = 0.99
 
     def _step(self, rewards, dones, states) -> torch.Tensor:
         with torch.no_grad():
             # run network
             ac_out = self._take_step(states.to(self.device_eval), dones)
+            ac_out.state_values = ac_out.state_values.squeeze(-1)
             actions = self._train_model.heads.logits.pd.sample(ac_out.logits).cpu()
 
             if not self.disable_training:
-                if self._prev_data is not None and self._prev_data[0] is not None:
-                    self._replay_buffer.push(**ac_out, states=states, actions=actions,
-                                             rewards=self._prev_data[0], dones=self._prev_data[1])
+                if self._prev_data is not None and rewards is not None:
+                    self._replay_buffer.push(rewards=rewards, dones=dones, **self._prev_data)
 
                 self._eval_steps += 1
-                self._prev_data = (rewards, dones)
+                self._prev_data = AttrDict(**ac_out, states=states, actions=actions)
 
                 if self._eval_steps >= self.horizon and len(self._replay_buffer) >= self.horizon * self.num_actors:
                     self._eval_steps = 0
@@ -124,7 +124,7 @@ class IMPALA(PPO):
             actor_out = self._train_model(batch.states, **actor_params)
 
             batch.logits = actor_out.logits
-            batch.state_values = actor_out.state_values
+            batch.state_values = actor_out.state_values.squeeze(-1)
 
             # get loss
             loss, kl = self._get_impala_loss(batch, do_log)
@@ -165,8 +165,9 @@ class IMPALA(PPO):
         loss_policy = -data.logp * adv_u
         loss_value = self.value_loss_scale * barron_loss(data.state_values, data.value_targets, *self.barron_alpha_c, reduce=False)
 
-        kl_targets = self.kl_target * adv_u.abs()
-        loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(0.001 * self.kl_scale * self.kl_target)
+        # kl_targets = self.kl_target * adv_u.abs()
+        # loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(0.001 * self.kl_scale * self.kl_target)
+        loss_kl = (kl + (kl - 2 * self.kl_target).clamp(min=0).pow(2)).mul(0.01 * self.kl_scale)
         small_kl = kl.detach() < self.kl_target
         large_kl = kl.detach() > self.kl_target
         loss_kl[small_kl] = 0
@@ -175,12 +176,11 @@ class IMPALA(PPO):
 
         assert loss_ent.shape == loss_policy.shape, (loss_ent.shape, loss_policy.shape)
         assert loss_policy.shape == loss_kl.shape, (loss_policy.shape, loss_kl.shape)
-        assert loss_policy.shape[:-1] == loss_value.shape[:-2], (loss_policy.shape, loss_value.shape)
+        assert loss_policy.shape[:-1] == loss_value.shape, (loss_policy.shape, loss_value.shape)
 
         loss_ent = loss_ent.mean()
         loss_policy = loss_policy.mean()
         loss_kl = loss_kl.mean()
-        loss_value = loss_value.mean()
 
         # sum all losses
         total_loss = loss_policy + loss_value + loss_ent + loss_kl
@@ -212,8 +212,6 @@ class IMPALA(PPO):
         # calculate value targets and advantages
         value_targets, advantages, p = calc_vtrace(
             norm_rewards, state_values, data.dones, data.probs_ratio.detach(), self.reward_discount, 1.0, 1.0)
-        # noncorr_adv = calc_advantages(norm_rewards, state_values, data.dones, self.reward_discount, self.advantage_discount)
-        # advantages += 0.3 * noncorr_adv.clamp(min=0)
 
         mean, square, iter = self._advantage_stats
         mean = self._advantage_momentum * mean + (1 - self._advantage_momentum) * advantages.mean().item()
@@ -232,6 +230,7 @@ class IMPALA(PPO):
             rms = square ** 0.5
             advantages = advantages / max(rms, 1e-3)
         advantages = p * barron_loss_derivative(advantages, *self.barron_alpha_c)
+        advantages.clamp_(-5, 5)
 
         data.value_targets, data.advantages, data.rewards = value_targets, advantages, norm_rewards
 
