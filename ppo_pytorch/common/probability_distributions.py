@@ -24,6 +24,7 @@ def make_pd(space: gym.Space):
         # return BetaPd(space.shape[0], 1)
         # return DiagGaussianPd(space.shape[0])
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
+        # return PointCloudPd(space.shape[0])
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     elif isinstance(space, gym.spaces.MultiDiscrete):
@@ -313,6 +314,73 @@ class DiagGaussianPd(ProbabilityDistribution):
     def split_probs(self, probs):
         mean, logstd = probs.chunk(2, -1)
         return mean, logstd
+
+
+class PointCloudPd(ProbabilityDistribution):
+    def __init__(self, d, num_points=16, eps=1e-3):
+        super().__init__(locals())
+        self.d = d
+        self.num_points = num_points
+        self.eps = eps
+
+    @property
+    def prob_vector_len(self):
+        return self.d * self.num_points
+
+    @property
+    def action_vector_len(self):
+        return self.d
+
+    @property
+    def input_vector_len(self):
+        return self.d
+
+    @property
+    def dtype(self):
+        return torch.float
+
+    def logp(self, x, prob):
+        mean, std = self._get_mean_std(prob)
+        logstd = std.log()
+        nll = 0.5 * ((x - mean) / std).pow(2) + \
+              0.5 * math.log(2.0 * math.pi) * self.d + \
+              logstd
+        return -nll
+
+    def kl(self, prob1, prob2):
+        mean1, std1 = self._get_mean_std(prob1)
+        mean2, std2 = self._get_mean_std(prob2)
+        logstd1, logstd2 = std1.log(), std2.log()
+        kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
+        return kl
+
+    def entropy(self, prob):
+        prob = self._split_prob(prob)
+        mean = prob.mean(-1)
+        var = prob.var(-1)
+        kld = (var + self.eps).log() - var - mean.pow(2)
+        return kld
+
+    def sample_with_random(self, prob, rand):
+        assert rand is None or torch.is_tensor(rand)
+        prob = self._split_prob(prob)
+        if rand is None:
+            rand = torch.randint(self.num_points, prob.shape[:-1], device=prob.device)
+        sample = prob.gather(-1, rand.unsqueeze(-1)).squeeze(-1)
+        return sample, rand
+
+    def _split_prob(self, prob):
+        return prob.reshape(*prob.shape[:-1], self.d, self.num_points)
+
+    def _get_mean_std(self, prob):
+        prob = self._split_prob(prob)
+        mean = prob.mean(-1)
+        std = prob.std(-1) + self.eps
+        return mean, std
+
+    @property
+    def init_column_norm(self):
+        return 1.0
 
 
 class BetaPd(ProbabilityDistribution):
