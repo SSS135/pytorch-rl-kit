@@ -38,6 +38,7 @@ def rl_alg_test(hyper_params: Dict[str, list] or list, wrap_params: dict, alg_cl
     Returns: list of `EnvTrainer` outputs
 
     """
+    lowpriority()
     hyper_params = list(ParameterGrid(hyper_params)) if isinstance(hyper_params, dict) else hyper_params
     input = zip(hyper_params,
                 itertools.repeat(wrap_params) if isinstance(wrap_params, dict) else wrap_params,
@@ -59,6 +60,35 @@ def rl_alg_test(hyper_params: Dict[str, list] or list, wrap_params: dict, alg_cl
             for x in input:
                 outputs.append(simulate(x))
     return outputs
+
+
+def lowpriority():
+    """
+    Set the priority of the process to below-normal.
+    https://stackoverflow.com/questions/1023038/change-process-priority-in-python-cross-platform
+    """
+
+    import sys
+    try:
+        sys.getwindowsversion()
+    except AttributeError:
+        is_windows = False
+    else:
+        is_windows = True
+
+    if is_windows:
+        # Based on:
+        #   "Recipe 496767: Set Process Priority In Windows" on ActiveState
+        #   http://code.activestate.com/recipes/496767/
+        import win32api, win32process, win32con
+
+        pid = win32api.GetCurrentProcessId()
+        handle = win32api.OpenProcess(win32con.PROCESS_ALL_ACCESS, True, pid)
+        win32process.SetPriorityClass(handle, win32process.BELOW_NORMAL_PRIORITY_CLASS)
+    else:
+        import os
+
+        os.nice(1)
 
 
 SimInput = namedtuple('SimInput', 'hyper_params, wrap_params, alg_class, alg_params, '
