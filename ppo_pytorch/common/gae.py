@@ -66,32 +66,35 @@ def calc_value_targets(rewards: TT, values: TT, dones: TT, reward_discount: floa
 
     R = values[-1]
     targets = rewards.new_zeros((values.shape[0] - 1, *values.shape[1:]))
+    nonterminal = 1 - dones
     for t in reversed(range(len(rewards))):
-        nonterminal = 1 - dones[t]
-        R = rewards[t] + nonterminal * reward_discount * R
-        targets[t] = R
+        targets[t] = R = rewards[t] + nonterminal[t] * reward_discount * R
         R = (1 - gae_lambda) * values[t] + gae_lambda * R
 
     return targets
 
 
-def calc_vtrace(rewards: TT, values: TT, dones: TT, probs_ratio: TT, discount: float, c_max=1.5, p_max=1.5) -> Tuple[TT, TT, TT]:
+def calc_vtrace(rewards: TT, values: TT, dones: TT, probs_ratio: TT, kl_div: TT,
+                discount: float, c_max=1.0, p_max=1.0, kl_limit=0.3) -> Tuple[TT, TT, TT]:
     _check_data(rewards, values, dones)
-    assert probs_ratio.shape == rewards.shape, (probs_ratio.shape, rewards.shape)
+    assert probs_ratio.shape == rewards.shape == kl_div.shape, (probs_ratio.shape, rewards.shape, kl_div.shape)
+    assert rewards.shape[0] == values.shape[0] - 1 == dones.shape[0]
 
+    probs_ratio = probs_ratio * (kl_div < kl_limit).float()
     c = probs_ratio.clamp(0, c_max)
     p = probs_ratio.clamp(0, p_max)
     nonterminal = 1 - dones
-    td = p * (rewards + nonterminal * discount * values[1:] - values[:-1])
-    targets = values.clone()
+    deltas = p * (rewards + nonterminal * discount * values[1:] - values[:-1])
+    vs_minus_v_xs = torch.zeros_like(values)
     for i in reversed(range(len(rewards))):
-        targets[i] = values[i] + td[i] + nonterminal[i] * discount * c[i] * (targets[i + 1] - values[i + 1])
-    advantages = rewards + nonterminal * discount * targets[1:] - values[:-1]
+        vs_minus_v_xs[i] = deltas[i] + nonterminal[i] * discount * c[i] * vs_minus_v_xs[i + 1]
+    value_targets = vs_minus_v_xs + values
+    advantages = rewards + nonterminal * discount * value_targets[1:] - values[:-1]
 
-    assert targets.shape == values.shape, (targets.shape, values.shape)
+    assert value_targets.shape == values.shape, (value_targets.shape, values.shape)
     assert advantages.shape == rewards.shape, (advantages.shape, rewards.shape)
 
-    return targets[:-1], advantages, p
+    return value_targets[:-1], advantages, p
 
 
 def assert_equal_tensors(a, b, abs_tol=1e-4):
@@ -100,15 +103,19 @@ def assert_equal_tensors(a, b, abs_tol=1e-4):
 
 
 def test_vtrace():
+    torch.manual_seed(123)
     N = (1000, 8)
     discount = 0.99
     rewards = torch.randn(N)
     values = torch.randn((N[0] + 1, N[1]))
     dones = (torch.rand(N) > 0.95).float()
-    cur_probs = old_probs = torch.zeros(N)
+    prob_ratio = torch.ones(N)
+    kl_div = torch.zeros(N)
     ret = calc_value_targets(rewards, values, dones, discount)
     adv = calc_advantages(rewards, values, dones, discount, 1)
-    v_ret, v_adv = calc_vtrace(rewards, values, dones, cur_probs / old_probs, discount, 1, 1)
+    v_ret, v_adv, p = calc_vtrace(rewards, values, dones, prob_ratio, kl_div, discount, 1, 1)
 
-    assert ((ret - v_ret).abs() > 1e-2).sum().item() == 0
-    assert ((adv - v_adv).abs() > 1e-2).sum().item() == 0
+    assert v_ret.shape == ret.shape
+    assert v_adv.shape == adv.shape
+    assert ((ret - v_ret).abs() > 1e-3).sum().item() == 0
+    assert ((adv - v_adv).abs() > 1e-3).sum().item() == 0

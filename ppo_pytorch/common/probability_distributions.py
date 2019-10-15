@@ -20,8 +20,8 @@ def make_pd(space: gym.Space):
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
         # return LinearTanhPd(space.shape[0])
-        # return FixedStdGaussianPd(space.shape[0], 0.3)
-        return BetaPd(space.shape[0], 1)
+        return FixedStdGaussianPd(space.shape[0], 0.3)
+        # return BetaPd(space.shape[0], 1)
         # return DiagGaussianPd(space.shape[0])
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
     elif isinstance(space, gym.spaces.MultiBinary):
@@ -339,7 +339,7 @@ class BetaPd(ProbabilityDistribution):
         return torch.float
 
     def logp(self, x, prob):
-        p = (x + self.h) / (2 * self.h)
+        p = (x * (1 - 1e-5) + self.h) / (2 * self.h)
 
         mask = (p < self.eps) | (p > 1 - self.eps)
         assert mask.sum() == 0, x[mask]

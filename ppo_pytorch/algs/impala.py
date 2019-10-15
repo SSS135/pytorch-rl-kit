@@ -16,10 +16,15 @@ from ..actors.utils import model_diff
 
 
 class IMPALA(PPO):
-    def __init__(self, *args, replay_buf_size=128 * 1024, off_policy_batches=4, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, *args, replay_buf_size=32 * 1024, off_policy_batches=4,
+                 vtrace_c_max=1.0, vtrace_p_max=1.0, vtrace_kl_limit=0.3,
+                 kl_scale=0.01, **kwargs):
+        super().__init__(*args, kl_scale=kl_scale, **kwargs)
         self.replay_buf_size = replay_buf_size
         self.off_policy_batches = off_policy_batches
+        self.vtrace_c_max = vtrace_c_max
+        self.vtrace_p_max = vtrace_p_max
+        self.vtrace_kl_limit = vtrace_kl_limit
 
         assert self.batch_size % self.horizon == 0
 
@@ -45,7 +50,7 @@ class IMPALA(PPO):
                 self._eval_steps += 1
                 self._prev_data = AttrDict(**ac_out, states=states, actions=actions)
 
-                if self._eval_steps >= self.horizon and len(self._replay_buffer) >= self.horizon * self.num_actors:
+                if self._eval_steps >= self.horizon + 1 and len(self._replay_buffer) >= (self.horizon + 1) * self.num_actors:
                     self._eval_steps = 0
                     self._pre_train()
                     self._train()
@@ -67,13 +72,13 @@ class IMPALA(PPO):
 
     def _create_data(self):
         # rand_actors = self.batch_size * self.off_policy_batches // self.horizon
-        # rand_samples = self._replay_buffer.sample(rand_actors, self.horizon)
+        # rand_samples = self._replay_buffer.sample(rand_actors, self.horizon + 1)
         # return AttrDict(rand_samples)
 
-        last_samples = self._replay_buffer.get_last_samples(self.horizon)
+        last_samples = self._replay_buffer.get_last_samples(self.horizon + 1)
         if self.off_policy_batches != 0:
             rand_actors = self.batch_size * self.off_policy_batches // self.horizon
-            rand_samples = self._replay_buffer.sample(rand_actors, self.horizon)
+            rand_samples = self._replay_buffer.sample(rand_actors, self.horizon + 1)
             return AttrDict({k: torch.cat([v1, v2], 1) for (k, v1), v2 in zip(rand_samples.items(), last_samples.values())})
         else:
             return AttrDict(last_samples)
@@ -109,22 +114,20 @@ class IMPALA(PPO):
             self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame)
             self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame)
 
-        self._adjust_kl_scale(kl)
+        # self._adjust_kl_scale(kl)
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
     def _impala_step(self, batch, do_log=False):
         with torch.enable_grad():
-            value_head = self._train_model.heads.state_values
-
             actor_params = AttrDict()
             if do_log:
                 actor_params.logger = self.logger
                 actor_params.cur_step = self.step
 
-            actor_out = self._train_model(batch.states, **actor_params)
+            actor_out = self._train_model(batch.states.reshape(-1, *batch.states.shape[2:]), **actor_params)
 
-            batch.logits = actor_out.logits
-            batch.state_values = actor_out.state_values.squeeze(-1)
+            batch.logits = actor_out.logits.reshape(*batch.states.shape[:2], *actor_out.logits.shape[1:])
+            batch.state_values = actor_out.state_values.reshape(*batch.states.shape[:2])
 
             # get loss
             loss, kl = self._get_impala_loss(batch, do_log)
@@ -150,17 +153,22 @@ class IMPALA(PPO):
         if pd is None:
             pd = self._train_model.heads.logits.pd
 
+        state_values = data.state_values
+        data.update({k: v[:-1] for k, v in data.items()})
+        data.state_values = state_values
+
         # action probability ratio
         # log probabilities used for better numerical stability
         data.old_logp = pd.logp(data.actions, data.logits_old)
         data.logp = pd.logp(data.actions, data.logits)
         data.probs_ratio = (data.logp - data.old_logp).detach().mean(-1).exp()
+        data.kl = kl = pd.kl(data.logits_old, data.logits)
 
         self._process_rewards(data)
+        data.state_values = data.state_values[:-1]
 
         adv_u = data.advantages.unsqueeze(-1)
         entropy = pd.entropy(data.logits)
-        kl = pd.kl(data.logits_old, data.logits)
         loss_ent = self.entropy_loss_scale * -entropy
         loss_policy = -data.logp * adv_u
         loss_value = self.value_loss_scale * barron_loss(data.state_values, data.value_targets, *self.barron_alpha_c, reduce=False)
@@ -204,14 +212,12 @@ class IMPALA(PPO):
         return total_loss, kl.mean()
 
     def _process_rewards(self, data, mean_norm=True):
-        state_values = data.state_values.detach()
-        data.update({k: v[:-1] for k, v in data.items()})
-
         norm_rewards = self.reward_scale * data.rewards
 
         # calculate value targets and advantages
         value_targets, advantages, p = calc_vtrace(
-            norm_rewards, state_values, data.dones, data.probs_ratio.detach(), self.reward_discount, 1.0, 1.0)
+            norm_rewards, data.state_values.detach(), data.dones, data.probs_ratio.detach(), data.kl.detach().mean(-1),
+            self.reward_discount, self.vtrace_c_max, self.vtrace_p_max, self.vtrace_kl_limit)
 
         mean, square, iter = self._advantage_stats
         mean = self._advantage_momentum * mean + (1 - self._advantage_momentum) * advantages.mean().item()
@@ -229,8 +235,7 @@ class IMPALA(PPO):
         else:
             rms = square ** 0.5
             advantages = advantages / max(rms, 1e-3)
-        advantages = p * barron_loss_derivative(advantages, *self.barron_alpha_c)
-        advantages.clamp_(-5, 5)
+        advantages = p * advantages
 
         data.value_targets, data.advantages, data.rewards = value_targets, advantages, norm_rewards
 
