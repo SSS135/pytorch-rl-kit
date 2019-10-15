@@ -11,7 +11,7 @@ from .replay_buffer import ReplayBuffer
 from ..common.attr_dict import AttrDict
 from ..common.barron_loss import barron_loss_derivative, barron_loss
 from ..common.data_loader import DataLoader
-from ..common.gae import calc_vtrace, calc_advantages
+from ..common.gae import calc_vtrace, calc_advantages, calc_value_targets
 from ..actors.utils import model_diff
 
 
@@ -84,10 +84,13 @@ class IMPALA(PPO):
             return AttrDict(last_samples)
 
     def _impala_update(self, data: AttrDict):
+        if self.use_pop_art:
+            self._train_model.heads.state_values.normalize(*self._pop_art.statistics)
+
         num_samples = data.states.shape[0] * data.states.shape[1]
         num_rollouts = data.states.shape[1]
 
-        data = AttrDict(states=data.states, logits_old=data.logits, state_values_old=data.state_values,
+        data = AttrDict(states=data.states, logits_old=data.logits,
                         actions=data.actions, rewards=data.rewards, dones=data.dones)
 
         num_batches = num_samples // self.batch_size
@@ -95,6 +98,7 @@ class IMPALA(PPO):
 
         old_model = deepcopy(self._train_model)
         kl_list = []
+        value_target_list = []
 
         with DataLoader(data, rand_idx, self.device_train, 4, dim=1) as data_loader:
             for batch_index in range(num_batches):
@@ -102,6 +106,7 @@ class IMPALA(PPO):
                 batch = AttrDict(data_loader.get_next_batch())
                 loss, kl = self._impala_step(batch, self._do_log and batch_index == num_batches - 1)
                 kl_list.append(kl)
+                value_target_list.append(batch.value_targets.detach())
 
         kl = np.mean(kl_list)
 
@@ -113,6 +118,12 @@ class IMPALA(PPO):
             self.logger.add_scalar('kl scale', self.kl_scale, self.frame)
             self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame)
             self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame)
+
+        if self.use_pop_art:
+            pa_mean, pa_std = self._pop_art.statistics
+            value_targets = torch.cat(value_target_list, 0) * pa_std + pa_mean
+            self._train_model.heads.state_values.unnormalize(pa_mean, pa_std)
+            self._pop_art.update_statistics(value_targets)
 
         # self._adjust_kl_scale(kl)
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
@@ -214,10 +225,18 @@ class IMPALA(PPO):
     def _process_rewards(self, data, mean_norm=True):
         norm_rewards = self.reward_scale * data.rewards
 
+        if self.use_pop_art:
+            pa_mean, pa_std = self._pop_art.statistics
+
         # calculate value targets and advantages
         value_targets, advantages, p = calc_vtrace(
-            norm_rewards, data.state_values.detach(), data.dones, data.probs_ratio.detach(), data.kl.detach().mean(-1),
+            norm_rewards,
+            data.state_values.detach() * pa_std + pa_mean if self.use_pop_art else data.state_values.detach(),
+            data.dones, data.probs_ratio.detach(), data.kl.detach().mean(-1),
             self.reward_discount, self.vtrace_c_max, self.vtrace_p_max, self.vtrace_kl_limit)
+
+        if self.use_pop_art:
+            value_targets = (value_targets - pa_mean) / pa_std
 
         mean, square, iter = self._advantage_stats
         mean = self._advantage_momentum * mean + (1 - self._advantage_momentum) * advantages.mean().item()

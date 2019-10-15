@@ -8,7 +8,7 @@ def clip(x, x_min, x_max):
 
 
 class PopArt:
-    def __init__(self, beta=0.95, use_rms=False, eps=(1e-4, 1e6)):
+    def __init__(self, beta=0.9, use_rms=False, eps=(1e-4, 1e6)):
         assert 0 <= beta < 1
         assert 0 <= eps[0] < eps[1]
         self.beta = beta

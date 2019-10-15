@@ -148,6 +148,7 @@ class PPO(RLBase):
         self.barron_alpha_c = barron_alpha_c
         self.advantage_scaled_clip = advantage_scaled_clip
         self.use_pop_art = use_pop_art
+        self._first_pop_art_update = True
 
         assert len(set(self.constraint) - {'clip', 'kl', 'opt', 'mse', 'target'}) == 0
 
@@ -220,14 +221,7 @@ class PPO(RLBase):
             self._model_saver.check_save_model(self._train_model, self.frame)
 
     def _ppo_update(self, data: AttrDict):
-        value_head = self._train_model.heads.state_values
-
-        if self.use_pop_art:
-            value_targets_mean, value_targets_std = self._pop_art.statistics
-            self._pop_art.update_statistics(data.value_targets)
-            value_head.normalize(value_targets_mean, value_targets_std)
-            data.state_values = (data.state_values - value_targets_mean) / value_targets_std
-            data.value_targets = (data.value_targets - value_targets_mean) / value_targets_std
+        self._apply_pop_art(data)
 
         data = AttrDict(states=data.states, logits_old=data.logits, state_values_old=data.state_values,
                         actions=data.actions, advantages=data.advantages, value_targets=data.value_targets)
@@ -270,14 +264,26 @@ class PPO(RLBase):
             self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame)
             self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame)
 
-        if self.use_pop_art:
-            value_targets_mean, value_targets_std = self._pop_art.statistics
-            self._train_model.heads.state_values.unnormalize(value_targets_mean, value_targets_std)
-
+        self._unapply_pop_art()
         self._adjust_kl_scale(kl)
 
         self._copy_parameters(self._train_model, self._eval_model)
         # self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
+
+    def _apply_pop_art(self, data):
+        if self.use_pop_art:
+            self._pop_art.update_statistics(data.value_targets)
+            mean, std = self._pop_art.statistics
+            if self._first_pop_art_update:
+                self._first_pop_art_update = False
+            else:
+                self._train_model.heads.state_values.normalize(mean, std)
+            data.state_values = (data.state_values - mean) / std
+            data.value_targets = (data.value_targets - mean) / std
+
+    def _unapply_pop_art(self):
+        if self.use_pop_art:
+            self._train_model.heads.state_values.unnormalize(*self._pop_art.statistics)
 
     def _ppo_step(self, batch, do_log):
         with torch.enable_grad():
