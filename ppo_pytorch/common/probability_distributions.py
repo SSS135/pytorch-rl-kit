@@ -552,9 +552,9 @@ class FixedStdGaussianPd(ProbabilityDistribution):
         return kl
 
     def entropy(self, mean):
-        # logvar = prob.new(prob.shape[-1]).fill_(math.log(self.std * self.std))
-        # ent = 0.5 * (math.log(2 * math.pi * math.e) + logvar)
-        return mean.new_zeros(mean.shape)
+        var = self.std ** 2
+        kld = math.log(var) - var - mean.pow(2)
+        return kld
 
     def sample(self, mean):
         return mean + self.std * torch.randn_like(mean)
@@ -597,6 +597,45 @@ class LinearTanhPd(ProbabilityDistribution):
 
     def sample(self, mean):
         return self.max_action * mean.tanh()
+
+    # @property
+    # def init_column_norm(self):
+    #     return 1.0
+
+
+class LinearPd(ProbabilityDistribution):
+    def __init__(self, d, max_action):
+        super().__init__(locals())
+        self.d = d
+        self.max_action = max_action
+
+    @property
+    def prob_vector_len(self):
+        return self.d
+
+    @property
+    def action_vector_len(self):
+        return self.d
+
+    @property
+    def input_vector_len(self):
+        return self.d
+
+    @property
+    def dtype(self):
+        return torch.float
+
+    def logp(self, x, mean):
+        return -(x - self.max_action).pow(2)
+
+    def kl(self, mean1, mean2):
+        return (mean1 - mean2).pow(2)
+
+    def entropy(self, mean):
+        return -mean.pow(2)
+
+    def sample(self, mean):
+        return self.max_action * mean
 
     # @property
     # def init_column_norm(self):

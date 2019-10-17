@@ -8,8 +8,8 @@ def clip(x, x_min, x_max):
 
 
 class PopArt:
-    def __init__(self, beta=0.9, use_rms=False, eps=(1e-4, 1e6)):
-        assert 0 <= beta < 1
+    def __init__(self, beta=1e-3, use_rms=False, eps=(1e-2, 1e6)):
+        assert 0 < beta < 1
         assert 0 <= eps[0] < eps[1]
         self.beta = beta
         self.eps = eps
@@ -23,7 +23,7 @@ class PopArt:
         if self._update_iteration == 0:
             return 0, 1
         else:
-            bias_corr = 1 - self.beta ** self._update_iteration
+            bias_corr = 1 - (1 - self.beta) ** self._update_iteration
             square = self._square / bias_corr
             mean = self._mean / bias_corr
             if self.use_rms:
@@ -35,5 +35,5 @@ class PopArt:
 
     def update_statistics(self, returns: torch.Tensor):
         self._update_iteration += 1
-        self._square = self.beta * self._square + (1 - self.beta) * returns.pow(2).mean().item()
-        self._mean = self.beta * self._mean + (1 - self.beta) * returns.mean().item()
+        self._square = self.beta * returns.pow(2).mean().item() + (1 - self.beta) * self._square
+        self._mean = self.beta * returns.mean().item() + (1 - self.beta) * self._mean

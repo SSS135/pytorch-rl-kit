@@ -273,13 +273,16 @@ class PPO(RLBase):
     def _apply_pop_art(self, data):
         if self.use_pop_art:
             self._pop_art.update_statistics(data.value_targets)
-            mean, std = self._pop_art.statistics
+            pa_mean, pa_std = self._pop_art.statistics
             if self._first_pop_art_update:
                 self._first_pop_art_update = False
             else:
-                self._train_model.heads.state_values.normalize(mean, std)
-            data.state_values = (data.state_values - mean) / std
-            data.value_targets = (data.value_targets - mean) / std
+                self._train_model.heads.state_values.normalize(pa_mean, pa_std)
+            data.state_values = (data.state_values - pa_mean) / pa_std
+            data.value_targets = (data.value_targets - pa_mean) / pa_std
+            if self._do_log:
+                self.logger.add_scalar('pop art mean', pa_mean, self.frame)
+                self.logger.add_scalar('pop art std', pa_std, self.frame)
 
     def _unapply_pop_art(self):
         if self.use_pop_art:

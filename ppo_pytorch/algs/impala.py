@@ -124,6 +124,9 @@ class IMPALA(PPO):
             value_targets = torch.cat(value_target_list, 0) * pa_std + pa_mean
             self._train_model.heads.state_values.unnormalize(pa_mean, pa_std)
             self._pop_art.update_statistics(value_targets)
+            if self._do_log:
+                self.logger.add_scalar('pop art mean', pa_mean, self.frame)
+                self.logger.add_scalar('pop art std', pa_std, self.frame)
 
         # self._adjust_kl_scale(kl)
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
@@ -232,7 +235,7 @@ class IMPALA(PPO):
         value_targets, advantages, p = calc_vtrace(
             norm_rewards,
             data.state_values.detach() * pa_std + pa_mean if self.use_pop_art else data.state_values.detach(),
-            data.dones, data.probs_ratio.detach(), data.kl.detach().mean(-1),
+            data.dones, data.probs_ratio.detach(), data.kl.detach().sum(-1) / data.kl.shape[-1] ** 0.5,
             self.reward_discount, self.vtrace_c_max, self.vtrace_p_max, self.vtrace_kl_limit)
 
         if self.use_pop_art:

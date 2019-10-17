@@ -6,7 +6,7 @@ from ..common import DecayLR, ValueDecay
 from ..actors import create_ppo_fc_actor, create_ppo_cnn_actor, create_td3_fc_actor
 
 
-def create_fc_kwargs(learning_decay_frames=5e5, **kwargs):
+def create_fc_kwargs(learning_decay_frames=None, **kwargs):
     """
     Get hyperparameters for simple envs like CartPole or Acrobot
     Args:
@@ -40,7 +40,7 @@ def create_fc_kwargs(learning_decay_frames=5e5, **kwargs):
     return defaults
 
 
-def create_td3_fc_kwargs(learning_decay_frames=5e5, **kwargs):
+def create_td3_fc_kwargs(learning_decay_frames=None, **kwargs):
     """
     Get hyperparameters for simple envs like CartPole or Acrobot
     Args:
@@ -89,7 +89,7 @@ def create_td3_fc_kwargs(learning_decay_frames=5e5, **kwargs):
 #     return defaults
 
 
-def create_atari_kwargs(learning_decay_frames=10e6, **kwargs):
+def create_atari_kwargs(learning_decay_frames=None, **kwargs):
     """
     Get hyperparameters for Atari
     Args:
