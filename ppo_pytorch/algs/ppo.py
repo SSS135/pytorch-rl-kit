@@ -17,7 +17,7 @@ from torchvision.utils import make_grid
 
 from ..common.barron_loss import barron_loss
 from ..common.opt_clip import opt_clip
-from ..common.probability_distributions import DiagGaussianPd, CategoricalPd
+from ..common.probability_distributions import DiagGaussianPd, CategoricalPd, ProbabilityDistribution
 from ..common.rl_base import RLBase
 from ..common.pop_art import PopArt
 from ..common.attr_dict import AttrDict
@@ -227,7 +227,8 @@ class PPO(RLBase):
                         actions=data.actions, advantages=data.advantages, value_targets=data.value_targets)
 
         if 'target' in self.constraint:
-            data.logits_target = get_target_logits(self._train_model.heads.logits.pd, data.actions, data.logits_old, self.policy_clip * data.advantages)
+            data.logits_target = self._calc_target_logits(
+                data.actions, data.logits_old, data.advantages, self._train_model.heads.logits.pd)
 
         batches = max(1, math.ceil(self.num_actors * self.horizon / self.batch_size))
 
@@ -343,6 +344,11 @@ class PPO(RLBase):
         ratio = logp - logp_old
 
         adv_u = advantages.unsqueeze(-1)
+        kl = pd.kl(logits_old, logits)
+
+        # entropy bonus for better exploration
+        entropy = pd.entropy(logits)
+        loss_ent = -self.entropy_loss_scale * entropy
 
         if 'clip' in self.constraint:
             unclipped_policy_loss = ratio * adv_u
@@ -354,24 +360,12 @@ class PPO(RLBase):
             clipped_policy_loss = clipped_ratio * adv_u
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
         elif 'target' in self.constraint:
-            diff_cur = batch.logits_target - logits
-            diff_old = batch.logits_target - logits_old
-            diff_old_rms = diff_old.pow(2).mean().sqrt().clamp(min=1e-3)
-
-            # loss_clip = diff_cur * diff_old / diff_old_rms
-            # loss_clip = adv_u.abs() * loss_clip.clamp(min=0)
-
-            loss_clip = diff_cur * diff_cur.detach() / diff_old_rms
-            loss_clip = adv_u.abs() * loss_clip
+            loss_clip = 0.5 * adv_u.abs() * (logits - batch.logits_target).pow(2).mean(-1)
+            loss_ent = torch.zeros_like(loss_ent)
         else:
             # unclipped loss
             loss_clip = -ratio * adv_u
 
-        # entropy bonus for better exploration
-        entropy = pd.entropy(logits)
-        loss_ent = -self.entropy_loss_scale * entropy
-
-        kl = pd.kl(logits_old, logits)
         if 'kl' in self.constraint:
             kl_targets = self.kl_target * adv_u.abs()
             loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(0.1 * self.kl_scale * self.kl_target)
@@ -418,6 +412,34 @@ class PPO(RLBase):
                 self.logger.add_scalar('loss policy' + tag, loss_clip.mean(), self.frame)
 
         return total_loss, kl.mean()
+
+    def _calc_target_logits(self, actions: torch.Tensor, logits_old: torch.Tensor,
+                            advantages: torch.Tensor, pd: ProbabilityDistribution):
+        lr = 0.1 * self._clip_mult
+        iters = 10
+        kl_limit = 0.01
+
+        logits_target = logits_old.clone()
+        logits_target.requires_grad = True
+        logits_opt = optim.SGD([logits_target], lr)
+        adv_sign_neg = -advantages.sign().unsqueeze(-1)
+
+        for _ in range(iters):
+            with torch.enable_grad():
+                kl = pd.kl(logits_old, logits_target)
+                entropy = pd.entropy(logits_target)
+                loss_pg = adv_sign_neg * pd.logp(actions, logits_target)
+                loss_ent = -self.entropy_loss_scale * entropy
+                loss = (loss_pg.sum(-1) + loss_ent.sum(-1)) * (kl.detach().mean(-1) < kl_limit).float()
+                loss = loss.sum()
+
+            loss.backward()
+            logits_target.grad /= logits_target.grad.pow(2).mean(-1, keepdim=True).sqrt() + 1e-7
+            logits_opt.step()
+            logits_opt.zero_grad()
+
+        logits_target.requires_grad = False
+        return logits_target
 
     def _adjust_kl_scale(self, kl):
         threshold, change, limit = 1.3, 1.2, 1000.0
