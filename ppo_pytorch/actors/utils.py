@@ -73,9 +73,11 @@ def image_to_float(x):
 
 
 def model_diff(old_model, new_model, max_diff=False) -> float:
+    old_state = old_model.state_dict() if hasattr(old_model, 'state_dict') else old_model
+    new_state = new_model.state_dict() if hasattr(new_model, 'state_dict') else new_model
     norm = 0
     param_count = 0
-    for old, new in zip(old_model.state_dict().values(), new_model.state_dict().values()):
+    for old, new in zip(old_state.values(), new_state.values()):
         if old.dtype in (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64):
             continue
         if max_diff:

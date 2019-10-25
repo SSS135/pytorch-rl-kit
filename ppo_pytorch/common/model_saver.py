@@ -27,7 +27,7 @@ class ModelSaver:
 
     def _save_model(self, model, path, frame):
         print(f'saving model at {frame} step to {path}')
-        model = deepcopy(model).cpu()
+        model = model.state_dict()
         try:
             torch.save(model, path)
         except OSError as e:
