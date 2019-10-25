@@ -8,6 +8,7 @@ from typing import Tuple, Optional, Callable, Dict, Any
 import gym.spaces
 import numpy as np
 import torch
+import torch.jit
 import torch.distributions
 import torch.nn.functional as F
 from torch.distributions import Beta, kl_divergence
@@ -564,6 +565,12 @@ class FixedStdGaussianPd(ProbabilityDistribution):
     #     return 1.0
 
 
+@torch.jit.script
+def limit_action_length(v: torch.Tensor, maxlen: float):
+    len = v.abs().mean(-1, keepdim=True).clamp(min=maxlen)
+    return v * (maxlen / len)
+
+
 class LinearTanhPd(ProbabilityDistribution):
     def __init__(self, d, max_action):
         super().__init__(locals())
@@ -596,7 +603,7 @@ class LinearTanhPd(ProbabilityDistribution):
         return mean.pow(2)
 
     def sample(self, mean):
-        return self.max_action * mean.tanh()
+        return self.max_action * limit_action_length(mean, 1.0).tanh()
 
     # @property
     # def init_column_norm(self):
