@@ -19,7 +19,7 @@ class SonicVecEnv(NamedVecEnv):
         self.grayscale = grayscale
         super().__init__(game)
 
-    def get_env_fn(self):
+    def get_env_factory(self):
         def make(game, state, scale, frame_stack, grayscale):
             from retro_contest.local import make
             env = make(game, state)

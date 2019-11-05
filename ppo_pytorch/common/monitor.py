@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import defaultdict, Iterable
 from typing import List
 
 import gym
@@ -32,7 +32,7 @@ class Monitor(gym.Wrapper):
         if isinstance(self.env, MultiplayerEnv):
             for i in range(self.env.num_players):
                 self._add_step_info(self._data[i], info[i], reward[i])
-                if done:
+                if done[i] if isinstance(done, Iterable) else done:
                     self._add_episode_info(info[i], self._data[i])
                     self._data[i] = DefaultDictEx(int)
         else:

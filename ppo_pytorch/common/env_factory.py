@@ -20,27 +20,27 @@ class NamedVecEnv:
     def __init__(self, env_name: str, parallel: str = 'dummy'):
         self.env_name = env_name
         self.parallel = parallel
-        self.subproc_envs = None
+        self.envs = None
         self.num_envs = None
 
-        env = self.get_env_fn()()
+        env = self.get_env_factory()()
         self.observation_space = env.observation_space
         self.action_space = env.action_space
         env.close()
 
     def set_num_envs(self, num_envs):
-        if self.subproc_envs is not None:
-            self.subproc_envs.close()
+        if self.envs is not None:
+            self.envs.close()
         self.num_envs = num_envs
-        self.subproc_envs = self.vec_env_types[self.parallel]([self.get_env_fn()] * num_envs)
+        self.envs = self.vec_env_types[self.parallel]([self.get_env_factory()] * num_envs)
 
     def step(self, actions):
-        return self.subproc_envs.step(actions)
+        return self.envs.step(actions)
 
     def reset(self):
-        return self.subproc_envs.reset()
+        return self.envs.reset()
 
-    def get_env_fn(self):
+    def get_env_factory(self):
         raise NotImplementedError
 
 
@@ -54,7 +54,7 @@ class AtariVecEnv(NamedVecEnv):
         self.grayscale = grayscale
         super().__init__(env_name, parallel)
 
-    def get_env_fn(self):
+    def get_env_factory(self):
         def make(env_name, episode_life, scale, clip_rewards, frame_stack, grayscale):
             env = gym.make(env_name)
             assert 'NoFrameskip' in env.spec.id
@@ -84,7 +84,7 @@ class SimpleVecEnv(NamedVecEnv):
         self.observation_norm = observation_norm
         super().__init__(env_name, parallel)
 
-    def get_env_fn(self):
+    def get_env_factory(self):
         def make(env_name, observation_norm):
             env = gym.make(env_name)
             env = Monitor(env)
