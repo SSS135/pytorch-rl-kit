@@ -51,7 +51,7 @@ class StepsProcessor:
 
     def _get_entropy_rewards(self):
         if self.entropy_reward_scale != 0:
-            entropy = self.pd.entropy(self.data.probs[:-1]).mean(-1) * self.data.rewards.pow(2).mean().sqrt()
+            entropy = self.pd.entropy(self.data.logits[:-1]).mean(-1) * self.data.rewards.pow(2).mean().sqrt()
             return self.entropy_reward_scale * entropy
         else:
             return self.data.rewards.new_zeros(1)
