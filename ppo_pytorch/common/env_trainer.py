@@ -3,19 +3,21 @@ from itertools import count
 from typing import Callable
 
 import numpy as np
-
-from .tensorboard_env_logger import TensorboardEnvLogger, get_log_dir
 import torch
+
+from .env_factory import NamedVecEnv
+from .rl_base import RLBase
+from .tensorboard_env_logger import TensorboardEnvLogger, get_log_dir
 
 
 class EnvTrainer:
     def __init__(self,
-                 rl_alg_factory: Callable,
-                 env_factory: Callable,
-                 log_root_path,
-                 log_interval=10 * 1024,
-                 alg_name='RL',
-                 tag=''):
+                 rl_alg_factory: Callable[..., RLBase],
+                 env_factory: Callable[[], NamedVecEnv],
+                 log_root_path: str,
+                 log_interval: int = 10 * 1024,
+                 alg_name: str = 'RL',
+                 tag: str = ''):
         """
         Simplifies training of RL algorithms with gym environments.
         Args:

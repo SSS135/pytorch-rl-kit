@@ -6,18 +6,18 @@ import gym.spaces as spaces
 import numpy as np
 from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
-from .online_normalizer import OnlineNormalizer
 
 from .atari_wrappers import NoopResetEnv, MaxAndSkipEnv, EpisodicLifeEnv, FireResetEnv, ScaledFloatFrame, ClipRewardEnv, \
     FrameStack
 from .monitor import Monitor
+from .online_normalizer import OnlineNormalizer
 from .threading_vec_env import ThreadingVecEnv
 
 
 class NamedVecEnv:
     vec_env_types = dict(dummy=DummyVecEnv, thread=ThreadingVecEnv, process=SubprocVecEnv)
 
-    def __init__(self, env_name: str, parallel: str='dummy'):
+    def __init__(self, env_name: str, parallel: str = 'dummy'):
         self.env_name = env_name
         self.parallel = parallel
         self.subproc_envs = None
@@ -74,7 +74,9 @@ class AtariVecEnv(NamedVecEnv):
             if frame_stack:
                 env = FrameStack(env, 4)
             return env
-        return partial(make, self.env_name, self.episode_life, self.scale, self.clip_rewards, self.frame_stack, self.grayscale)
+
+        return partial(make, self.env_name, self.episode_life, self.scale, self.clip_rewards, self.frame_stack,
+                       self.grayscale)
 
 
 class SimpleVecEnv(NamedVecEnv):
@@ -89,6 +91,7 @@ class SimpleVecEnv(NamedVecEnv):
             if observation_norm:
                 env = ObservationNorm(env)
             return env
+
         return partial(make, self.env_name, self.observation_norm)
 
 
