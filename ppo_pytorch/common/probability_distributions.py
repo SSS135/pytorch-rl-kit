@@ -150,6 +150,7 @@ class MultiCategoricalPd(ProbabilityDistribution):
     def __init__(self, sizes):
         super().__init__(locals())
         self.sizes = list(sizes)
+        self.pds = [CategoricalPd(s) for s in self.sizes]
 
     @property
     def prob_vector_len(self):
@@ -169,52 +170,29 @@ class MultiCategoricalPd(ProbabilityDistribution):
 
     def logp(self, all_actions, all_logits):
         split_logits = all_logits.split(self.sizes, -1)
-        all_logp = []
-        for logits, a in zip(split_logits, all_actions.unbind(-1)):
-            logp = F.log_softmax(logits, dim=-1)
-            logp = logp.gather(dim=-1, index=a.unsqueeze(-1))
-            all_logp.append(logp)
+        all_logp = [pd.logp(a, logits) for pd, logits, a in zip(self.pds, split_logits, all_actions.unbind(-1))]
         return torch.cat(all_logp, -1)
 
     def kl(self, all_logits0, all_logits1):
         split_logits0 = all_logits0.split(self.sizes, -1)
         split_logits1 = all_logits1.split(self.sizes, -1)
-        all_kl = []
-        for logits0, logits1 in zip(split_logits0, split_logits1):
-            logp0 = F.log_softmax(logits0, dim=-1)
-            logp1 = F.log_softmax(logits1, dim=-1)
-            kl = (logp0.exp() * (logp0 - logp1)).sum(dim=-1, keepdim=True)
-            all_kl.append(kl)
+        all_kl = [pd.kl(logits0, logits1) for pd, logits0, logits1 in zip(self.pds, split_logits0, split_logits1)]
         return torch.cat(all_kl, -1)
 
     def entropy(self, all_logits):
         split_logits = all_logits.split(self.sizes, -1)
-        all_ent = []
-        for logits in split_logits:
-            a = logits - logits.max(dim=-1, keepdim=True)[0]
-            ea = a.exp()
-            z = ea.sum(dim=-1, keepdim=True)
-            po = ea / z
-            ent = torch.sum(po * (torch.log(z) - a), dim=-1, keepdim=True)
-            all_ent.append(ent)
+        all_ent = [pd.entropy(logits) for pd, logits in zip(self.pds, split_logits)]
         return torch.cat(all_ent, -1)
 
     def sample(self, all_logits):
         split_logits = all_logits.split(self.sizes, -1)
-        all_actions = []
-        for logits in split_logits:
-            probs = F.softmax(logits.reshape(-1, logits.shape[-1]), dim=-1)
-            action = probs.multinomial(1).reshape(*logits.shape[:-1], -1)
-            all_actions.append(action)
+        all_actions = [pd.sample(logits) for pd, logits in zip(self.pds, split_logits)]
         return torch.cat(all_actions, -1)
 
-    def to_inputs(self, action):
-        raise NotImplementedError
+    def to_inputs(self, all_actions):
         with torch.no_grad():
-            onehot = torch.zeros((*action.shape[:-1], self.n), device=action.device)
-            onehot.scatter_(dim=-1, index=action, value=1)
-            onehot = onehot - 1 / self.n
-        return onehot
+            all_inputs = [pd.to_inputs(action) for pd, action in zip(self.pds, all_actions.unbind(-1))]
+            return torch.cat(all_inputs, -1)
 
 
 class BernoulliPd(ProbabilityDistribution):
