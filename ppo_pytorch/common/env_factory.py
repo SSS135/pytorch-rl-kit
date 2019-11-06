@@ -102,7 +102,7 @@ class ChannelTranspose(gym.ObservationWrapper):
         self.observation_space = spaces.Box(low=0, high=255, shape=(obs[2], obs[0], obs[1]), dtype=np.uint8)
 
     def observation(self, frame):
-        return frame.transpose(2, 0, 1)
+        return np.moveaxis(np.asarray(frame), -1, -3)
 
 
 class SimplifyFrame(gym.ObservationWrapper):
