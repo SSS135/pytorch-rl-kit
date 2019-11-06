@@ -182,17 +182,16 @@ class PPO(RLBase):
                 self._steps_processor.append_values(states=states, rewards=rewards, dones=dones, actions=actions, **ac_out)
 
                 if len(self._steps_processor.data.states) > self.horizon:
-                    self._pre_train()
+                    self._check_log()
                     self._train()
+                    self._scheduler_step()
 
             return actions
 
     def _take_step(self, states, dones, **model_params):
         return self._eval_model(states, **model_params)
 
-    def _pre_train(self):
-        self._check_log()
-
+    def _scheduler_step(self):
         # update clipping and learning rate decay schedulers
         if self._lr_scheduler is not None:
             self._lr_scheduler.step(self.frame)
