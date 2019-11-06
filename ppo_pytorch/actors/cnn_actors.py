@@ -106,7 +106,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                     )
                 )
             self.convs = nn.Sequential(
-                impala_block(4, 16),
+                impala_block(self.input_shape[0], 16),
                 impala_block(16, 32),
                 impala_block(32, 32),
                 nn.ReLU(),
