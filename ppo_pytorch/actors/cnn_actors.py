@@ -47,7 +47,8 @@ class CNNFeatureExtractor(FeatureExtractorBase):
     """
     Convolution network.
     """
-    def __init__(self, input_shape, cnn_kind='normal', cnn_activation=nn.ReLU, fc_activation=nn.ReLU, **kwargs):
+    def __init__(self, input_shape, cnn_kind='normal', cnn_activation=nn.ReLU, fc_activation=nn.ReLU,
+                 add_positional_features=False, normalize_input=False, **kwargs):
         """
         Args:
             input_shape: Env's observation space
@@ -61,15 +62,19 @@ class CNNFeatureExtractor(FeatureExtractorBase):
         self.cnn_activation = cnn_activation
         self.linear_activation = fc_activation
         self.cnn_kind = cnn_kind
+        self.add_positional_features = add_positional_features
+        self.normalize_input = normalize_input
         self.convs = None
         self.linear = None
+        self._prev_positions = None
         self._create_model()
 
     def _create_model(self):
+        input_channels = self.input_shape[0] + 2
         # create convolutional layers
         if self.cnn_kind == 'normal': # Nature DQN (1,683,456 parameters)
             self.convs = nn.ModuleList([
-                self._make_cnn_layer(self.input_shape[0], 32, 8, 4, first_layer=True),
+                self._make_cnn_layer(input_channels, 32, 8, 4, first_layer=True),
                 self._make_cnn_layer(32, 64, 4, 2),
                 self._make_cnn_layer(64, 64, 3, 1),
             ])
@@ -77,7 +82,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
         elif self.cnn_kind == 'large': # custom (2,066,432 parameters)
             nf = 32
             self.convs = nn.ModuleList([
-                self._make_cnn_layer(self.input_shape[0], nf, 4, 2, 0, first_layer=True),
+                self._make_cnn_layer(input_channels, nf, 4, 2, 0, first_layer=True),
                 self._make_cnn_layer(nf, nf * 2, 4, 2, 0),
                 self._make_cnn_layer(nf * 2, nf * 4, 4, 2, 1),
                 self._make_cnn_layer(nf * 4, nf * 8, 4, 2, 1),
@@ -86,7 +91,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
         elif self.cnn_kind == 'grouped': # custom grouped (6,950,912 parameters)
             nf = 32
             self.convs = nn.ModuleList([
-                self._make_cnn_layer(self.input_shape[0], nf * 4, 4, 2, 0, first_layer=True),
+                self._make_cnn_layer(input_channels, nf * 4, 4, 2, 0, first_layer=True),
                 ChannelShuffle(nf * 4),
                 self._make_cnn_layer(nf * 4, nf * 8, 4, 2, 0, groups=8),
                 ChannelShuffle(nf * 8),
@@ -116,7 +121,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                     )
                 )
             self.convs = nn.Sequential(
-                impala_block(self.input_shape[0], 16),
+                impala_block(input_channels, 16),
                 impala_block(16, 32),
                 impala_block(32, 32),
                 nn.ReLU(),
@@ -165,8 +170,21 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                 self._log_conv_activations(i, x, logger, cur_step)
         return x
 
+    def _add_position_features(self, x: torch.Tensor):
+        shape = list(x.shape)
+        shape[-3] = 1
+        if self._prev_positions is None or list(self._prev_positions.shape) != shape:
+            h = torch.linspace(-1, 1, shape[-1], device=x.device).view(1, -1).expand(shape)
+            v = torch.linspace(-1, 1, shape[-2], device=x.device).view(-1, 1).expand(shape)
+            self._prev_positions = torch.cat([h, v], -3)
+        return torch.cat([x, self._prev_positions], -3)
+
     def forward(self, input, logger=None, cur_step=None, **kwargs):
         input = image_to_float(input)
+        if self.normalize_input:
+            input = input * 2 - 1
+        if self.add_positional_features:
+            input = self._add_position_features(input)
 
         x = self._extract_features(input)
         x = x.view(x.size(0), -1)
@@ -229,9 +247,11 @@ class Sega_CNNFeatureExtractor(CNNFeatureExtractor):
 
 def create_ppo_cnn_actor(observation_space, action_space, cnn_kind='normal',
                          cnn_activation=nn.ReLU, fc_activation=nn.ReLU, norm_factory: NormFactory=None,
-                         split_policy_value_network=False, num_out=1):
+                         split_policy_value_network=False, num_out=1,
+                         add_positional_features=False, normalize_input=False):
     assert len(observation_space.shape) == 3
 
     def fx_factory(): return CNNFeatureExtractor(
-        observation_space.shape, cnn_kind, cnn_activation, fc_activation, norm_factory=norm_factory)
+        observation_space.shape, cnn_kind, cnn_activation, fc_activation, norm_factory=norm_factory,
+        add_positional_features=add_positional_features, normalize_input=normalize_input)
     return create_ppo_actor(action_space, fx_factory, split_policy_value_network, num_out=num_out)
