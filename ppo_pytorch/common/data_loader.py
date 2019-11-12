@@ -15,6 +15,7 @@ class DataLoader:
         self._futures: List[Future] = []
         for _ in range(min(len(chunks), num_threads)):
             self._submit()
+        assert len(self._futures) > 0, (len(chunks), num_threads)
 
     def get_next_batch(self):
         future = self._futures[0]
