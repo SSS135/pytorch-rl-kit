@@ -12,6 +12,7 @@ import torch
 import torch.autograd
 import torch.nn.functional as F
 import torch.optim as optim
+from rl_exp.noisy_linear import NoisyLinear
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 
@@ -266,6 +267,7 @@ class PPO(RLBase):
 
         self._unapply_pop_art()
         self._adjust_kl_scale(kl)
+        NoisyLinear.randomize_network(self._train_model)
 
         self._copy_parameters(self._train_model, self._eval_model)
         # self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()

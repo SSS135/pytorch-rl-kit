@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
+from rl_exp.noisy_linear import NoisyLinear
 
 from .ppo import PPO
 from .replay_buffer import ReplayBuffer
@@ -129,6 +130,7 @@ class IMPALA(PPO):
                 self.logger.add_scalar('pop art std', pa_std, self.frame)
 
         # self._adjust_kl_scale(kl)
+        NoisyLinear.randomize_network(self._train_model)
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
     def _impala_step(self, batch, do_log=False):

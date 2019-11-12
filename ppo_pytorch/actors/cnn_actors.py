@@ -10,7 +10,7 @@ from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor
 from .norm_factory import NormFactory
 from .utils import make_conv_heatmap, image_to_float
 from ..common.make_grid import make_grid
-from ..common.probability_distributions import make_pd
+from ..config import Linear
 
 
 class GroupTranspose(nn.Module):
@@ -127,7 +127,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                 nn.ReLU(),
             )
             self.linear = nn.Sequential(
-                nn.Linear(2592, 256),
+                Linear(2592, 256),
                 nn.ReLU(),
             )
         else:
@@ -144,14 +144,14 @@ class CNNFeatureExtractor(FeatureExtractorBase):
 
     def _make_fc_layer(self, in_features, out_features, first_layer=False):
         bias = self.norm_factory is None or not self.norm_factory.disable_bias or not self.norm_factory.allow_fc
-        return self._make_layer(nn.Linear(in_features, out_features, bias=bias), first_layer=first_layer)
+        return self._make_layer(Linear(in_features, out_features, bias=bias), first_layer=first_layer)
 
     def _make_cnn_layer(self, *args, first_layer=False, **kwargs):
         bias = self.norm_factory is None or not self.norm_factory.disable_bias or not self.norm_factory.allow_cnn
         return self._make_layer(nn.Conv2d(*args, **kwargs, bias=bias), first_layer=first_layer)
 
     def _make_layer(self, transf, first_layer=False):
-        is_linear = isinstance(transf, nn.Linear)
+        is_linear = isinstance(transf, nn.Linear) or isinstance(transf, Linear)
         features = transf.out_features if is_linear else transf.out_channels
 
         parts = [transf]
@@ -242,7 +242,7 @@ class Sega_CNNFeatureExtractor(CNNFeatureExtractor):
             self._make_layer(nn.Conv2d(nf, nf * 2, 6, 3, 0, bias=self.norm_factory is None)),
             self._make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 0, bias=self.norm_factory is None)),
         ])
-        self.linear = self._make_layer(nn.Linear(1920, 512))
+        self.linear = self._make_layer(Linear(1920, 512))
 
 
 def create_ppo_cnn_actor(observation_space, action_space, cnn_kind='normal',

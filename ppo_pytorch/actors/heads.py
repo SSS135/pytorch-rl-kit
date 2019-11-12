@@ -9,6 +9,7 @@ from .utils import normalized_columns_initializer_
 from ..common.probability_distributions import ProbabilityDistribution, CategoricalPd, MultiCategoricalPd, \
     BetaPd, FixedStdGaussianPd, DiagGaussianPd, LinearTanhPd
 from ..common.attr_dict import AttrDict
+from ..config import Linear
 
 
 def assert_shape(x, shape, *args):
@@ -48,7 +49,7 @@ class ActionValuesHead(HeadBase):
         assert isinstance(pd, CategoricalPd)
         self.pd = pd
         self.dueling = dueling
-        self.linear = nn.Linear(in_features, self.pd.prob_vector_len + 1)
+        self.linear = Linear(in_features, self.pd.prob_vector_len + 1)
         self.reset_weights()
 
     def reset_weights(self):
@@ -78,7 +79,7 @@ class PolicyHead(HeadBase):
         """
         super().__init__(in_features)
         self.pd = pd
-        self.linear = nn.Linear(in_features, self.pd.prob_vector_len)
+        self.linear = Linear(in_features, self.pd.prob_vector_len)
         self.reset_weights()
 
     def reset_weights(self):
@@ -103,7 +104,7 @@ class RepeatPolicyHead(HeadBase):
         super().__init__(in_features)
         self.pd = pd
         self.num_repeats = num_repeats
-        self.linear = nn.Linear(in_features, self.pd.prob_vector_len // num_repeats)
+        self.linear = Linear(in_features, self.pd.prob_vector_len // num_repeats)
         self.reset_weights()
 
     def reset_weights(self):
@@ -133,7 +134,7 @@ class StateValueHead(HeadBase):
         super().__init__(in_features)
         self.pd = pd
         self.num_out = num_out
-        self.linear = nn.Linear(in_features, num_out)
+        self.linear = Linear(in_features, num_out)
         self.reset_weights()
 
     def reset_weights(self):

@@ -8,6 +8,7 @@ from .heads import PolicyHead, StateValueHead
 from .norm_factory import NormFactory, BatchNormFactory
 from ..common.probability_distributions import LinearTanhPd, ProbabilityDistribution
 import torch
+from ..config import Linear
 
 
 def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm: NormFactory = None):
@@ -28,7 +29,7 @@ def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm:
     for i in range(len(hidden_sizes)):
         n_in = in_size if i == 0 else hidden_sizes[i - 1]
         n_out = hidden_sizes[i]
-        layer = [nn.Linear(n_in, n_out, bias=norm is None or not norm.disable_bias)]
+        layer = [Linear(n_in, n_out, bias=norm is None or not norm.disable_bias)]
         if norm is not None and norm.allow_fc and (norm.allow_after_first_layer or i != 0):
             layer.append(norm.create_fc_norm(n_out, i == 0))
         layer.append(activation())
@@ -95,7 +96,7 @@ class FCActionFeatureExtractor(FeatureExtractorBase):
         for i in range(len(self.hidden_sizes)):
             n_in = self.pd.input_vector_len + (self.input_size if i == 0 else self.hidden_sizes[i - 1])
             n_out = self.hidden_sizes[i]
-            layer = [nn.Linear(n_in, n_out, bias=norm is None or not norm.disable_bias)]
+            layer = [Linear(n_in, n_out, bias=norm is None or not norm.disable_bias)]
             if norm is not None and norm.allow_fc and (norm.allow_after_first_layer or i != 0):
                 layer.append(norm.create_fc_norm(n_out, i == 0))
             layer.append(self.activation())
