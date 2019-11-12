@@ -121,19 +121,17 @@ class CategoricalPd(ProbabilityDistribution):
 
     def logp(self, a, prob):
         logp = F.log_softmax(prob, dim=-1)
-        return logp.gather(dim=-1, index=a.unsqueeze(-1) if a.dim() == 1 else a)
+        return logp.gather(dim=-1, index=a)
 
     def kl(self, prob0, prob1):
         logp0 = F.log_softmax(prob0, dim=-1)
         logp1 = F.log_softmax(prob1, dim=-1)
         return (logp0.exp() * (logp0 - logp1)).sum(dim=-1, keepdim=True)
 
-    def entropy(self, prob):
-        a = prob - prob.max(dim=-1, keepdim=True)[0]
-        ea = a.exp()
-        z = ea.sum(dim=-1, keepdim=True)
-        po = ea / z
-        return torch.sum(po * (torch.log(z) - a), dim=-1, keepdim=True)
+    def entropy(self, logits):
+        logits = logits - logits.logsumexp(dim=-1, keepdim=True)
+        p_log_p = logits * logits.softmax(-1)
+        return -p_log_p.sum(-1, keepdim=True)
 
     def sample(self, prob):
         return F.softmax(prob.reshape(-1, prob.shape[-1]), dim=-1).multinomial(1).reshape(*prob.shape[:-1], -1)
@@ -170,7 +168,8 @@ class MultiCategoricalPd(ProbabilityDistribution):
 
     def logp(self, all_actions, all_logits):
         split_logits = all_logits.split(self.sizes, -1)
-        all_logp = [pd.logp(a, logits) for pd, logits, a in zip(self.pds, split_logits, all_actions.unbind(-1))]
+        split_actions = all_actions.chunk(len(self.sizes), -1)
+        all_logp = [pd.logp(a, logits) for pd, logits, a in zip(self.pds, split_logits, split_actions)]
         return torch.cat(all_logp, -1)
 
     def kl(self, all_logits0, all_logits1):
@@ -191,7 +190,8 @@ class MultiCategoricalPd(ProbabilityDistribution):
 
     def to_inputs(self, all_actions):
         with torch.no_grad():
-            all_inputs = [pd.to_inputs(action) for pd, action in zip(self.pds, all_actions.unbind(-1))]
+            split_actions = all_actions.chunk(len(self.sizes), -1)
+            all_inputs = [pd.to_inputs(action) for pd, action in zip(self.pds, split_actions)]
             return torch.cat(all_inputs, -1)
 
 
@@ -296,7 +296,7 @@ class DiagGaussianPd(ProbabilityDistribution):
 
 
 class PointCloudPd(ProbabilityDistribution):
-    def __init__(self, d, num_points=16, eps=1e-3):
+    def __init__(self, d, num_points=16, eps=1e-6):
         super().__init__(locals())
         self.d = d
         self.num_points = num_points
@@ -321,10 +321,7 @@ class PointCloudPd(ProbabilityDistribution):
     def logp(self, x, prob):
         mean, std = self._get_mean_std(prob)
         logstd = std.log()
-        nll = 0.5 * ((x - mean) / std).pow(2) + \
-              0.5 * math.log(2.0 * math.pi) * self.d + \
-              logstd
-        return -nll
+        return -0.5 * ((x - mean) / std).pow(2) - logstd - math.log(math.sqrt(2 * math.pi))
 
     def kl(self, prob1, prob2):
         mean1, std1 = self._get_mean_std(prob1)
@@ -335,10 +332,8 @@ class PointCloudPd(ProbabilityDistribution):
 
     def entropy(self, prob):
         prob = self._split_prob(prob)
-        mean = prob.mean(-1)
-        var = prob.var(-1)
-        kld = (var + self.eps).log() - var - mean.pow(2)
-        return kld
+        std = prob.std(-1)
+        return 0.5 + 0.5 * math.log(2 * math.pi) + torch.log(std)
 
     def sample_with_random(self, prob, rand):
         assert rand is None or torch.is_tensor(rand)
@@ -517,10 +512,7 @@ class FixedStdGaussianPd(ProbabilityDistribution):
         std = self.std
         logstd = math.log(self.std)
         assert x.shape == mean.shape
-        nll = 0.5 * ((x - mean) / std).pow(2) + \
-              0.5 * math.log(2.0 * math.pi) * self.d + \
-              logstd
-        return -nll
+        return -((x - mean) ** 2) / (2 * std ** 2) - logstd - math.log(math.sqrt(2 * math.pi))
 
     def kl(self, mean1, mean2):
         logstd1 = math.log(self.std)
@@ -531,9 +523,7 @@ class FixedStdGaussianPd(ProbabilityDistribution):
         return kl
 
     def entropy(self, mean):
-        var = self.std ** 2
-        kld = math.log(var) - var - mean.pow(2)
-        return kld
+        return torch.zeros_like(mean) + 0.5 + 0.5 * math.log(2 * math.pi) + math.log(self.std)
 
     def sample(self, mean):
         return mean + self.std * torch.randn_like(mean)
