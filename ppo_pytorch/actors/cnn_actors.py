@@ -33,6 +33,16 @@ class ChannelShuffle(nn.Module):
         return input[:, Variable(self.indices)].contiguous()
 
 
+def fixup_init(module):
+    with torch.no_grad():
+        res_blocks = [m for m in module.modules() if isinstance(m, ResidualBlock)]
+        res_block_size = len([m for m in res_blocks[0].modules() if isinstance(m, nn.Conv2d)])
+        weight_mul = len(res_blocks) ** (-1.0 / (2.0 * res_block_size - 2.0))
+        for block in res_blocks:
+            for i, conv in enumerate(m for m in block.modules() if isinstance(m, nn.Conv2d)):
+                conv.weight *= 0 if i + 1 == res_block_size else weight_mul
+
+
 class CNNFeatureExtractor(FeatureExtractorBase):
     """
     Convolution network.
@@ -121,6 +131,11 @@ class CNNFeatureExtractor(FeatureExtractorBase):
     @property
     def output_size(self):
         return self.linear[0].out_features
+
+    def reset_weights(self):
+        super().reset_weights()
+        if self.cnn_kind == 'impala':
+            fixup_init(self.convs)
 
     def _make_fc_layer(self, in_features, out_features, first_layer=False):
         bias = self.norm_factory is None or not self.norm_factory.disable_bias or not self.norm_factory.allow_fc
