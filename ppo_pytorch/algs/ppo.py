@@ -73,8 +73,6 @@ class PPO(RLBase):
             When `kl` < `kl_target` it is not applied.
             When `kl` > `kl_target` it is scaled quadratically based on abs(`kl` - `kl_target`)
                 and policy and entropy maximization objectives are disabled.
-        4)  New constraint type which clips raw network output vector instead of action log logits.
-            See 'opt' in `constraint` documentation.
         4)  Several different constraints could be applied at same time.
 
         Args:
@@ -98,8 +96,6 @@ class PPO(RLBase):
                     Controlled by `policy_clip` and `value_clip`,
                 'kl' - KL Divergence based constraint, implementation is very different from PPO paper.
                     Controlled by `kl_target` and `kl_scale`
-                'opt' - clip raw action logits and state-value.
-                    Controlled by `policy_clip` and `value_clip`,
             policy_clip (float): policy clip strength
             value_clip (float): State-value clip strength
             kl_target (float): Desired KL Divergence for 'kl' policy penalty (typically 0.001 to 0.03)
@@ -151,13 +147,18 @@ class PPO(RLBase):
         self.use_pop_art = use_pop_art
         self._first_pop_art_update = True
 
-        assert len(set(self.constraint) - {'clip', 'kl', 'opt', 'mse', 'target'}) == 0
+        assert len(set(self.constraint) - {'clip', 'kl'}) == 0
 
-        if self.model_init_path is None:
-            self._train_model: Actor = model_factory(observation_space, action_space)
-        else:
-            self._train_model: Actor = torch.load(self.model_init_path)
+        self._train_model: Actor = model_factory(observation_space, action_space)
+        self._eval_model: Actor = model_factory(observation_space, action_space)
+        if self.model_init_path is not None:
+            state_dict = torch.load(self.model_init_path)
+            self._train_model.load_state_dict(state_dict, True)
+            self._eval_model.load_state_dict(state_dict, True)
             print(f'loaded model {self.model_init_path}')
+        self._train_model = self._train_model.train().to(self.device_train, non_blocking=True)
+        self._eval_model = self._eval_model.eval().to(self.device_eval, non_blocking=True)
+
         self._optimizer = optimizer_factory(self._train_model.parameters())
         self._lr_scheduler = lr_scheduler_factory(self._optimizer) if lr_scheduler_factory is not None else None
         self._clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
@@ -167,8 +168,6 @@ class PPO(RLBase):
         self._steps_processor = self._create_steps_processor()
         self._train_future: Optional[Future] = None
         self._train_executor = ThreadPoolExecutor(max_workers=1)
-        self._train_model = self._train_model.to(self.device_eval, non_blocking=True).train()
-        self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
     def _step(self, rewards, dones, states) -> torch.Tensor:
         with torch.no_grad():
@@ -225,10 +224,6 @@ class PPO(RLBase):
 
         data = AttrDict(states=data.states, logits_old=data.logits, state_values_old=data.state_values,
                         actions=data.actions, advantages=data.advantages, value_targets=data.value_targets)
-
-        if 'target' in self.constraint:
-            data.logits_target = self._calc_target_logits(
-                data.actions, data.logits_old, data.advantages, self._train_model.heads.logits.pd)
 
         batches = max(1, math.ceil(self.num_actors * self.horizon / self.batch_size))
 
@@ -305,7 +300,7 @@ class PPO(RLBase):
             loss, kl = self._get_ppo_loss(batch, do_log=do_log)
             loss = loss.mean()
         kl = kl.item()
-        if 'kl' not in self.constraint and 'mse' not in self.constraint or kl < 4 * self.kl_target:
+        if 'kl' not in self.constraint or kl < 4 * self.kl_target:
             # optimize
             loss.backward()
             if self.grad_clip_norm is not None:
@@ -334,10 +329,6 @@ class PPO(RLBase):
         value_clip = self.value_clip * self._clip_mult
         policy_clip = self.policy_clip * self._clip_mult
 
-        if 'opt' in self.constraint:
-            logits = opt_clip(logits, logits_old, policy_clip)
-            values = opt_clip(values, values_old, value_clip)
-
         # action probability ratio
         # log probabilities used for better numerical stability
         logp_old = pd.logp(actions, logits_old)
@@ -360,9 +351,6 @@ class PPO(RLBase):
                 clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
             clipped_policy_loss = clipped_ratio * adv_u
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
-        elif 'target' in self.constraint:
-            loss_clip = 0.5 * adv_u.abs() * (logits - batch.logits_target).pow(2).mean(-1)
-            loss_ent = torch.zeros_like(loss_ent)
         else:
             # unclipped loss
             loss_clip = -ratio * adv_u
@@ -375,8 +363,6 @@ class PPO(RLBase):
             loss_kl[small_kl] = 0
             loss_ent[large_kl] = 0
             loss_clip[large_kl] = 0
-        elif 'mse' in self.constraint:
-            loss_kl = self.kl_scale * (logits - logits_old).abs().pow(2.5)
         else:
             loss_kl = kl.new(1).zero_()
 
@@ -413,34 +399,6 @@ class PPO(RLBase):
                 self.logger.add_scalar('loss policy' + tag, loss_clip.mean(), self.frame)
 
         return total_loss, kl.mean()
-
-    def _calc_target_logits(self, actions: torch.Tensor, logits_old: torch.Tensor,
-                            advantages: torch.Tensor, pd: ProbabilityDistribution):
-        lr = 0.1 * self._clip_mult
-        iters = 10
-        kl_limit = 0.01
-
-        logits_target = logits_old.clone()
-        logits_target.requires_grad = True
-        logits_opt = optim.SGD([logits_target], lr)
-        adv_sign_neg = -advantages.sign().unsqueeze(-1)
-
-        for _ in range(iters):
-            with torch.enable_grad():
-                kl = pd.kl(logits_old, logits_target)
-                entropy = pd.entropy(logits_target)
-                loss_pg = adv_sign_neg * pd.logp(actions, logits_target)
-                loss_ent = -self.entropy_loss_scale * entropy
-                loss = (loss_pg.sum(-1) + loss_ent.sum(-1)) * (kl.detach().mean(-1) < kl_limit).float()
-                loss = loss.sum()
-
-            loss.backward()
-            logits_target.grad /= logits_target.grad.pow(2).mean(-1, keepdim=True).sqrt() + 1e-7
-            logits_opt.step()
-            logits_opt.zero_grad()
-
-        logits_target.requires_grad = False
-        return logits_target
 
     def _adjust_kl_scale(self, kl):
         threshold, change, limit = 1.3, 1.2, 1000.0
