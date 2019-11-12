@@ -186,12 +186,12 @@ class CNNFeatureExtractor(FeatureExtractorBase):
         if self.add_positional_features:
             input = self._add_position_features(input)
 
-        x = self._extract_features(input)
+        x = self._extract_features(input, logger)
         x = x.view(x.size(0), -1)
         x = self.linear(x)
 
         if logger is not None:
-            logger.add_histogram('conv linear', x, cur_step)
+            logger.add_histogram('conv activations linear', x, cur_step)
 
         return x
 
