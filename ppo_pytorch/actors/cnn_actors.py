@@ -70,7 +70,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
         self._create_model()
 
     def _create_model(self):
-        input_channels = self.input_shape[0] + 2
+        input_channels = self.input_shape[0] + (2 if self.add_positional_features else 0)
         # create convolutional layers
         if self.cnn_kind == 'normal': # Nature DQN (1,683,456 parameters)
             self.convs = nn.ModuleList([
