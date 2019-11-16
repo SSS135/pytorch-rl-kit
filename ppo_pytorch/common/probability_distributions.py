@@ -661,6 +661,46 @@ class TransactionPd(ProbabilityDistribution):
         return 0.5 * torch.log((1 + x) / (1 - x))
 
 
+class DiscretizedCategoricalPd(ProbabilityDistribution):
+    def __init__(self, d, num_bins, limits=(-1, 1)):
+        super().__init__(locals())
+        self.d = d
+        self.num_bins = num_bins
+        self.limits = limits
+        self.cpd = MultiCategoricalPd((num_bins,) * d)
+
+    @property
+    def prob_vector_len(self):
+        return self.cpd.prob_vector_len
+
+    @property
+    def action_vector_len(self):
+        return self.d
+
+    @property
+    def input_vector_len(self):
+        return self.d
+
+    @property
+    def dtype(self):
+        return torch.float
+
+    def logp(self, action, logits):
+        bin_indexes = (action - self.limits[0]) * ((self.num_bins - 1.0) / (self.limits[1] - self.limits[0]))
+        bin_indexes = bin_indexes.round().long()
+        return self.cpd.logp(bin_indexes, logits)
+
+    def kl(self, logits1, logits2):
+        return self.cpd.kl(logits1, logits2)
+
+    def entropy(self, logits):
+        return self.cpd.entropy(logits)
+
+    def sample(self, logits):
+        bin_indexes = self.cpd.sample(logits)
+        return bin_indexes.float() * ((self.limits[1] - self.limits[0]) / (self.num_bins - 1.0)) + self.limits[0]
+
+
 def test_probtypes():
     np.random.seed(0)
 

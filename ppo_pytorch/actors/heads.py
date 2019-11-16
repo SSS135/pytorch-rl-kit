@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from .utils import normalized_columns_initializer_
 from ..common.probability_distributions import ProbabilityDistribution, CategoricalPd, MultiCategoricalPd, \
-    BetaPd, FixedStdGaussianPd, DiagGaussianPd, LinearTanhPd
+    BetaPd, FixedStdGaussianPd, DiagGaussianPd, LinearTanhPd, DiscretizedCategoricalPd
 from ..common.attr_dict import AttrDict
 from ..config import Linear
 
@@ -88,6 +88,45 @@ class PolicyHead(HeadBase):
 
     def forward(self, x, **kwargs):
         return self.linear(x)
+
+
+class PositionalPolicyHead(HeadBase):
+    """
+    Actor-critic head. Used in PPO / A3C.
+    """
+
+    def __init__(self, in_features, pd: DiscretizedCategoricalPd, num_reduced=32):
+        """
+        Args:
+            in_features: Input feature vector width.
+            pd: Action probability distribution.
+        """
+        super().__init__(in_features)
+        self.pd = pd
+        assert pd.prob_vector_len % pd.d == 0
+        self.linear_final = Linear(num_reduced, pd.d)
+        self.linear_reduce = Linear(in_features, num_reduced)
+        self.pos_embedding = Linear(1, num_reduced)
+        self.reset_weights()
+
+    def reset_weights(self):
+        normalized_columns_initializer_(self.linear_final.weight.data, self.pd.init_column_norm)
+        self.linear_final.bias.data.fill_(0)
+        self.pos_embedding.reset_parameters()
+        self.linear_reduce.reset_parameters()
+
+    def forward(self, x, **kwargs):
+        pos = torch.linspace(-1, 1, self.pd.num_bins, device=x.device).view(-1, 1)
+        pos = self.pos_embedding(pos).sigmoid()
+        x = F.relu(self.linear_reduce(x))
+        x = x.unsqueeze(-2).expand(*x.shape[:-1], self.pd.num_bins, x.shape[-1])
+        # (*, num_bins, features)
+        x = pos * x
+        # (*, num_bins, d)
+        logits = self.linear_final(x)
+        # (*, d * num_bins)
+        logits = logits.transpose(-1, -2).flatten(start_dim=-2)
+        return logits
 
 
 class RepeatPolicyHead(HeadBase):
