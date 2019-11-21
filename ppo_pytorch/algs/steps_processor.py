@@ -1,5 +1,5 @@
 import random
-from typing import Dict
+from typing import Dict, Optional
 
 from ..common.attr_dict import AttrDict
 from ..common.barron_loss import barron_loss_derivative
@@ -15,7 +15,8 @@ class StepsProcessor:
                  reward_scale,
                  mean_norm,
                  barron_alpha_c,
-                 entropy_reward_scale):
+                 entropy_reward_scale,
+                 prev_steps_processor):
         super().__init__()
         self.pd = pd
         self.reward_discount = reward_discount
@@ -25,6 +26,9 @@ class StepsProcessor:
         self.barron_alpha_c = barron_alpha_c
         self.entropy_reward_scale = entropy_reward_scale
         self.data = AttrDict()
+
+        self._advantage_stats = (0, 0, 0) if prev_steps_processor is None else prev_steps_processor._advantage_stats
+        self._advantage_momentum = 0.99
 
     def append_values(self, **new_data: torch.Tensor):
         first_step = 'actions' not in self.data
@@ -74,6 +78,28 @@ class StepsProcessor:
         value_targets = calc_value_targets(norm_rewards, values, dones, self.reward_discount, self.reward_discount)
         advantages = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
 
+        advantages = self._normalize_advantages(advantages, barron_scale)
+
+        return norm_rewards, value_targets, advantages
+
+    def _normalize_advantages(self, advantages, barron_scale):
+        # mean, square, iter = self._advantage_stats
+        # mean = self._advantage_momentum * mean + (1 - self._advantage_momentum) * advantages.mean().item()
+        # square = self._advantage_momentum * square + (1 - self._advantage_momentum) * advantages.pow(2).mean().item()
+        # iter += 1
+        # self._advantage_stats = (mean, square, iter)
+        #
+        # bias_corr = 1 - self._advantage_momentum ** iter
+        # mean = mean / bias_corr
+        # square = square / bias_corr
+        #
+        # if self.mean_norm:
+        #     std = (square - mean ** 2) ** 0.5
+        #     advantages = (advantages - mean) / max(std, 1e-3)
+        # else:
+        #     rms = square ** 0.5
+        #     advantages = advantages / max(rms, 1e-3)
+
         def adv_norm(advantages):
             if self.mean_norm:
                 return (advantages - advantages.mean()) / max(advantages.std(), 1e-4)
@@ -84,6 +110,12 @@ class StepsProcessor:
         if barron_scale:
             advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
             advantages = adv_norm(advantages)
-        advantages.clamp_(-5, 5)
+        advantages.clamp_(-10, 10)
 
-        return norm_rewards, value_targets, advantages
+        # adv_shape = advantages.shape
+        # advantages = advantages.view(-1)
+        # advantages[advantages.argsort()] = torch.linspace(
+        #     -1.7062, 1.7062, advantages.shape[0], dtype=advantages.dtype, device=advantages.device)
+        # advantages = advantages.view(adv_shape)
+
+        return advantages
