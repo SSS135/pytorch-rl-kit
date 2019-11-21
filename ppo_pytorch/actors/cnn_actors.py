@@ -39,8 +39,12 @@ def fixup_init(module):
         res_block_size = len([m for m in res_blocks[0].modules() if isinstance(m, nn.Conv2d)])
         weight_mul = len(res_blocks) ** (-1.0 / (2.0 * res_block_size - 2.0))
         for block in res_blocks:
-            for i, conv in enumerate(m for m in block.modules() if isinstance(m, nn.Conv2d)):
-                conv.weight *= 0 if i + 1 == res_block_size else weight_mul
+            convs = [m for m in block.modules() if isinstance(m, nn.Conv2d)]
+            assert len(convs) == res_block_size
+            for i, conv in enumerate(convs):
+                mult = 0 if i + 1 == res_block_size else weight_mul
+                conv.weight *= mult
+                conv.bias *= mult
 
 
 class CNNFeatureExtractor(FeatureExtractorBase):
@@ -103,31 +107,44 @@ class CNNFeatureExtractor(FeatureExtractorBase):
             ])
             self.linear = self._make_fc_layer(nf * 8 * 4 * 4, 512)
         elif self.cnn_kind == 'impala':
+            c_mult = 4
+            def cnn_norm_fn(num_c):
+                return (self.norm_factory.create_cnn_norm(num_c, False),) \
+                    if self.norm_factory is not None and self.norm_factory.allow_cnn else ()
+            def fc_norm_fn(num_c):
+                return (self.norm_factory.create_fc_norm(num_c, False),) \
+                    if self.norm_factory is not None and self.norm_factory.allow_fc else ()
             def impala_block(c_in, c_out):
                 return nn.Sequential(
                     nn.Conv2d(c_in, c_out, 3, 1, 1),
                     nn.MaxPool2d(3, 2),
                     ResidualBlock(
+                        *cnn_norm_fn(c_out),
                         nn.ReLU(),
                         nn.Conv2d(c_out, c_out, 3, 1, 1),
+                        *cnn_norm_fn(c_out),
                         nn.ReLU(),
                         nn.Conv2d(c_out, c_out, 3, 1, 1),
                     ),
                     ResidualBlock(
+                        *cnn_norm_fn(c_out),
                         nn.ReLU(),
                         nn.Conv2d(c_out, c_out, 3, 1, 1),
+                        *cnn_norm_fn(c_out),
                         nn.ReLU(),
                         nn.Conv2d(c_out, c_out, 3, 1, 1),
                     )
                 )
             self.convs = nn.Sequential(
-                impala_block(input_channels, 16),
-                impala_block(16, 32),
-                impala_block(32, 32),
+                impala_block(input_channels, 16 * c_mult),
+                impala_block(16 * c_mult, 32 * c_mult),
+                impala_block(32 * c_mult, 32 * c_mult),
+                *cnn_norm_fn(32 * c_mult),
                 nn.ReLU(),
             )
             self.linear = nn.Sequential(
-                Linear(2592, 256),
+                Linear(2592 * c_mult, 256),
+                *fc_norm_fn(256),
                 nn.ReLU(),
             )
         else:
