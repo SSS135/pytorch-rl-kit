@@ -1,3 +1,5 @@
+import random
+from enum import Enum
 from functools import partial
 
 import math
@@ -22,50 +24,66 @@ from ..actors.utils import model_diff
 from .utils import v_mpo_loss
 
 
+class LossType(Enum):
+    v_mpo = 'v_mpo'
+    impala = 'impala'
+
+
 class IMPALA(PPO):
     def __init__(self, *args,
-                 replay_buf_size=128 * 1024,
+                 replay_buf_size=256 * 1024,
                  replay_ratio=7,
                  min_replay_size=10000,
-                 vtrace_c_max=1.0,
-                 vtrace_p_max=1.0,
+                 vtrace_max_ratio=2.0,
                  vtrace_kl_limit=0.3,
-                 optimizer_factory=partial(RMSprop, lr=5e-4, eps=0.1),
                  grad_clip_norm=None,
                  eps_nu_alpha=(0.1, 0.005),
-                 init_nu_alpha=(1.0, 5.0),
+                 init_nu_alpha=(1.0, 2.0),
+                 replay_end_sampling_factor=0.01,
+                 eval_model_update_interval=1,
+                 train_horizon=None,
+                 loss_type='impala',
                  **kwargs):
-        super().__init__(*args, optimizer_factory=optimizer_factory,
-                         grad_clip_norm=grad_clip_norm, **kwargs)
+        super().__init__(*args, grad_clip_norm=grad_clip_norm, **kwargs)
         self.replay_buf_size = replay_buf_size
         self.replay_ratio = replay_ratio
-        self.vtrace_c_max = vtrace_c_max
-        self.vtrace_p_max = vtrace_p_max
+        self.vtrace_max_ratio = vtrace_max_ratio
         self.vtrace_kl_limit = vtrace_kl_limit
         self.min_replay_size = min_replay_size
+        self.replay_end_sampling_factor = replay_end_sampling_factor
         self.eps_nu_alpha = eps_nu_alpha
-        self.nu = torch.scalar_tensor(init_nu_alpha[0], requires_grad=True)
-        self.alpha = torch.scalar_tensor(init_nu_alpha[1], requires_grad=True)
-        self._optimizer.add_param_group(dict(params=[self.nu, self.alpha]))
+        self.eval_model_update_interval = eval_model_update_interval
+        self.train_horizon = self.horizon if train_horizon is None else train_horizon
+
+        assert isinstance(loss_type, str) or isinstance(loss_type, list) or isinstance(loss_type, tuple)
+        self.loss_type = (loss_type,) if isinstance(loss_type, str) else loss_type
+        self.loss_type = [LossType[c] for c in self.loss_type]
+        assert len(set(self.loss_type) - set(c for c in LossType)) == 0
+
+        self.nu_data = torch.scalar_tensor(init_nu_alpha[0], requires_grad=True)
+        self.alpha_data = torch.scalar_tensor(init_nu_alpha[1], requires_grad=True)
+        self._optimizer.add_param_group(dict(params=[self.nu_data, self.alpha_data]))
 
         # DataLoader limitation
-        assert self.batch_size % self.horizon == 0, (self.batch_size, self.horizon)
+        assert self.batch_size % self.train_horizon == 0 and self.horizon % self.train_horizon == 0, (self.batch_size, self.horizon)
 
         del self._steps_processor
 
         self._replay_buffer = ReplayBuffer(replay_buf_size)
         self._prev_data = None
         self._eval_steps = 0
+        self._eval_no_copy_updates = 0
+
         # self._advantage_stats = (0, 0, 0)
         # self._advantage_momentum = 0.99
 
-        # self.eval_model_update_interval = 10
-        # self._eval_no_copy_updates = 0
-        # self.eps_nu = 0.1
-        # self.eps_alpha = 0.005
-        # self.nu = torch.scalar_tensor(1.0, device=self.device_train, requires_grad=True)
-        # self.alpha = torch.scalar_tensor(5.0, device=self.device_train, requires_grad=True)
-        # self._optimizer.add_param_group(dict(params=[self.nu, self.alpha]))
+    @property
+    def nu(self):
+        return (self.nu_data + 0.1) ** 2
+
+    @property
+    def alpha(self):
+        return (self.alpha_data + 0.1) ** 2
 
     def _step(self, rewards, dones, states) -> torch.Tensor:
         with torch.no_grad():
@@ -107,10 +125,13 @@ class IMPALA(PPO):
         # rand_samples = self._replay_buffer.sample(rand_actors, self.horizon + 1)
         # return AttrDict(rand_samples)
 
-        last_samples = self._replay_buffer.get_last_samples(self.horizon + 1)
+        h_reduce = self.horizon // self.train_horizon
+        last_samples = self._replay_buffer.get_last_samples(self.horizon)
+        last_samples = {k: v.reshape(v.shape[0] // h_reduce, v.shape[1] * h_reduce, *v.shape[2:]) for k, v in last_samples.items()}
         if self.replay_ratio != 0 and len(self._replay_buffer) >= \
-                max((self.horizon + 1) * self.num_actors * max(1, self.replay_ratio), self.min_replay_size):
-            rand_samples = self._replay_buffer.sample(self.num_actors * self.replay_ratio, self.horizon + 1)
+                max(self.horizon * self.num_actors * max(1, self.replay_ratio), self.min_replay_size):
+            num_rollouts = self.num_actors * self.replay_ratio * h_reduce
+            rand_samples = self._replay_buffer.sample(num_rollouts, self.train_horizon, self.replay_end_sampling_factor)
             return AttrDict({k: torch.cat([v1, v2], 1) for (k, v1), v2 in zip(rand_samples.items(), last_samples.values())})
         else:
             return AttrDict(last_samples)
@@ -119,14 +140,14 @@ class IMPALA(PPO):
         if self.use_pop_art:
             self._train_model.heads.state_values.normalize(*self._pop_art.statistics)
 
-        num_samples = (data.states.shape[0] - 1) * data.states.shape[1]
+        num_samples = data.states.shape[0] * data.states.shape[1]
         num_rollouts = data.states.shape[1]
 
         data = AttrDict(states=data.states, logits_old=data.logits,
                         actions=data.actions, rewards=data.rewards, dones=data.dones)
 
         num_batches = num_samples // self.batch_size
-        rand_idx = torch.randperm(num_rollouts, device=self.device_train).chunk(num_batches)
+        rand_idx = torch.arange(num_rollouts, device=self.device_train).chunk(num_batches)
         assert len(rand_idx) == num_batches
 
         old_model = deepcopy(self._train_model)
@@ -166,12 +187,12 @@ class IMPALA(PPO):
         # self._adjust_kl_scale(kl)
         NoisyLinear.randomize_network(self._train_model)
 
-        self._copy_parameters(self._train_model, self._eval_model)
+        # self._copy_parameters(self._train_model, self._eval_model)
         # blend_models(self._train_model, self._eval_model, self.eval_model_blend)
-        # self._eval_no_copy_updates += 1
-        # if self._eval_no_copy_updates > self.eval_model_update_interval:
-        #     self._eval_no_copy_updates = 0
-        #     self._copy_parameters(self._train_model, self._eval_model)
+        self._eval_no_copy_updates += 1
+        if self._eval_no_copy_updates >= self.eval_model_update_interval:
+            self._eval_no_copy_updates = 0
+            self._copy_parameters(self._train_model, self._eval_model)
 
     def _impala_step(self, batch, do_log):
         with torch.enable_grad():
@@ -199,16 +220,13 @@ class IMPALA(PPO):
 
         # optimize
         loss.backward()
-        # for n, p in self._train_model.named_parameters():
-        #     if p.grad is not None and (torch.isnan(p.grad.sum()) or torch.isinf(p.grad.sum())):
-        #         print(n, p, p.grad)
         if self.grad_clip_norm is not None:
             clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
         self._optimizer.step()
         self._optimizer.zero_grad()
 
-        self.nu.clamp_(min=1e-8)
-        self.alpha.clamp_(min=1e-8)
+        self.nu_data.clamp_(min=1e-8)
+        self.alpha_data.clamp_(min=1e-8)
 
         return loss, kl
 
@@ -227,10 +245,11 @@ class IMPALA(PPO):
 
         # action probability ratio
         # log probabilities used for better numerical stability
-        data.old_logp = pd.logp(data.actions, data.logits_old)
-        data.logp = pd.logp(data.actions, data.logits)
-        data.probs_ratio = (data.logp - data.old_logp).detach().mean(-1).exp()
-        data.kl = kl = pd.kl(data.logits_old, data.logits)
+        data.logp_old = pd.logp(data.actions, data.logits_old).sum(-1)
+        data.logp_policy = pd.logp(data.actions, data.logits_policy).sum(-1)
+        data.logp = pd.logp(data.actions, data.logits).sum(-1)
+        data.probs_ratio = (data.logp.detach() - data.logp_old).exp()
+        data.kl = pd.kl(data.logits_old, data.logits).sum(-1)
 
         with torch.no_grad():
             self._process_rewards(data)
@@ -238,39 +257,19 @@ class IMPALA(PPO):
 
         data = AttrDict({k: v.flatten(end_dim=1) for k, v in data.items()})
 
-        # print(f'kl {data.kl.shape}, logp {data.logp.shape}, old_logp {data.old_logp.shape}, '
-        #       f'ratio {data.probs_ratio.shape}, adv {data.advantages.shape}, '
-        #       f'values {data.state_values.shape}, targets {data.value_targets.shape}')
-
-        kl_policy = pd.kl(data.logits_policy, data.logits)
-        loss_policy, loss_nu, loss_alpha = v_mpo_loss(
-            kl_policy, data.logp, data.advantages, self.nu, self.alpha, *self.eps_nu_alpha)
-
-        # adv_clamp = data.advantages.clamp(-10, 10)
-        # top_mask = adv_clamp >= adv_clamp.median()
-        # top_advantages = adv_clamp[top_mask]
-        # exp_top_advantages = top_advantages.div(self.nu).exp()
-        # max_adv = adv_clamp.max()
-        # softmax = adv_clamp.sub(max_adv).div(self.nu).exp().unsqueeze(-1) / \
-        #           top_advantages.sub(max_adv).div(self.nu).exp().sum()
-        # loss_policy = (softmax.detach() * -data.logp).mean(-1) * top_mask.float()
-        # loss_nu = self.nu * self.eps_nu + self.nu * exp_top_advantages.mean().log()
-        # loss_alpha = self.alpha * (self.eps_alpha - kl_policy.detach()) + self.alpha.detach() * kl_policy
-
-        # for k, v in locals().items():
-        #     if isinstance(v, torch.Tensor) and (torch.isnan(v.sum()) or torch.isinf(v.sum())):
-        #         print(k, v)
-        #         print('ac', adv_clamp, 'eta', exp_top_advantages, 'ta', top_advantages, 'tm', top_mask)
-
-
-        # print(f'kl_policy {kl_policy.shape}, top_mask {top_mask.shape}, top_adv {top_advantages.shape}, '
-        #       f'exp_top_adv {exp_top_advantages.shape}, '
-        #       f'loss_policy {loss_policy.shape}, loss_nu {loss_nu.shape}, loss_alpha {loss_alpha.shape}')
-        #
-        # print(exp_top_advantages.div(exp_top_advantages.sum()).shape, data.logp[top_mask.unsqueeze(-1)].shape)
+        kl_policy = pd.kl(data.logits_policy, data.logits).sum(-1)
+        if LossType.v_mpo in self.loss_type:
+            loss_policy, loss_nu, loss_alpha = v_mpo_loss(
+                kl_policy, data.logp, data.advantages,
+                self.nu, self.alpha, *self.eps_nu_alpha)
+            loss_policy = loss_policy + loss_nu + loss_alpha
+        elif LossType.impala in self.loss_type:
+            loss_alpha = self.alpha * (self.eps_nu_alpha[1] - kl_policy.detach()) + self.alpha.detach() * kl_policy
+            loss_policy = -data.logp * data.advantages
+            loss_policy = loss_policy.mean() + loss_alpha.mean()
 
         # adv_u = data.advantages.unsqueeze(-1)
-        entropy = pd.entropy(data.logits)
+        entropy = pd.entropy(data.logits).sum(-1)
         # loss_ent = self.entropy_loss_scale * -entropy
         # loss_policy = -data.logp * adv_u
         loss_value = self.value_loss_scale * barron_loss(data.state_values, data.value_targets, *self.barron_alpha_c, reduce=False)
@@ -290,10 +289,8 @@ class IMPALA(PPO):
         # loss_kl = loss_kl.mean()
         loss_value = loss_value.mean()
 
-        assert loss_policy.shape == loss_value.shape == loss_nu.shape == loss_alpha.shape
-
         # sum all losses
-        total_loss = loss_policy + loss_value + loss_nu + loss_alpha #+ loss_ent + loss_kl
+        total_loss = loss_policy + loss_value #+ loss_ent + loss_kl
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_policy.mean().item(), loss_value.mean().item())
 
@@ -305,15 +302,16 @@ class IMPALA(PPO):
                 self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame)
                 # self.logger.add_scalar('loss entropy' + tag, loss_ent.mean(), self.frame)
                 self.logger.add_scalar('loss state value' + tag, loss_value.mean(), self.frame)
-                self.logger.add_scalar('loss nu' + tag, loss_nu, self.frame)
-                self.logger.add_scalar('loss alpha' + tag, loss_alpha, self.frame)
-                ratio = (data.logp - data.old_logp).mean(-1)
+                if LossType.v_mpo is self.loss_type:
+                    self.logger.add_scalar('loss nu' + tag, loss_nu, self.frame)
+                    self.logger.add_scalar('loss alpha' + tag, loss_alpha, self.frame)
+                ratio = (data.logp - data.logp_policy).exp() - 1
                 self.logger.add_histogram('ratio hist' + tag, ratio, self.frame)
                 self.logger.add_scalar('ratio mean' + tag, ratio.mean(), self.frame)
                 self.logger.add_scalar('ratio abs mean' + tag, ratio.abs().mean(), self.frame)
                 self.logger.add_scalar('ratio abs max' + tag, ratio.abs().max(), self.frame)
 
-        return total_loss, kl.mean()
+        return total_loss, kl_policy.mean()
 
     def _process_rewards(self, data, mean_norm=True):
         norm_rewards = self.reward_scale * data.rewards
@@ -325,29 +323,16 @@ class IMPALA(PPO):
         # calculate value targets and advantages
         value_targets, advantages = calc_vtrace(
             norm_rewards, state_values,
-            data.dones, data.probs_ratio.detach(), data.kl.detach().sum(-1) / data.kl.shape[-1] ** 0.5,
-            self.reward_discount, self.vtrace_c_max, self.vtrace_p_max, self.vtrace_kl_limit)
+            data.dones, data.probs_ratio.detach(), data.kl.detach(),
+            self.reward_discount, self.vtrace_max_ratio, self.vtrace_kl_limit)
 
         if self.use_pop_art:
             value_targets = (value_targets - pa_mean) / pa_std
 
-        # mean, square, iter = self._advantage_stats
-        # mean = self._advantage_momentum * mean + (1 - self._advantage_momentum) * advantages.mean().item()
-        # square = self._advantage_momentum * square + (1 - self._advantage_momentum) * advantages.pow(2).mean().item()
-        # iter += 1
-        # self._advantage_stats = (mean, square, iter)
-        #
-        # bias_corr = 1 - self._advantage_momentum ** iter
-        # mean = mean / bias_corr
-        # square = square / bias_corr
-        #
-        # # if mean_norm:
-        # #     std = (square - mean ** 2) ** 0.5
-        # #     advantages = (advantages - mean) / max(std, 1e-3)
-        # # else:
-        # rms = square ** 0.5
-        # advantages = advantages / max(rms, 1e-3)
-        # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
+        # if LossType.impala is self.loss_type:
+        #     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
+        #     advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
+        #     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
 
         data.value_targets, data.advantages, data.rewards = value_targets, advantages, norm_rewards
 

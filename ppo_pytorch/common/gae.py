@@ -94,7 +94,7 @@ def calc_value_targets(rewards: torch.Tensor, values: torch.Tensor, dones: torch
 @torch.jit.script
 def calc_vtrace(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor,
                 probs_ratio: torch.Tensor, kl_div: torch.Tensor,
-                discount: float, c_max: float = 1.0, p_max: float = 1.0, kl_limit: float = 0.3
+                discount: float, max_ratio: float = 2.0, kl_limit: float = 0.3
                 ) -> Tuple[torch.Tensor, torch.Tensor]:
     _check_data(rewards, values, dones)
     assert probs_ratio.shape == rewards.shape == kl_div.shape, (probs_ratio.shape, rewards.shape, kl_div.shape)
@@ -104,15 +104,22 @@ def calc_vtrace(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor
     # min_kl = 0.003
     # max_kl = 0.1
     # probs_ratio = 1 - (kl_div.sub(min_kl).clamp(0, max_kl - min_kl) * temp + 1).log() / math.log((max_kl - min_kl) * temp + 1)
-    probs_ratio_kl = probs_ratio * (kl_div < kl_limit).float()
+    # probs_ratio = probs_ratio * (kl_div < kl_limit).float()
+    # prob = logp.exp() / 0.25
+    # probs_ratio = prob #/ prob.median()
+    probs_ratio = probs_ratio.clamp_max(max_ratio) * (1.0 - (kl_div / kl_limit).clamp_max(1))
     # if random.randrange(5000) == 0:
     #     print(f'0.03: {(kl_div < 0.03).float().mean()}, '
     #           f'0.1: {(kl_div < 0.1).float().mean()}, '
     #           f'0.3: {(kl_div < 0.3).float().mean()}, '
     #           f'1.0: {(kl_div < 1.0).float().mean()}, '
     #           f'3.0: {(kl_div < 3.0).float().mean()}')
-    c = probs_ratio_kl.clamp(0, c_max)
-    p = probs_ratio_kl.clamp(0, p_max)
+    # probs_ratio = probs_ratio.clamp(0, max_ratio)
+    for i_inv in range(probs_ratio.shape[0] - 1):
+        i = probs_ratio.shape[0] - 2 - i_inv
+        probs_ratio[i] *= probs_ratio[i + 1].clamp(1.0, max_ratio)
+    c = probs_ratio.clamp(0, 1.0)
+    p = probs_ratio.clamp(0, 1.0)
     nonterminal = 1 - dones
     deltas = p * (rewards + nonterminal * discount * values[1:] - values[:-1])
     vs_minus_v_xs = torch.zeros_like(values)
@@ -121,8 +128,8 @@ def calc_vtrace(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor
         vs_minus_v_xs[i] = deltas[i] + nonterminal[i] * discount * c[i] * vs_minus_v_xs[i + 1]
     value_targets = vs_minus_v_xs + values
     advantages_vtrace = p * (rewards + nonterminal * discount * value_targets[1:] - values[:-1])
-    advantages_upgo = probs_ratio.clamp(0, p_max) * (calc_value_targets(rewards, values, dones, discount, upgo=True) - values[:-1])
-    advantages = advantages_vtrace + advantages_upgo
+    # advantages_upgo = probs_ratio.clamp(0, p_max) * (calc_value_targets(rewards, values, dones, discount, upgo=True) - values[:-1])
+    advantages = advantages_vtrace #+ advantages_upgo
 
     assert value_targets.shape == values.shape, (value_targets.shape, values.shape)
     assert advantages.shape == rewards.shape, (advantages.shape, rewards.shape)
