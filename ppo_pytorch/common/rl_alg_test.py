@@ -2,6 +2,7 @@ import copy
 import itertools
 import pprint
 import random
+import subprocess
 from collections import namedtuple
 from functools import partial
 from multiprocessing.pool import ThreadPool
@@ -9,8 +10,15 @@ from typing import Dict
 
 from sklearn.model_selection import ParameterGrid
 from torch.multiprocessing import Pool
+from pathlib import Path
 
 from . import EnvTrainer
+
+
+def save_git_diff(save_folder, tag, repo_path):
+    diff = subprocess.check_output('git diff', cwd=repo_path)
+    with open(f'{save_folder}/{Path(repo_path).name}_{tag}.diff', 'wb') as file:
+        file.write(diff)
 
 
 def rl_alg_test(hyper_params: Dict[str, list] or list, wrap_params: dict, alg_class: type, alg_params: dict, env_factory,

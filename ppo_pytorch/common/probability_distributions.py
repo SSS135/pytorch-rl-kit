@@ -26,6 +26,7 @@ def make_pd(space: gym.Space):
         # return DiagGaussianPd(space.shape[0])
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
         # return PointCloudPd(space.shape[0])
+        # return DiscretizedCategoricalPd(space.shape[0], 5)
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     elif isinstance(space, gym.spaces.MultiDiscrete):

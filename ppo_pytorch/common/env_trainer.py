@@ -15,7 +15,7 @@ class EnvTrainer:
                  rl_alg_factory: Callable[..., RLBase],
                  env_factory: Callable[[], NamedVecEnv],
                  log_root_path: str,
-                 log_interval: int = 10 * 1024,
+                 log_interval: int = 10000,
                  alg_name: str = 'RL',
                  tag: str = ''):
         """
