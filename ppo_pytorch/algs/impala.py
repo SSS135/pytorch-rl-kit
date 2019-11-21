@@ -36,6 +36,7 @@ class IMPALA(PPO):
                  min_replay_size=10000,
                  vtrace_max_ratio=2.0,
                  vtrace_kl_limit=0.3,
+                 upgo_scale=0.2,
                  grad_clip_norm=None,
                  eps_nu_alpha=(0.1, 0.005),
                  init_nu_alpha=(1.0, 2.0),
@@ -49,6 +50,7 @@ class IMPALA(PPO):
         self.replay_ratio = replay_ratio
         self.vtrace_max_ratio = vtrace_max_ratio
         self.vtrace_kl_limit = vtrace_kl_limit
+        self.upgo_scale = upgo_scale
         self.min_replay_size = min_replay_size
         self.replay_end_sampling_factor = replay_end_sampling_factor
         self.eps_nu_alpha = eps_nu_alpha
@@ -257,14 +259,15 @@ class IMPALA(PPO):
 
         data = AttrDict({k: v.flatten(end_dim=1) for k, v in data.items()})
 
+        eps_nu, eps_alpha = self.eps_nu_alpha
         kl_policy = pd.kl(data.logits_policy, data.logits).sum(-1)
         if LossType.v_mpo in self.loss_type:
             loss_policy, loss_nu, loss_alpha = v_mpo_loss(
-                kl_policy, data.logp, data.advantages,
-                self.nu, self.alpha, *self.eps_nu_alpha)
+                kl_policy, data.logp, data.advantages, data.advantages_upgo, data.vtrace_p,
+                self.nu, self.alpha, eps_nu, eps_alpha)
             loss_policy = loss_policy + loss_nu + loss_alpha
         elif LossType.impala in self.loss_type:
-            loss_alpha = self.alpha * (self.eps_nu_alpha[1] - kl_policy.detach()) + self.alpha.detach() * kl_policy
+            loss_alpha = self.alpha * (eps_alpha - kl_policy.detach()) + self.alpha.detach() * kl_policy
             loss_policy = -data.logp * data.advantages
             loss_policy = loss_policy.mean() + loss_alpha.mean()
 
@@ -321,7 +324,7 @@ class IMPALA(PPO):
 
         state_values = data.state_values.detach() * pa_std + pa_mean if self.use_pop_art else data.state_values.detach()
         # calculate value targets and advantages
-        value_targets, advantages = calc_vtrace(
+        value_targets, advantages, advantages_upgo, p = calc_vtrace(
             norm_rewards, state_values,
             data.dones, data.probs_ratio.detach(), data.kl.detach(),
             self.reward_discount, self.vtrace_max_ratio, self.vtrace_kl_limit)
@@ -334,6 +337,7 @@ class IMPALA(PPO):
         #     advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
         #     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
 
+        data.vtrace_p, data.advantages_upgo = p, self.upgo_scale * advantages_upgo
         data.value_targets, data.advantages, data.rewards = value_targets, advantages, norm_rewards
 
     def drop_collected_steps(self):
