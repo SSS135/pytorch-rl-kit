@@ -1,15 +1,18 @@
 from asyncio import Future
 from concurrent.futures import ThreadPoolExecutor
-from typing import List
+from typing import List, Dict, Callable
+import torch
 
 
 class DataLoader:
-    def __init__(self, data, chunks, device, num_threads, dim=0):
+    def __init__(self, data: Dict[str, torch.Tensor], chunks: List[torch.Tensor], device: torch.device,
+                 num_threads: int, dim: int = 0, chunk_fn: Callable[[str, torch.Tensor], torch.Tensor] = None):
         self.data = data
         self.chunks = chunks
         self.device = device
         self.num_threads = num_threads
         self.dim = dim
+        self.chunk_fn = chunk_fn
         self._chunk_index = 0
         self._executor = ThreadPoolExecutor(max_workers=num_threads)
         self._futures: List[Future] = []
@@ -39,10 +42,12 @@ class DataLoader:
         chunk = self.chunks[index]
         chunk = *([slice(None)] * self.dim), chunk
 
-        def extract_chunk(x):
-            return x[chunk] if x.device == self.device else x[chunk].to(self.device)
+        def extract_chunk(name, x):
+            x = x[chunk]
+            if self.chunk_fn is not None:
+                x = self.chunk_fn(name, x)
+            if x.device != self.device:
+                x = x.to(self.device)
+            return x
 
-        if isinstance(self.data, dict):
-            return {k: extract_chunk(v) for k, v in self.data.items()}
-        else:
-            return [extract_chunk(x) for x in self.data]
+        return {k: extract_chunk(k, v) for k, v in self.data.items()}
