@@ -34,8 +34,8 @@ class LambdaNormFactory(NormFactory):
 
 
 class GroupNormFactory(NormFactory):
-    def __init__(self, group_size=16, allow_after_first_layer=False, *args, **kwargs):
-        super().__init__(allow_after_first_layer, *args, **kwargs)
+    def __init__(self, group_size=8, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.group_size = group_size
 
     def _fc_factory(self, num_features):
