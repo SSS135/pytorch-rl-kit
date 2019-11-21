@@ -35,10 +35,12 @@ class ReplayBuffer:
             self._index = 0
             self._full_loop = True
 
-    def sample(self, rollouts, horizon):
+    def sample(self, rollouts, horizon, end_sampling_factor=1.0):
+        nu = end_sampling_factor ** (1 / rollouts)
         samples = defaultdict(list)
         for r in range(rollouts):
-            start = random.randrange(0, max(1, self._len_horizon - horizon))
+            start = random.randrange(0, max(1, int((self._len_horizon - horizon) * nu ** r)))
+            start = (self._index - horizon - start) % (self._len_horizon - horizon)
             actor = random.randrange(0, self._num_actors)
             for name, value in self._data.items():
                 samples[name].append(self._data[name][start:start + horizon, actor])
