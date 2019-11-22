@@ -278,7 +278,7 @@ class IMPALA(PPO):
 
         # adv_u = data.advantages.unsqueeze(-1)
         entropy = pd.entropy(data.logits).sum(-1)
-        # loss_ent = self.entropy_loss_scale * -entropy
+        loss_ent = self.entropy_loss_scale * -entropy
         # loss_policy = -data.logp * adv_u
         loss_value = self.value_loss_scale * barron_loss(data.state_values, data.value_targets, *self.barron_alpha_c, reduce=False)
         # loss_kl = self.kl_scale * kl
@@ -290,7 +290,7 @@ class IMPALA(PPO):
         # assert loss_nu.shape == (), loss_nu.shape
         # assert loss_alpha.shape == (*loss_policy.shape, data.kl.shape[-1]), (loss_alpha.shape, loss_policy.shape)
         #
-        # # loss_ent = loss_ent.mean()
+        loss_ent = loss_ent.mean()
         # loss_policy = loss_policy.sum()
         # loss_nu = loss_nu.mean()
         # loss_alpha = loss_alpha.mean()
@@ -298,7 +298,7 @@ class IMPALA(PPO):
         loss_value = loss_value.mean()
 
         # sum all losses
-        total_loss = loss_policy + loss_value #+ loss_ent + loss_kl
+        total_loss = loss_policy + loss_value + loss_ent #+ loss_kl
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_policy.mean().item(), loss_value.mean().item())
 
