@@ -21,7 +21,7 @@ from ..common.barron_loss import barron_loss_derivative, barron_loss
 from ..common.data_loader import DataLoader
 from ..common.gae import calc_vtrace, calc_advantages, calc_value_targets
 from ..actors.utils import model_diff
-from .utils import v_mpo_loss
+from .utils import v_mpo_loss, RunningNorm, scaled_impala_loss
 
 
 class LossType(Enum):
@@ -39,7 +39,7 @@ class IMPALA(PPO):
                  upgo_scale=0.2,
                  grad_clip_norm=None,
                  eps_nu_alpha=(0.1, 0.005),
-                 init_nu_alpha=(1.0, 2.0),
+                 init_nu_alpha=(1.0, 5.0),
                  replay_end_sampling_factor=0.01,
                  eval_model_update_interval=1,
                  train_horizon=None,
@@ -62,8 +62,8 @@ class IMPALA(PPO):
         self.loss_type = [LossType[c] for c in self.loss_type]
         assert len(set(self.loss_type) - set(c for c in LossType)) == 0
 
-        self.nu_data = torch.scalar_tensor(init_nu_alpha[0], requires_grad=True)
-        self.alpha_data = torch.scalar_tensor(init_nu_alpha[1], requires_grad=True)
+        self.nu_data = torch.scalar_tensor(init_nu_alpha[0] ** 0.5, requires_grad=True)
+        self.alpha_data = torch.scalar_tensor(init_nu_alpha[1] ** 0.5, requires_grad=True)
         self._optimizer.add_param_group(dict(params=[self.nu_data, self.alpha_data]))
 
         # DataLoader limitation
@@ -75,17 +75,17 @@ class IMPALA(PPO):
         self._prev_data = None
         self._eval_steps = 0
         self._eval_no_copy_updates = 0
-
-        # self._advantage_stats = (0, 0, 0)
-        # self._advantage_momentum = 0.99
+        self._adv_norm = RunningNorm()
 
     @property
     def nu(self):
-        return (self.nu_data + 0.1) ** 2
+        sum_sq = (self.nu_data + 1.0) ** 2
+        return sum_sq - (sum_sq - self.nu_data ** 2).detach()
 
     @property
     def alpha(self):
-        return (self.alpha_data + 0.1) ** 2
+        sum_sq = (self.alpha_data + 1.0) ** 2
+        return sum_sq - (sum_sq - self.alpha_data ** 2).detach()
 
     def _step(self, rewards, dones, states) -> torch.Tensor:
         with torch.no_grad():
@@ -267,9 +267,14 @@ class IMPALA(PPO):
                 self.nu, self.alpha, eps_nu, eps_alpha)
             loss_policy = loss_policy + loss_nu + loss_alpha
         elif LossType.impala in self.loss_type:
-            loss_alpha = self.alpha * (eps_alpha - kl_policy.detach()) + self.alpha.detach() * kl_policy
-            loss_policy = -data.logp * data.advantages
-            loss_policy = loss_policy.mean() + loss_alpha.mean()
+            loss_policy, loss_nu, loss_alpha = scaled_impala_loss(
+                kl_policy, data.logp, data.advantages, data.advantages_upgo, data.vtrace_p,
+                self.nu, self.alpha, eps_nu, eps_alpha)
+            loss_policy = loss_policy + loss_nu + loss_alpha
+
+            # loss_alpha = self.alpha * (eps_alpha - kl_policy.detach()) + self.alpha.detach() * kl_policy
+            # loss_policy = -data.logp * data.advantages
+            # loss_policy = loss_policy.mean() + loss_alpha.mean()
 
         # adv_u = data.advantages.unsqueeze(-1)
         entropy = pd.entropy(data.logits).sum(-1)
@@ -331,11 +336,16 @@ class IMPALA(PPO):
 
         if self.use_pop_art:
             value_targets = (value_targets - pa_mean) / pa_std
+            advantages /= pa_std
+            advantages_upgo /= pa_std
+
+        # advantages = self._adv_norm(advantages)
+        # advantages_upgo = self._adv_norm(advantages_upgo, update_stats=False)
 
         # if LossType.impala is self.loss_type:
         #     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
-        #     advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
-        #     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
+        #     # advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
+        #     # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
 
         data.vtrace_p, data.advantages_upgo = p, self.upgo_scale * advantages_upgo
         data.value_targets, data.advantages, data.rewards = value_targets, advantages, norm_rewards

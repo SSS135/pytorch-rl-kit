@@ -115,7 +115,6 @@ def calc_vtrace(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor
     value_targets = vs_minus_v_xs + values
     advantages_vtrace = rewards + nonterminal * discount * value_targets[1:] - values[:-1]
     advantages_upgo = calc_value_targets(rewards, values, dones, discount, upgo=True) - values[:-1]
-    # advantages = advantages_vtrace + advantages_upgo
 
     assert value_targets.shape == values.shape, (value_targets.shape, values.shape)
     assert advantages_vtrace.shape == advantages_upgo.shape == rewards.shape, (advantages_vtrace.shape, rewards.shape)
