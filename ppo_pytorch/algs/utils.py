@@ -77,19 +77,19 @@ class RunningNorm:
     def __init__(self, momentum=0.99, mean_norm=True):
         self.momentum = momentum
         self.mean_norm = mean_norm
-        self._stats = (0, 0, 0)
+        self._mean = 0
+        self._square = 0
+        self._iter = 0
 
     def __call__(self, values, update_stats=True):
-        mean, square, iter = self._stats
         if update_stats:
-            mean = self.momentum * mean + (1 - self.momentum) * values.mean().item()
-            square = self.momentum * square + (1 - self.momentum) * values.pow(2).mean().item()
-            iter += 1
-            self._stats = (mean, square, iter)
+            self._mean = self.momentum * self._mean + (1 - self.momentum) * values.mean().item()
+            self._square = self.momentum * self._square + (1 - self.momentum) * values.pow(2).mean().item()
+            self._iter += 1
 
-        bias_corr = 1 - self.momentum ** iter
-        mean = mean / bias_corr
-        square = square / bias_corr
+        bias_corr = 1 - self.momentum ** self._iter
+        mean = self._mean / bias_corr
+        square = self._square / bias_corr
 
         if self.mean_norm:
             std = (square - mean ** 2) ** 0.5

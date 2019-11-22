@@ -35,12 +35,12 @@ class IMPALA(PPO):
                  replay_ratio=7,
                  min_replay_size=10000,
                  vtrace_max_ratio=2.0,
-                 vtrace_kl_limit=0.3,
+                 vtrace_kl_limit=0.2,
                  upgo_scale=0.2,
                  grad_clip_norm=None,
-                 eps_nu_alpha=(0.1, 0.005),
+                 eps_nu_alpha=(0.1, 0.005), # (1.7639, 0.005)
                  init_nu_alpha=(1.0, 5.0),
-                 replay_end_sampling_factor=0.01,
+                 replay_end_sampling_factor=0.1,
                  eval_model_update_interval=1,
                  train_horizon=None,
                  loss_type='impala',
@@ -75,7 +75,7 @@ class IMPALA(PPO):
         self._prev_data = None
         self._eval_steps = 0
         self._eval_no_copy_updates = 0
-        self._adv_norm = RunningNorm()
+        self._adv_norm = RunningNorm(False)
 
     @property
     def nu(self):
@@ -278,7 +278,7 @@ class IMPALA(PPO):
 
         # adv_u = data.advantages.unsqueeze(-1)
         entropy = pd.entropy(data.logits).sum(-1)
-        loss_ent = self.entropy_loss_scale * -entropy
+        # loss_ent = self.entropy_loss_scale * -entropy
         # loss_policy = -data.logp * adv_u
         loss_value = self.value_loss_scale * barron_loss(data.state_values, data.value_targets, *self.barron_alpha_c, reduce=False)
         # loss_kl = self.kl_scale * kl
@@ -290,7 +290,7 @@ class IMPALA(PPO):
         # assert loss_nu.shape == (), loss_nu.shape
         # assert loss_alpha.shape == (*loss_policy.shape, data.kl.shape[-1]), (loss_alpha.shape, loss_policy.shape)
         #
-        loss_ent = loss_ent.mean()
+        # loss_ent = loss_ent.mean()
         # loss_policy = loss_policy.sum()
         # loss_nu = loss_nu.mean()
         # loss_alpha = loss_alpha.mean()
@@ -298,7 +298,7 @@ class IMPALA(PPO):
         loss_value = loss_value.mean()
 
         # sum all losses
-        total_loss = loss_policy + loss_value + loss_ent #+ loss_kl
+        total_loss = loss_policy + loss_value #+ loss_ent #+ loss_kl
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_policy.mean().item(), loss_value.mean().item())
 
@@ -339,8 +339,8 @@ class IMPALA(PPO):
             advantages /= pa_std
             advantages_upgo /= pa_std
 
-        # advantages = self._adv_norm(advantages)
-        # advantages_upgo = self._adv_norm(advantages_upgo, update_stats=False)
+        advantages = self._adv_norm(advantages)
+        advantages_upgo = self._adv_norm(advantages_upgo, update_stats=False)
 
         # if LossType.impala is self.loss_type:
         #     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)

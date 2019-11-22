@@ -27,9 +27,6 @@ class StepsProcessor:
         self.entropy_reward_scale = entropy_reward_scale
         self.data = AttrDict()
 
-        self._advantage_stats = (0, 0, 0) if prev_steps_processor is None else prev_steps_processor._advantage_stats
-        self._advantage_momentum = 0.99
-
     def append_values(self, **new_data: torch.Tensor):
         first_step = 'actions' not in self.data
         for k, v in new_data.items():

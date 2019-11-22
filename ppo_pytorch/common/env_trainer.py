@@ -36,6 +36,7 @@ class EnvTrainer:
 
         env_name = self.env.env_name
         log_dir = get_log_dir(log_root_path, alg_name, env_name, tag)
+        print('Log dir:', log_dir)
 
         self.rl_alg = rl_alg_factory(self.env.observation_space, self.env.action_space,
                                      log_interval=log_interval, model_save_folder=log_dir)
