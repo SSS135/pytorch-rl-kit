@@ -49,7 +49,7 @@ class RLBase:
         self.step_type = RLStep.EVAL
         self.cur_states, self.prev_states, self.rewards, self.dones = [None] * 4
         self._logger = None
-        self._last_log_frame = 0
+        self._last_log_frame = -log_interval
         self._do_log = False
         self.step = 0
 
