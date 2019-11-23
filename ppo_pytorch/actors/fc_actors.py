@@ -9,6 +9,9 @@ from .norm_factory import NormFactory, BatchNormFactory
 from ..common.probability_distributions import LinearTanhPd, ProbabilityDistribution
 import torch
 from ..config import Linear
+from optfn.skip_connections import ResidualBlock
+from .utils import fixup_init
+import torch.jit
 
 
 def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm: NormFactory = None):
@@ -38,6 +41,31 @@ def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm:
     return seq
 
 
+def create_residual_fc(input_size, hidden_size, use_norm=False):
+    def norm():
+        return (nn.LayerNorm(hidden_size),) if use_norm else ()
+    def res_block():
+        return ResidualBlock(
+            *norm(),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            *norm(),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+        )
+    return nn.Sequential(
+        nn.Linear(input_size, hidden_size),
+        res_block(),
+        res_block(),
+        res_block(),
+        res_block(),
+        res_block(),
+        res_block(),
+        *norm(),
+        nn.ReLU(),
+    )
+
+
 class FCFeatureExtractor(FeatureExtractorBase):
     def __init__(self, input_size: int, hidden_sizes=(128, 128), activation=nn.Tanh, **kwargs):
         super().__init__(**kwargs)
@@ -45,6 +73,15 @@ class FCFeatureExtractor(FeatureExtractorBase):
         self.hidden_sizes = hidden_sizes
         self.activation = activation
         self.model = create_fc(input_size, hidden_sizes, activation, self.norm_factory)
+        # self.model = create_residual_fc(input_size, hidden_sizes[0])
+        # super().reset_weights()
+        # fixup_init(self.model)
+        # self.model = torch.jit.trace_module(self.model, dict(forward=torch.randn((8, input_size))))
+
+    # def reset_weights(self):
+    #     pass
+    #     # super().reset_weights()
+    #     # fixup_init(self.model)
 
     @property
     def output_size(self):
@@ -52,6 +89,7 @@ class FCFeatureExtractor(FeatureExtractorBase):
 
     def forward(self, input: torch.Tensor, logger=None, cur_step=None, **kwargs):
         x = input.view(-1, input.shape[-1])
+        # x = self.model(x)
         for i, layer in enumerate(self.model):
             x = layer(x)
             if logger is not None:
