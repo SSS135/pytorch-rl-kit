@@ -138,7 +138,7 @@ def test_vtrace():
     kl_div = torch.zeros(N)
     ret = calc_value_targets(rewards, values, dones, discount)
     adv = calc_advantages(rewards, values, dones, discount, 1)
-    v_ret, v_adv = calc_vtrace(rewards, values, dones, prob_ratio, kl_div, discount, 1, 1)
+    v_ret, v_adv, upgo, p = calc_vtrace(rewards, values, dones, prob_ratio, kl_div, discount, 2.0, 0.3)
 
     assert v_ret.shape == ret.shape
     assert v_adv.shape == adv.shape

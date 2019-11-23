@@ -21,7 +21,7 @@ def v_mpo_loss(kl: torch.Tensor, logp: torch.Tensor, advantages: torch.Tensor, a
     assert eps_nu < 1, eps_nu
 
     advantages = advantages.mul(vtrace_p).masked_fill(vtrace_p < 0.01, -1e5)
-    advmax = 5 * nu.item()
+    advmax = 1e5 * nu.item()
     advantages = advantages.clamp(-advmax, advmax) / nu
     advantages_upgo = advantages_upgo.clamp(-advmax, advmax) / nu
 
@@ -54,16 +54,12 @@ def scaled_impala_loss(kl: torch.Tensor, logp: torch.Tensor, advantages: torch.T
     assert nu.shape == alpha.shape == ()
     assert eps_nu > 1, eps_nu
 
-    advantages = (advantages.mul(vtrace_p) + advantages_upgo).clamp(-10, 10)
+    advmax = 10
+    advantages = (advantages.mul(vtrace_p) + advantages_upgo).clamp(-advmax, advmax)
+    adv_norm = advantages.sign() * advantages.abs().pow(nu.detach())
 
-    # adv_mean = advantages.mean()
-    # adv_std = advantages.std() + 1e-5
-    # adv_norm = (advantages - adv_mean) / adv_std
-    adv_norm = advantages.sign() * advantages.abs().pow(nu)
-
-    # adv_fix = adv_norm # adv_norm * adv_std + adv_mean
-    loss_policy = adv_norm.detach() * -logp
-    loss_nu = nu * (adv_norm.detach().pow(4).mean() - eps_nu)
+    loss_policy = adv_norm.clamp(-advmax, advmax) * -logp
+    loss_nu = nu * (adv_norm.pow(4).mean() - eps_nu)
     loss_alpha = alpha * (eps_alpha - kl.detach()) + alpha.detach() * kl
 
     assert loss_policy.shape == advantages.shape, (loss_policy.shape, advantages.shape)

@@ -38,14 +38,15 @@ class IMPALA(PPO):
                  vtrace_kl_limit=0.2,
                  upgo_scale=0.2,
                  grad_clip_norm=None,
-                 eps_nu_alpha=(0.1, 0.005), # (1.7639, 0.005)
-                 init_nu_alpha=(1.0, 5.0),
+                 eps_nu_alpha=(1.7639, 0.005), # (0.1, 0.005) for V-MPO
+                 init_nu_alpha=(0.5, 5.0), # (1.0, 5.0) for V-MPO
                  replay_end_sampling_factor=0.1,
                  eval_model_update_interval=1,
                  train_horizon=None,
                  loss_type='impala',
+                 use_pop_art=True,
                  **kwargs):
-        super().__init__(*args, grad_clip_norm=grad_clip_norm, **kwargs)
+        super().__init__(*args, grad_clip_norm=grad_clip_norm, use_pop_art=use_pop_art, **kwargs)
         self.replay_buf_size = replay_buf_size
         self.replay_ratio = replay_ratio
         self.vtrace_max_ratio = vtrace_max_ratio
@@ -139,6 +140,8 @@ class IMPALA(PPO):
             return AttrDict(last_samples)
 
     def _impala_update(self, data: AttrDict):
+        self._eval_model = self._eval_model.to(self.device_train)
+
         if self.use_pop_art:
             self._train_model.heads.state_values.normalize(*self._pop_art.statistics)
 
@@ -195,6 +198,8 @@ class IMPALA(PPO):
         if self._eval_no_copy_updates >= self.eval_model_update_interval:
             self._eval_no_copy_updates = 0
             self._copy_parameters(self._train_model, self._eval_model)
+
+        self._eval_model = self._eval_model.to(self.device_eval)
 
     def _impala_step(self, batch, do_log):
         with torch.enable_grad():
@@ -336,16 +341,13 @@ class IMPALA(PPO):
 
         if self.use_pop_art:
             value_targets = (value_targets - pa_mean) / pa_std
-            advantages /= pa_std
-            advantages_upgo /= pa_std
+            if LossType.impala is self.loss_type:
+                advantages /= pa_std
+                advantages_upgo /= pa_std
 
-        advantages = self._adv_norm(advantages)
-        advantages_upgo = self._adv_norm(advantages_upgo, update_stats=False)
-
-        # if LossType.impala is self.loss_type:
-        #     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
-        #     # advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
-        #     # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
+        if LossType.impala is self.loss_type:
+            advantages = self._adv_norm(advantages)
+            advantages_upgo = self._adv_norm(advantages_upgo, update_stats=False)
 
         data.vtrace_p, data.advantages_upgo = p, self.upgo_scale * advantages_upgo
         data.value_targets, data.advantages, data.rewards = value_targets, advantages, norm_rewards
