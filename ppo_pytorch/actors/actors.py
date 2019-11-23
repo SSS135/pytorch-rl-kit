@@ -8,7 +8,7 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.init as init
 
-from .heads import HeadBase, StateValueHead, PolicyHead, PositionalPolicyHead
+from .heads import HeadBase, StateValueHead, PolicyHead
 from .norm_factory import NormFactory
 from .utils import weights_init
 from ..common.probability_distributions import make_pd, ProbabilityDistribution, DiscretizedCategoricalPd
@@ -27,7 +27,7 @@ def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, 
         fx_policy = fx_value = fx_factory()
 
     value_head = StateValueHead(fx_value.output_size, pd=pd, num_out=num_out)
-    policy_head = (PositionalPolicyHead if isinstance(pd, DiscretizedCategoricalPd) else PolicyHead)(fx_policy.output_size, pd=pd)
+    policy_head = PolicyHead(fx_policy.output_size, pd=pd)
     if split_policy_value_network:
         models = {fx_policy: dict(logits=policy_head), fx_value: dict(state_values=value_head)}
     else:
