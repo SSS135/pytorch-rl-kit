@@ -1,6 +1,8 @@
 import torch
 import torch.nn.functional as F
 import torch.nn.init as init
+from optfn.skip_connections import ResidualBlock
+from torch import nn
 from torch.nn.utils import weight_norm
 
 
@@ -87,3 +89,18 @@ def model_diff(old_model, new_model, max_diff=False) -> float:
             norm += (new - old).abs().mean().item()
             param_count += 1
     return norm / param_count
+
+
+def fixup_init(module):
+    with torch.no_grad():
+        res_blocks = [m for m in module.modules() if isinstance(m, ResidualBlock)]
+        res_block_size = len([m for m in res_blocks[0].modules() if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear)])
+        assert res_block_size > 0
+        weight_mul = len(res_blocks) ** (-1.0 / (2.0 * res_block_size - 2.0))
+        for block in res_blocks:
+            convs = [m for m in block.modules() if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear)]
+            assert len(convs) == res_block_size
+            for i, conv in enumerate(convs):
+                mult = 0 if i + 1 == res_block_size else weight_mul
+                conv.weight *= mult
+                conv.bias *= mult
