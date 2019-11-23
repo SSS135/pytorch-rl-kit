@@ -21,12 +21,12 @@ def make_pd(space: gym.Space):
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
         # return LinearTanhPd(space.shape[0])
-        return FixedStdGaussianPd(space.shape[0], 0.3)
+        # return FixedStdGaussianPd(space.shape[0], 0.3)
         # return BetaPd(space.shape[0], 1)
-        # return DiagGaussianPd(space.shape[0])
+        return DiagGaussianPd(space.shape[0])
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
         # return PointCloudPd(space.shape[0])
-        # return DiscretizedCategoricalPd(space.shape[0], 5)
+        # return DiscretizedCategoricalPd(space.shape[0], 7)
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     elif isinstance(space, gym.spaces.MultiDiscrete):
@@ -238,7 +238,7 @@ class BernoulliPd(ProbabilityDistribution):
 
 
 class DiagGaussianPd(ProbabilityDistribution):
-    def __init__(self, d, eps=0.01):
+    def __init__(self, d, eps=0.05):
         super().__init__(locals())
         self.d = d
         self.eps = eps
@@ -260,48 +260,40 @@ class DiagGaussianPd(ProbabilityDistribution):
         return torch.float
 
     def logp(self, x, prob):
-        mean, logstd = self.split_probs(prob)
-        std = torch.exp(logstd) + self.eps
-        nll = 0.5 * ((x - mean) / std).pow(2) + \
-              0.5 * math.log(2.0 * math.pi) * self.d + \
-              logstd
-        return -nll
+        mean, std = self.split_probs(prob)
+        nlp = 0.5 * (((x - mean) / std) ** 2).sum(-1, keepdim=True) \
+              + 0.5 * np.log(2.0 * np.pi) * mean.shape[-1] \
+              + std.log().sum(-1, keepdim=True)
+        return -nlp
 
     def kl(self, prob1, prob2):
-        mean1, logstd1 = self.split_probs(prob1)
-        mean2, logstd2 = self.split_probs(prob2)
-        std1 = torch.exp(logstd1) + self.eps
-        std2 = torch.exp(logstd2) + self.eps
-        kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
-        return kl
+        mean1, std1 = self.split_probs(prob1)
+        mean2, std2 = self.split_probs(prob2)
+        return (std2.log() - std1.log() + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5).sum(-1, keepdim=True)
 
     def entropy(self, prob):
         mean, logstd = self.split_probs(prob)
-        logvar = logstd * 2
-        kld = logvar - logvar.exp() - mean.pow(2)
-        return kld
+        return (logstd + .5 * np.log(2.0 * np.pi * np.e)).sum(-1, keepdim=True)
 
-    def sample_with_random(self, prob, rand):
-        assert rand is None or torch.is_tensor(rand)
-        mean, logstd = self.split_probs(prob)
-        std = torch.exp(logstd) + self.eps
-        if rand is None:
-            rand = torch.randn_like(mean)
-        sample = mean + std * rand
-        # sample = sample / sample.pow(2).mean(-1, keepdim=True).add(1e-6).sqrt()
-        return sample, rand
+    def sample(self, prob):
+        mean, std = self.split_probs(prob)
+        return mean + std * torch.randn_like(mean)
 
     def split_probs(self, probs):
         mean, logstd = probs.chunk(2, -1)
-        return mean, logstd
+        std = F.softplus(logstd)
+        return mean, std + self.eps
+
+    @property
+    def init_column_norm(self):
+        return 0.01
 
 
 class PointCloudPd(ProbabilityDistribution):
-    def __init__(self, d, num_points=16, eps=1e-6):
+    def __init__(self, d, num_points=16):
         super().__init__(locals())
         self.d = d
         self.num_points = num_points
-        self.eps = eps
 
     @property
     def prob_vector_len(self):
@@ -336,13 +328,9 @@ class PointCloudPd(ProbabilityDistribution):
         std = prob.std(-1)
         return 0.5 + 0.5 * math.log(2 * math.pi) + torch.log(std)
 
-    def sample_with_random(self, prob, rand):
-        assert rand is None or torch.is_tensor(rand)
-        prob = self._split_prob(prob)
-        if rand is None:
-            rand = torch.randint(self.num_points, prob.shape[:-1], device=prob.device)
-        sample = prob.gather(-1, rand.unsqueeze(-1)).squeeze(-1)
-        return sample, rand
+    def sample(self, prob):
+        mean, std = self._get_mean_std(prob)
+        return mean + std * torch.randn_like(std)
 
     def _split_prob(self, prob):
         return prob.reshape(*prob.shape[:-1], self.d, self.num_points)
@@ -350,12 +338,12 @@ class PointCloudPd(ProbabilityDistribution):
     def _get_mean_std(self, prob):
         prob = self._split_prob(prob)
         mean = prob.mean(-1)
-        std = prob.std(-1) + self.eps
+        std = prob.std(-1)
         return mean, std
 
     @property
     def init_column_norm(self):
-        return 1.0
+        return 2.0
 
 
 class BetaPd(ProbabilityDistribution):
