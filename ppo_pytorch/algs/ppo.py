@@ -184,8 +184,6 @@ class PPO(RLBase):
         self._pop_art = PopArt()
         self._first_pop_art_update = True
         self._steps_processor = self._create_steps_processor(None)
-        self._train_future: Optional[Future] = None
-        self._train_executor = ThreadPoolExecutor(max_workers=1)
         self._target_step = 0
 
         self.kl_dis = 0.005

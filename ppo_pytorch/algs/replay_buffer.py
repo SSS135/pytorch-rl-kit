@@ -1,3 +1,4 @@
+import threading
 from collections import defaultdict
 from typing import Dict
 
@@ -13,11 +14,13 @@ class ReplayBuffer:
         self._full_loop = False
         self._num_actors = None
         self._horizon_capacity = None
+        self._lock = threading.RLock()
 
     def push(self, **sample):
-        if self._data is None:
-            self._init_data(sample)
-        self._add_sample(sample)
+        with self._lock:
+            if self._data is None:
+                self._init_data(sample)
+            self._add_sample(sample)
 
     def _init_data(self, sample):
         self._num_actors = next(iter(sample.values())).shape[0]
@@ -36,35 +39,42 @@ class ReplayBuffer:
             self._full_loop = True
 
     def sample(self, rollouts, horizon, end_sampling_factor=1.0):
+        index = self._index
+        len_horizon = self._len_horizon
         nu = end_sampling_factor ** (1 / rollouts)
         samples = defaultdict(list)
         for r in range(rollouts):
-            start = random.randrange(0, max(1, int((self._len_horizon - horizon) * nu ** r)))
-            start = (self._index - horizon - start) % (self._len_horizon - horizon)
+            start = random.randrange(0, max(1, int((len_horizon - horizon) * nu ** r)))
+            start = (index - horizon - start) % (len_horizon - horizon)
             actor = random.randrange(0, self._num_actors)
-            for name, value in self._data.items():
-                samples[name].append(self._data[name][start:start + horizon, actor])
+            with self._lock:
+                for name, value in self._data.items():
+                    samples[name].append(self._data[name][start:start + horizon, actor])
         return {k: torch.stack(v, 1) for k, v in samples.items()}
 
     def get_last_samples(self, horizon):
-        assert self._len_horizon >= horizon
+        with self._lock:
+            index = self._index
+            len_horizon = self._len_horizon
+            assert len_horizon >= horizon
 
-        def loop_slice(x):
-            start = self._index - horizon
-            end = self._index
-            if start >= 0:
-                return x[start:end]
-            else:
-                return torch.cat([x[start:], x[:end]], 0)
+            def loop_slice(x):
+                start = index - horizon
+                end = index
+                if start >= 0:
+                    return x[start:end]
+                else:
+                    return torch.cat([x[start:], x[:end]], 0)
 
-        return {k: loop_slice(v) for k, v in self._data.items()}
+            return {k: loop_slice(v) for k, v in self._data.items()}
 
     @property
     def _len_horizon(self):
         return self._horizon_capacity if self._full_loop else self._index
 
     def __len__(self):
-        return self._len_horizon * self._num_actors
+        with self._lock:
+            return self._len_horizon * self._num_actors
 
 
 def test_replay_buffer():

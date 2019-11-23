@@ -1,6 +1,7 @@
 import random
 from enum import Enum
 from functools import partial
+from typing import Optional
 
 import math
 from copy import deepcopy
@@ -22,6 +23,8 @@ from ..common.data_loader import DataLoader
 from ..common.gae import calc_vtrace, calc_advantages, calc_value_targets
 from ..actors.utils import model_diff
 from .utils import v_mpo_loss, RunningNorm, scaled_impala_loss
+from asyncio import Future
+from concurrent.futures import ThreadPoolExecutor
 
 
 class LossType(Enum):
@@ -77,6 +80,10 @@ class IMPALA(PPO):
         self._eval_steps = 0
         self._eval_no_copy_updates = 0
         self._adv_norm = RunningNorm(False)
+        self._target_model = None
+        self._train_future: Optional[Future] = None
+        self._data_future: Optional[Future] = None
+        self._executor = ThreadPoolExecutor(max_workers=2)
 
     @property
     def nu(self):
@@ -104,24 +111,30 @@ class IMPALA(PPO):
 
                 if self._eval_steps >= self.horizon + 2:
                     self._eval_steps = 0
-                    self._check_log()
                     self._train()
-                    self._scheduler_step()
 
             return actions
 
     def _train(self):
-        data = self._create_data()
-        self._train_async(data)
-        # if self._train_future is not None:
-        #     self._train_future.result()
-        # self._train_future = self._train_executor.submit(self._train_async, data)
+        # data = self._create_data()
+        # self._train_async(data)
+        if self._data_future is not None:
+            data = self._data_future.result()
+        else:
+            data = self._create_data()
+        self._data_future = self._executor.submit(self._create_data)
+
+        if self._train_future is not None:
+            self._train_future.result()
+        self._train_future = self._executor.submit(self._train_async, data)
 
     def _train_async(self, data):
         with torch.no_grad():
+            self._check_log()
             # self._log_training_data(data)
             self._impala_update(data)
             self._model_saver.check_save_model(self._train_model, self.frame)
+            self._scheduler_step()
 
     def _create_data(self):
         # rand_actors = self.batch_size * self.off_policy_batches // self.horizon
@@ -140,7 +153,7 @@ class IMPALA(PPO):
             return AttrDict(last_samples)
 
     def _impala_update(self, data: AttrDict):
-        self._eval_model = self._eval_model.to(self.device_train)
+        self._target_model = self._eval_model.to(self.device_train)
 
         if self.use_pop_art:
             self._train_model.heads.state_values.normalize(*self._pop_art.statistics)
@@ -199,8 +212,6 @@ class IMPALA(PPO):
             self._eval_no_copy_updates = 0
             self._copy_parameters(self._train_model, self._eval_model)
 
-        self._eval_model = self._eval_model.to(self.device_eval)
-
     def _impala_step(self, batch, do_log):
         with torch.enable_grad():
             actor_params = AttrDict()
@@ -210,7 +221,7 @@ class IMPALA(PPO):
 
             actor_out = self._train_model(batch.states.reshape(-1, *batch.states.shape[2:]), **actor_params)
             with torch.no_grad():
-                actor_out_policy = self._eval_model(batch.states.reshape(-1, *batch.states.shape[2:]), **actor_params)
+                actor_out_policy = self._target_model(batch.states.reshape(-1, *batch.states.shape[2:]), **actor_params)
 
             batch.logits = actor_out.logits.reshape(*batch.states.shape[:2], *actor_out.logits.shape[1:])
             batch.logits_policy = actor_out_policy.logits.reshape(*batch.states.shape[:2], *actor_out.logits.shape[1:])
