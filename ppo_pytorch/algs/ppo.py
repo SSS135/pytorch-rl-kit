@@ -173,7 +173,7 @@ class PPO(RLBase):
             self._train_model.load_state_dict(state_dict, True)
             self._eval_model.load_state_dict(state_dict, True)
             print(f'loaded model {self.model_init_path}')
-        self._train_model = self._train_model.train().to(self.device_eval, non_blocking=True)
+        self._train_model = self._train_model.train().to(self.device_train, non_blocking=True)
         self._eval_model = self._eval_model.eval().to(self.device_eval, non_blocking=True)
 
         self._optimizer = optimizer_factory(self._train_model.parameters())
