@@ -41,6 +41,7 @@ class ReplayBuffer:
     def sample(self, rollouts, horizon, end_sampling_factor=1.0):
         index = self._index
         len_horizon = self._len_horizon
+        end_sampling_factor = min(1.0, end_sampling_factor * self._sample_capacity / len(self))
         nu = end_sampling_factor ** (1 / rollouts)
         samples = defaultdict(list)
         for r in range(rollouts):

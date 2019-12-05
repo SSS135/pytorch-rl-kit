@@ -94,7 +94,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
             ])
             self.linear = self._make_fc_layer(nf * 8 * 4 * 4, 512)
         elif self.cnn_kind == 'impala':
-            c_mult = 4
+            c_mult = 2
             def cnn_norm_fn(num_c):
                 return (self.norm_factory.create_cnn_norm(num_c, False),) \
                     if self.norm_factory is not None and self.norm_factory.allow_cnn else ()

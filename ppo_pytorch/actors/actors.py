@@ -37,7 +37,7 @@ def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, 
 
 class FeatureExtractorBase(nn.Module, metaclass=ABCMeta):
     def __init__(self, norm_factory: NormFactory=None,
-                 weight_init_fn=partial(init.orthogonal_, gain=math.sqrt(2))):
+                 weight_init_fn=init.kaiming_uniform_):
         super().__init__()
         self.norm_factory = norm_factory
         self.weight_init_fn = weight_init_fn
