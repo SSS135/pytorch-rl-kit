@@ -1,15 +1,11 @@
-import math
-import random
-
 import torch.nn as nn
 import torch
-import torch.nn.functional as F
+import torch.jit
 
 from .utils import normalized_columns_initializer_
-from ..common.probability_distributions import ProbabilityDistribution, CategoricalPd, MultiCategoricalPd, \
-    BetaPd, FixedStdGaussianPd, DiagGaussianPd, LinearTanhPd, DiscretizedCategoricalPd
-from ..common.attr_dict import AttrDict
+from ..common.probability_distributions import ProbabilityDistribution, CategoricalPd, BetaPd, DiagGaussianPd
 from ..config import Linear
+from .cat_value_encoder import CategoricalValueEncoder
 
 
 def assert_shape(x, shape, *args):
@@ -193,3 +189,30 @@ class StateValueHead(HeadBase):
         self.linear.weight.data *= std
         self.linear.bias.data *= std
         self.linear.bias.data += mean
+
+
+class CategoricalStateValueHead(HeadBase):
+    def __init__(self, in_features, approx_max, num_bins, pd: ProbabilityDistribution = None, num_out=None):
+        """
+        Args:
+            in_features: Input feature vector width.
+            pd: Action probability distribution.
+        """
+        super().__init__(in_features)
+        assert pd is None and num_out is None
+        self.encoder = torch.jit.script(CategoricalValueEncoder(approx_max, num_bins))
+        self.linear = Linear(in_features, num_bins)
+        self.reset_weights()
+
+    def reset_weights(self):
+        normalized_columns_initializer_(self.linear.weight.data, 1.0)
+        self.linear.bias.data.fill_(0)
+
+    def forward(self, x, **kwargs):
+        return self.linear(x)
+
+    def logp(self, bins, value):
+        return self.encoder.logp(bins, value)
+
+    def bins_to_value(self, bins):
+        return self.encoder(bins)
