@@ -6,8 +6,8 @@ if __name__ == '__main__':
     alg_class = rl.algs.PPO
     alg_params = rl.algs.create_atari_kwargs(
         10e6,
-        constraint='spu',
-        ppo_iters=6,
+        # constraint='spu',
+        # ppo_iters=6,
     )
     hparams = dict(
     )
