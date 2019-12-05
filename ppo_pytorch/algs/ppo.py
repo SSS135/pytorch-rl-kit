@@ -70,6 +70,7 @@ class PPO(RLBase):
                  lr_scheduler_factory=None,
                  clip_decay_factory=None,
                  entropy_decay_factory=None,
+                 spu_dis_agg_lam=(0.01, 0.01 / 1.3, 1.0),
                  use_pop_art=False,
                  **kwargs):
         """
@@ -158,6 +159,7 @@ class PPO(RLBase):
         self.entropy_reward_scale = entropy_reward_scale
         self.barron_alpha_c = barron_alpha_c
         self.advantage_scaled_clip = advantage_scaled_clip
+        self.spu_dis_agg_lam = spu_dis_agg_lam
         self.use_pop_art = use_pop_art
 
         assert isinstance(constraint, str) or isinstance(constraint, list) or isinstance(constraint, tuple)
@@ -185,10 +187,6 @@ class PPO(RLBase):
         self._first_pop_art_update = True
         self._steps_processor = self._create_steps_processor(None)
         self._target_step = 0
-
-        self.kl_dis = 0.005
-        self.kl_agg = self.kl_dis / 1.3
-        self.lam = 0.8
 
         # self.eval_model_update_interval = 10
         # self._eval_no_copy_updates = 0
@@ -266,7 +264,7 @@ class PPO(RLBase):
         rand_idx = [torch.randperm(len(data.state_values_old), device=self.device_train) for _ in range(self.ppo_iters)]
         rand_idx = torch.cat(rand_idx, 0).chunk(batches * self.ppo_iters)
 
-        old_model = deepcopy(self._train_model)
+        old_model = deepcopy(self._train_model.state_dict())
         kl_list = []
 
         with DataLoader(data, rand_idx, self.device_train, 4) as data_loader:
@@ -338,7 +336,7 @@ class PPO(RLBase):
             loss = loss.mean()
 
         kl = kl.item()
-        if (not self._has_constraint(Constraint.spu) or kl < self.kl_agg * self._clip_mult) and \
+        if (not self._has_constraint(Constraint.spu) or kl < self.spu_dis_agg_lam[1] * self._clip_mult) and \
                 (not self._has_constraint(Constraint.kl) or kl < 4 * self.kl_target):
             # optimize
             loss.backward()
@@ -372,11 +370,13 @@ class PPO(RLBase):
         # log probabilities used for better numerical stability
         logp_old = pd.logp(actions, logits_old).sum(-1)
         logp = pd.logp(actions, logits).sum(-1)
-        ratio = (logp - logp_old).exp() - 1
+        ratio = logp - logp_old
         kl = pd.kl(logits_old, logits).sum(-1)
 
+        assert kl.shape == ratio.shape == advantages.shape, (kl.shape, ratio.shape, advantages.shape)
+
         # entropy bonus for better exploration
-        entropy = pd.entropy(logits)
+        entropy = pd.entropy(logits).sum(-1)
         loss_ent = -self.entropy_loss_scale * entropy
 
         if self._has_constraint(Constraint.clip):
@@ -400,8 +400,9 @@ class PPO(RLBase):
             loss_clip = loss_target.sum(-1) #+ 5 * loss_kl
             loss_ent = torch.zeros_like(loss_ent)
         elif self._has_constraint(Constraint.spu):
-            loss_clip = kl - self.lam * ratio * advantages
-            good_kl_mask = kl.detach() <= self.kl_dis * self._clip_mult
+            kl_dis, _, lam = self.spu_dis_agg_lam
+            loss_clip = kl - lam * ratio * advantages
+            good_kl_mask = kl.detach() <= kl_dis * self._clip_mult
             loss_clip = loss_clip * good_kl_mask.float()
             loss_clip = loss_clip.unsqueeze(-1)
             # agg_kl_check = (kl_mean.detach().mean() < self.kl_agg * self._clip_mult * advantages.abs().mean()).float()
@@ -415,16 +416,16 @@ class PPO(RLBase):
             # unclipped loss
             loss_clip = -ratio * advantages
 
-        if self._has_constraint(Constraint.kl):
-            kl_targets = self.kl_target * advantages.abs()
-            loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(0.1 * self.kl_scale * self.kl_target)
-            small_kl = (kl < self.kl_target).detach()
-            large_kl = (kl > self.kl_target).detach()
-            loss_kl[small_kl] = 0
-            loss_ent[large_kl] = 0
-            loss_clip[large_kl] = 0
-        else:
-            loss_kl = kl.new(1).zero_()
+        # if self._has_constraint(Constraint.kl):
+        #     kl_targets = self.kl_target * advantages.abs()
+        #     loss_kl = (kl - kl_targets).div(self.kl_target).pow(2).mul(0.1 * self.kl_scale * self.kl_target)
+        #     small_kl = (kl < self.kl_target).detach()
+        #     large_kl = (kl > self.kl_target).detach()
+        #     loss_kl[small_kl] = 0
+        #     loss_ent[large_kl] = 0
+        #     loss_clip[large_kl] = 0
+        # else:
+        #     loss_kl = kl.new(1).zero_()
 
         # value loss
         if self._has_constraint(Constraint.target):
@@ -443,16 +444,16 @@ class PPO(RLBase):
             loss_value = self.value_loss_scale * barron_loss(values, value_targets, *self.barron_alpha_c, reduce=False)
 
         # assert loss_clip.shape == loss_value.shape, (loss_clip.shape, loss_value.shape)
-        assert loss_value.shape == loss_ent.shape[:-1], (loss_value.shape, loss_ent.shape)
-        assert loss_ent.shape == loss_kl.shape or not self._has_constraint(Constraint.kl), (loss_ent.shape, loss_kl.shape)
+        assert loss_value.shape == loss_ent.shape, (loss_value.shape, loss_ent.shape)
+        # assert loss_ent.shape == loss_kl.shape or not self._has_constraint(Constraint.kl), (loss_ent.shape, loss_kl.shape)
 
         loss_clip = loss_clip.mean()
         loss_ent = loss_ent.mean()
-        loss_kl = loss_kl.mean()
+        # loss_kl = loss_kl.mean()
         loss_value = loss_value.mean()
 
         # sum all losses
-        total_loss = loss_clip + loss_value + loss_kl + loss_ent
+        total_loss = loss_clip + loss_value + loss_ent #+ loss_kl
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_clip.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
 
