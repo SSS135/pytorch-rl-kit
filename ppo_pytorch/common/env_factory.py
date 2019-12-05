@@ -80,19 +80,44 @@ class AtariVecEnv(NamedVecEnv):
 
 
 class SimpleVecEnv(NamedVecEnv):
-    def __init__(self, env_name, observation_norm=False, parallel='thread'):
+    def __init__(self, env_name, observation_norm=False, frame_skip=1, parallel='thread'):
         self.observation_norm = observation_norm
+        self.frame_skip = frame_skip
         super().__init__(env_name, parallel)
 
     def get_env_factory(self):
-        def make(env_name, observation_norm):
+        def make(env_name, observation_norm, frame_skip):
             env = gym.make(env_name)
             env = Monitor(env)
+            if frame_skip > 1:
+                env = FrameSkipEnv(env, frame_skip)
             if observation_norm:
                 env = ObservationNorm(env)
             return env
 
-        return partial(make, self.env_name, self.observation_norm)
+        return partial(make, self.env_name, self.observation_norm, self.frame_skip)
+
+
+class FrameSkipEnv(gym.Wrapper):
+    def __init__(self, env, skip=4):
+        """Return only every `skip`-th frame"""
+        gym.Wrapper.__init__(self, env)
+        self.skip = skip
+
+    def step(self, action):
+        """Repeat action, sum reward, and max over last observations."""
+        total_reward = 0.0
+        done = None
+        for i in range(self.skip):
+            obs, reward, done, info = self.env.step(action)
+            total_reward += reward
+            if done:
+                break
+
+        return obs, total_reward, done, info
+
+    def reset(self, **kwargs):
+        return self.env.reset(**kwargs)
 
 
 class ChannelTranspose(gym.ObservationWrapper):
