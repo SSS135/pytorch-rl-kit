@@ -69,7 +69,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                 self._make_cnn_layer(32, 64, 4, 2),
                 self._make_cnn_layer(64, 64, 3, 1),
             ])
-            self.linear = self._make_fc_layer(3136, 512)
+            self.linear = self._make_fc_layer(self._calc_linear_size(), 512)
         elif self.cnn_kind == 'large': # custom (2,066,432 parameters)
             nf = 32
             self.convs = nn.ModuleList([
@@ -78,7 +78,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                 self._make_cnn_layer(nf * 2, nf * 4, 4, 2, 1),
                 self._make_cnn_layer(nf * 4, nf * 8, 4, 2, 1),
             ])
-            self.linear = self._make_fc_layer(nf * 8 * 4 * 4, 512)
+            self.linear = self._make_fc_layer(self._calc_linear_size(), 512)
         elif self.cnn_kind == 'grouped': # custom grouped (6,950,912 parameters)
             nf = 32
             self.convs = nn.ModuleList([
@@ -92,7 +92,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                 ChannelShuffle(nf * 32),
                 self._make_cnn_layer(nf * 32, nf * 8, 3, 1, 1, groups=8),
             ])
-            self.linear = self._make_fc_layer(nf * 8 * 4 * 4, 512)
+            self.linear = self._make_fc_layer(self._calc_linear_size(), 512)
         elif self.cnn_kind == 'impala':
             c_mult = 2
             def cnn_norm_fn(num_c):
@@ -130,7 +130,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                 nn.ReLU(),
             )
             self.linear = nn.Sequential(
-                Linear(2592 * c_mult, 256),
+                Linear(self._calc_linear_size(), 256),
                 *fc_norm_fn(256),
                 nn.ReLU(),
             )
@@ -145,6 +145,11 @@ class CNNFeatureExtractor(FeatureExtractorBase):
         super().reset_weights()
         if self.cnn_kind == 'impala':
             fixup_init(self.convs)
+
+    def _calc_linear_size(self):
+        shape = 1, self.input_shape[0] + (2 if self.add_positional_features else 0), *self.input_shape[1:]
+        out_shape = self._extract_features(torch.randn(shape)).shape
+        return out_shape[1] * out_shape[2] * out_shape[3]
 
     def _make_fc_layer(self, in_features, out_features, first_layer=False):
         bias = self.norm_factory is None or not self.norm_factory.disable_bias or not self.norm_factory.allow_fc
@@ -190,7 +195,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
         if self.add_positional_features:
             input = self._add_position_features(input)
 
-        x = self._extract_features(input, logger)
+        x = self._extract_features(input, logger, cur_step)
         x = x.view(x.size(0), -1)
         x = self.linear(x)
 
