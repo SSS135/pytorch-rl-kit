@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import time
 from collections import deque, namedtuple
@@ -9,9 +10,22 @@ import numpy as np
 Reward = namedtuple('Reward', 'info, episode, frame')
 
 
+def get_valid_filename(s):
+    """
+    Return the given string converted to a string that can be used for a clean
+    filename. Remove leading and trailing spaces; convert other spaces to
+    underscores; and remove anything that is not an alphanumeric, dash,
+    underscore, or dot.
+    >>> get_valid_filename("john's portrait in 2004.jpg")
+    'johns_portrait_in_2004.jpg'
+    """
+    s = str(s).strip().replace(' ', '_')
+    return re.sub(r'(?u)[^-\w.]', '', s)
+
+
 def get_log_dir(log_root_dir, alg_name, env_name, tag):
     timestr = time.strftime('%Y-%m-%d_%H-%M-%S')
-    dir_name = f'{alg_name}_{env_name}_{tag}_{timestr}_'
+    dir_name = f'{alg_name}_{get_valid_filename(env_name)}_{tag}_{timestr}_'
     return tempfile.mkdtemp('', dir_name, log_root_dir)
 
 
