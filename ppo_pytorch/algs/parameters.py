@@ -6,6 +6,21 @@ from ..common import DecayLR, ValueDecay
 from ..actors import create_ppo_fc_actor, create_ppo_cnn_actor, create_td3_fc_actor
 
 
+def create_ppo_kwargs(learning_decay_frames=None, **kwargs):
+    defaults = dict()
+    schedulers = dict(
+        lr_scheduler_factory=partial(
+            DecayLR, start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=False),
+        clip_decay_factory=partial(
+            ValueDecay, start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=False),
+        entropy_decay_factory=partial(
+            ValueDecay, start_value=1, end_value=0.01, end_epoch=learning_decay_frames, exp=True, temp=2),
+    ) if learning_decay_frames is not None else dict()
+    defaults.update(schedulers)
+    defaults.update(kwargs)
+    return defaults
+
+
 def create_fc_kwargs(learning_decay_frames=None, **kwargs):
     """
     Get hyperparameters for simple envs like CartPole or Acrobot
