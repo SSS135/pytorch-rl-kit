@@ -116,13 +116,16 @@ class IMPALA(PPO):
             return actions
 
     def _train(self):
-        # data = self._create_data()
+        self.step_train = self.step_eval
+
+        data = self._create_data()
+
         # self._train_async(data)
-        if self._data_future is not None:
-            data = self._data_future.result()
-        else:
-            data = self._create_data()
-        self._data_future = self._executor.submit(self._create_data)
+        # if self._data_future is not None:
+        #     data = self._data_future.result()
+        # else:
+        #     data = self._create_data()
+        # self._data_future = self._executor.submit(self._create_data)
 
         if self._train_future is not None:
             self._train_future.result()
@@ -133,7 +136,7 @@ class IMPALA(PPO):
             self._check_log()
             # self._log_training_data(data)
             self._impala_update(data)
-            self._model_saver.check_save_model(self._train_model, self.frame)
+            self._model_saver.check_save_model(self._train_model, self.frame_train)
             self._scheduler_step()
 
     def _create_data(self):
@@ -183,15 +186,16 @@ class IMPALA(PPO):
         kl = np.mean(kl_list)
 
         if self._do_log:
-            self.logger.add_scalar('learning rate', self._learning_rate, self.frame)
-            self.logger.add_scalar('clip mult', self._clip_mult, self.frame)
-            self.logger.add_scalar('total loss', loss, self.frame)
-            self.logger.add_scalar('kl', kl, self.frame)
-            self.logger.add_scalar('kl scale', self.kl_scale, self.frame)
-            self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame)
-            self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame)
-            self.logger.add_scalar('nu', self.nu, self.frame)
-            self.logger.add_scalar('alpha', self.alpha, self.frame)
+            self.logger.add_scalar('learning rate', self._learning_rate, self.frame_train)
+            self.logger.add_scalar('clip mult', self._clip_mult, self.frame_train)
+            if loss is not None:
+                self.logger.add_scalar('total loss', loss, self.frame_train)
+            self.logger.add_scalar('kl', kl, self.frame_train)
+            self.logger.add_scalar('kl scale', self.kl_scale, self.frame_train)
+            self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame_train)
+            self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame_train)
+            self.logger.add_scalar('nu', self.nu, self.frame_train)
+            self.logger.add_scalar('alpha', self.alpha, self.frame_train)
 
         if self.use_pop_art:
             pa_mean, pa_std = self._pop_art.statistics
@@ -199,8 +203,8 @@ class IMPALA(PPO):
             self._train_model.heads.state_values.unnormalize(pa_mean, pa_std)
             self._pop_art.update_statistics(value_targets)
             if self._do_log:
-                self.logger.add_scalar('pop art mean', pa_mean, self.frame)
-                self.logger.add_scalar('pop art std', pa_std, self.frame)
+                self.logger.add_scalar('pop art mean', pa_mean, self.frame_train)
+                self.logger.add_scalar('pop art std', pa_std, self.frame_train)
 
         # self._adjust_kl_scale(kl)
         NoisyLinear.randomize_network(self._train_model)
@@ -217,11 +221,11 @@ class IMPALA(PPO):
             actor_params = AttrDict()
             if do_log:
                 actor_params.logger = self.logger
-                actor_params.cur_step = self.step
+                actor_params.cur_step = self.frame_train
 
             actor_out = self._train_model(batch.states.reshape(-1, *batch.states.shape[2:]), **actor_params)
             with torch.no_grad():
-                actor_out_policy = self._target_model(batch.states.reshape(-1, *batch.states.shape[2:]), **actor_params)
+                actor_out_policy = self._target_model(batch.states.reshape(-1, *batch.states.shape[2:]))
 
             batch.logits = actor_out.logits.reshape(*batch.states.shape[:2], *actor_out.logits.shape[1:])
             batch.logits_policy = actor_out_policy.logits.reshape(*batch.states.shape[:2], *actor_out.logits.shape[1:])
@@ -318,22 +322,23 @@ class IMPALA(PPO):
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_policy.mean().item(), loss_value.mean().item())
 
-        if do_log and tag is not None:
-            with torch.no_grad():
+        with torch.no_grad():
+            if do_log:
                 self._log_training_data(data)
-                self.logger.add_histogram('loss value hist' + tag, loss_value, self.frame)
-                # self.logger.add_histogram('loss ent hist' + tag, loss_ent, self.frame)
-                self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame)
-                # self.logger.add_scalar('loss entropy' + tag, loss_ent.mean(), self.frame)
-                self.logger.add_scalar('loss state value' + tag, loss_value.mean(), self.frame)
-                if LossType.v_mpo is self.loss_type:
-                    self.logger.add_scalar('loss nu' + tag, loss_nu, self.frame)
-                    self.logger.add_scalar('loss alpha' + tag, loss_alpha, self.frame)
                 ratio = (data.logp - data.logp_policy).exp() - 1
-                self.logger.add_histogram('ratio hist' + tag, ratio, self.frame)
-                self.logger.add_scalar('ratio mean' + tag, ratio.mean(), self.frame)
-                self.logger.add_scalar('ratio abs mean' + tag, ratio.abs().mean(), self.frame)
-                self.logger.add_scalar('ratio abs max' + tag, ratio.abs().max(), self.frame)
+                self.logger.add_scalar('ratio mean' + tag, ratio.mean(), self.frame_train)
+                self.logger.add_scalar('ratio abs mean' + tag, ratio.abs().mean(), self.frame_train)
+                self.logger.add_scalar('ratio abs max' + tag, ratio.abs().max(), self.frame_train)
+                self.logger.add_scalar('success updates', data.vtrace_p.mean(), self.frame_train)
+                self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame_train)
+                # self.logger.add_scalar('loss entropy' + tag, loss_ent.mean(), self.frame)
+                self.logger.add_scalar('loss state value' + tag, loss_value.mean(), self.frame_train)
+                if LossType.v_mpo is self.loss_type:
+                    self.logger.add_scalar('loss nu' + tag, loss_nu, self.frame_train)
+                    self.logger.add_scalar('loss alpha' + tag, loss_alpha, self.frame_train)
+                self.logger.add_histogram('loss value hist' + tag, loss_value, self.frame_train)
+                # self.logger.add_histogram('loss ent hist' + tag, loss_ent, self.frame)
+                self.logger.add_histogram('ratio hist' + tag, ratio, self.frame_train)
 
         return total_loss, kl_policy.mean()
 

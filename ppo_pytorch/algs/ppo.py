@@ -200,9 +200,7 @@ class PPO(RLBase):
     def _step(self, rewards, dones, states) -> torch.Tensor:
         with torch.no_grad():
             # run network
-            states_eval = states.to(self.device_eval)
-
-            ac_out = self._take_step(states_eval, dones)
+            ac_out = self._eval_model(states.to(self.device_eval))
             actions = self._eval_model.heads.logits.pd.sample(ac_out.logits).cpu()
 
             if not self.disable_training:
@@ -210,27 +208,25 @@ class PPO(RLBase):
                 self._steps_processor.append_values(states=states, rewards=rewards, dones=dones, actions=actions, **ac_out)
 
                 if len(self._steps_processor.data.states) > self.horizon:
-                    self._check_log()
                     self._train()
-                    self._scheduler_step()
 
             return actions
-
-    def _take_step(self, states, dones, **model_params):
-        return self._eval_model(states, **model_params)
 
     def _scheduler_step(self):
         # update clipping and learning rate decay schedulers
         if self._lr_scheduler is not None:
-            self._lr_scheduler.step(self.frame)
+            self._lr_scheduler.step(self.frame_train)
         if self._clip_decay is not None:
-            self._clip_decay.step(self.frame)
+            self._clip_decay.step(self.frame_train)
         if self._entropy_decay is not None:
-            self._entropy_decay.step(self.frame)
+            self._entropy_decay.step(self.frame_train)
 
     def _train(self):
+        self.step_train = self.step_eval
+        self._check_log()
         data = self._create_data()
         self._train_async(data)
+        self._scheduler_step()
         # if self._train_future is not None:
         #     self._train_future.result()
         # self._train_future = self._train_executor.submit(self._train_async, data)
@@ -245,7 +241,7 @@ class PPO(RLBase):
         with torch.no_grad():
             self._log_training_data(data)
             self._ppo_update(data)
-            self._model_saver.check_save_model(self._train_model, self.frame)
+            self._model_saver.check_save_model(self._train_model, self.frame_train)
 
     def _ppo_update(self, data: AttrDict):
         self._apply_pop_art(data)
@@ -284,13 +280,13 @@ class PPO(RLBase):
         kl = np.mean(kl_list)
 
         if self._do_log:
-            self.logger.add_scalar('learning rate', self._learning_rate, self.frame)
-            self.logger.add_scalar('clip mult', self._clip_mult, self.frame)
-            self.logger.add_scalar('total loss', loss, self.frame)
-            self.logger.add_scalar('kl', kl, self.frame)
-            self.logger.add_scalar('kl scale', self.kl_scale, self.frame)
-            self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame)
-            self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame)
+            self.logger.add_scalar('learning rate', self._learning_rate, self.frame_train)
+            self.logger.add_scalar('clip mult', self._clip_mult, self.frame_train)
+            self.logger.add_scalar('total loss', loss, self.frame_train)
+            self.logger.add_scalar('kl', kl, self.frame_train)
+            self.logger.add_scalar('kl scale', self.kl_scale, self.frame_train)
+            self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame_train)
+            self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame_train)
 
         self._unapply_pop_art()
         self._adjust_kl_scale(kl)
@@ -310,8 +306,8 @@ class PPO(RLBase):
             data.state_values = (data.state_values - pa_mean) / pa_std
             data.value_targets = (data.value_targets - pa_mean) / pa_std
             if self._do_log:
-                self.logger.add_scalar('pop art mean', pa_mean, self.frame)
-                self.logger.add_scalar('pop art std', pa_std, self.frame)
+                self.logger.add_scalar('pop art mean', pa_mean, self.frame_train)
+                self.logger.add_scalar('pop art std', pa_std, self.frame_train)
 
     def _unapply_pop_art(self):
         if self.use_pop_art:
@@ -322,7 +318,7 @@ class PPO(RLBase):
             actor_params = AttrDict()
             if do_log:
                 actor_params.logger = self.logger
-                actor_params.cur_step = self.step
+                actor_params.cur_step = self.frame_train
 
             actor_out = self._train_model(batch.states, **actor_params)
 
@@ -459,13 +455,13 @@ class PPO(RLBase):
 
         if do_log and tag is not None:
             with torch.no_grad():
-                self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame)
-                self.logger.add_scalar('loss entropy' + tag, loss_ent.mean(), self.frame)
-                self.logger.add_scalar('loss state value' + tag, loss_value.mean(), self.frame)
-                self.logger.add_scalar('ratio mean' + tag, ratio.mean(), self.frame)
-                self.logger.add_scalar('ratio abs mean' + tag, ratio.abs().mean(), self.frame)
-                self.logger.add_scalar('ratio abs max' + tag, ratio.abs().max(), self.frame)
-                self.logger.add_scalar('loss policy' + tag, loss_clip.mean(), self.frame)
+                self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame_train)
+                self.logger.add_scalar('loss entropy' + tag, loss_ent.mean(), self.frame_train)
+                self.logger.add_scalar('loss state value' + tag, loss_value.mean(), self.frame_train)
+                self.logger.add_scalar('ratio mean' + tag, ratio.mean(), self.frame_train)
+                self.logger.add_scalar('ratio abs mean' + tag, ratio.abs().mean(), self.frame_train)
+                self.logger.add_scalar('ratio abs max' + tag, ratio.abs().max(), self.frame_train)
+                self.logger.add_scalar('loss policy' + tag, loss_clip.mean(), self.frame_train)
 
         return total_loss, kl.mean()
 
@@ -516,8 +512,8 @@ class PPO(RLBase):
             logits_opt.zero_grad()
 
         if self._do_log:
-            self.logger.add_scalar('target kl', pd.kl(logits_old, logits_target).sum(-1).mean(), self.frame)
-            self.logger.add_scalar('target end iter', iter, self.frame)
+            self.logger.add_scalar('target kl', pd.kl(logits_old, logits_target).sum(-1).mean(), self.frame_train)
+            self.logger.add_scalar('target end iter', iter, self.frame_train)
 
         logits_target.requires_grad = False
         return logits_target
@@ -557,27 +553,27 @@ class PPO(RLBase):
                 if data.states.dtype == torch.uint8:
                     img = img.float() / 255
                 img = make_grid(img, nrow=nrow, normalize=False)
-                self.logger.add_image('state', img, self.frame)
+                self.logger.add_image('state', img, self.frame_train)
             targets = data.value_targets
             values = data.state_values
             v_mean = values.mean(-1)
             t_mean = targets.mean(-1)
-            self.logger.add_histogram('rewards', data.rewards, self.frame)
-            self.logger.add_histogram('value_targets', targets, self.frame)
-            self.logger.add_histogram('advantages', data.advantages, self.frame)
-            self.logger.add_histogram('values', values, self.frame)
-            self.logger.add_scalar('value rmse', (v_mean - t_mean).pow(2).mean().sqrt(), self.frame)
-            self.logger.add_scalar('value abs err', (v_mean - t_mean).abs().mean(), self.frame)
-            self.logger.add_scalar('value max err', (v_mean - t_mean).abs().max(), self.frame)
+            self.logger.add_histogram('rewards', data.rewards, self.frame_train)
+            self.logger.add_histogram('value_targets', targets, self.frame_train)
+            self.logger.add_histogram('advantages', data.advantages, self.frame_train)
+            self.logger.add_histogram('values', values, self.frame_train)
+            self.logger.add_scalar('value rmse', (v_mean - t_mean).pow(2).mean().sqrt(), self.frame_train)
+            self.logger.add_scalar('value abs err', (v_mean - t_mean).abs().mean(), self.frame_train)
+            self.logger.add_scalar('value max err', (v_mean - t_mean).abs().max(), self.frame_train)
             if isinstance(self._train_model.heads.logits.pd, DiagGaussianPd):
                 mean, std = data.logits.chunk(2, dim=1)
-                self.logger.add_histogram('logits mean', mean, self.frame)
-                self.logger.add_histogram('logits std', std, self.frame)
+                self.logger.add_histogram('logits mean', mean, self.frame_train)
+                self.logger.add_histogram('logits std', std, self.frame_train)
             elif isinstance(self._train_model.heads.logits.pd, CategoricalPd):
-                self.logger.add_histogram('logits log_softmax', F.log_softmax(data.logits, dim=-1), self.frame)
-            self.logger.add_histogram('logits', data.logits, self.frame)
+                self.logger.add_histogram('logits log_softmax', F.log_softmax(data.logits, dim=-1), self.frame_train)
+            self.logger.add_histogram('logits', data.logits, self.frame_train)
             for name, param in self._train_model.named_parameters():
-                self.logger.add_histogram(name, param, self.frame)
+                self.logger.add_histogram(name, param, self.frame_train)
 
     def _create_steps_processor(self, prev_processor: Optional[StepsProcessor]) -> StepsProcessor:
         return StepsProcessor(self._train_model.heads.logits.pd, self.reward_discount, self.advantage_discount,

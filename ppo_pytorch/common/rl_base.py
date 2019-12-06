@@ -51,15 +51,21 @@ class RLBase:
         self._logger = None
         self._last_log_frame = -log_interval
         self._do_log = False
-        self.step = 0
+        self.step_eval = 0
+        self.step_train = 0
 
         self._model_saver = ModelSaver(model_save_folder, model_save_tag, model_save_interval,
                                        save_intermediate_models, self.actor_index)
 
     @property
-    def frame(self):
+    def frame_eval(self):
         """Processed frames across all actors"""
-        return self.step * self.num_actors
+        return self.step_eval * self.num_actors
+
+    @property
+    def frame_train(self):
+        """Processed frames across all actors"""
+        return self.step_train * self.num_actors
 
     @property
     def logger(self):
@@ -98,7 +104,7 @@ class RLBase:
         self.prev_states = self.cur_states
         self.cur_states = self._check_states(obs)
         actions = self._step(self.rewards, self.dones, self.cur_states)
-        self.step += 1
+        self.step_eval += 1
         if actions is None:
             return None
         if isinstance(self.action_space, Discrete):
@@ -176,7 +182,7 @@ class RLBase:
     def _check_log(self):
         """Check if logging should be enabled for current step."""
         if self.logger is not None and self.log_interval is not None and \
-                self.frame >= self._last_log_frame + self.log_interval:
+                self.frame_train >= self._last_log_frame + self.log_interval:
             self._last_log_frame += self.log_interval
             self._do_log = True
         else:
