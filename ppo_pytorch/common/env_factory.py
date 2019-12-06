@@ -98,6 +98,23 @@ class SimpleVecEnv(NamedVecEnv):
         return partial(make, self.env_name, self.observation_norm, self.frame_skip)
 
 
+class ProcgenVecEnv(NamedVecEnv):
+    def __init__(self, env_name, frame_skip=1, parallel='thread'):
+        self.frame_skip = frame_skip
+        super().__init__(env_name, parallel)
+
+    def get_env_factory(self):
+        def make(env_name, frame_skip):
+            env = gym.make(env_name)
+            env = ChannelTranspose(env)
+            env = Monitor(env)
+            if frame_skip > 1:
+                env = FrameSkipEnv(env, frame_skip)
+            return env
+
+        return partial(make, self.env_name, self.frame_skip)
+
+
 class FrameSkipEnv(gym.Wrapper):
     def __init__(self, env, skip=4):
         """Return only every `skip`-th frame"""
