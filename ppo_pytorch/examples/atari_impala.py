@@ -12,13 +12,15 @@ if __name__ == '__main__':
         eps_nu_alpha=(0.76, 0.005),
         init_nu_alpha=(1.0, 5.0),
         vtrace_max_ratio=1.0,
-        vtrace_kl_limit=0.2,
+        vtrace_kl_limit=0.3,
         loss_type='impala',
         eval_model_update_interval=5,
         replay_ratio=7,
         model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
-        upgo_scale=0.0,
-        # optimizer_factory=partial(GAdam, lr=2.5e-4, eps=1e-5, betas=(0.9, 0.9), amsgrad_decay=0.01),
+        upgo_scale=0.2,
+        # optimizer_factory=partial(RMSprop, lr=5e-4, eps=0.05),
+        optimizer_factory=partial(GAdam, lr=2.5e-4, betas=(0.9, 0.99), amsgrad_decay=0.0001, eps=1e-4),
+        # optimizer_factory=partial(optim.Adam, lr=2.5e-4, eps=1e-5),
     )
     hparams = dict(
     )

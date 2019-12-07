@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from functools import partial
+from torch.optim.rmsprop import RMSprop
 from ppo_pytorch.common.rl_alg_test import rl_alg_test, save_git_diff
 import time
 
