@@ -45,9 +45,11 @@ class IMPALA(PPO):
                  init_nu_alpha=(1.0, 5.0),
                  kl_limit=0.01,
                  replay_end_sampling_factor=0.1,
-                 eval_model_update_interval=1,
+                 eval_model_update_interval=5,
                  train_horizon=None,
                  loss_type='impala',
+                 eval_model_blend=0.2,
+                 smooth_model_blend=False,
                  use_pop_art=True,
                  **kwargs):
         super().__init__(*args, grad_clip_norm=grad_clip_norm, use_pop_art=use_pop_art, **kwargs)
@@ -62,6 +64,8 @@ class IMPALA(PPO):
         self.eval_model_update_interval = eval_model_update_interval
         self.kl_limit = kl_limit
         self.train_horizon = self.horizon if train_horizon is None else train_horizon
+        self.eval_model_blend = eval_model_blend
+        self.smooth_model_blend = smooth_model_blend
         # self.batch_size = self.train_horizon * (1 + self.replay_ratio)
 
         # print(self.horizon // self.train_horizon * self.num_actors, 'x', self.batch_size, 'batches per update')
@@ -89,7 +93,6 @@ class IMPALA(PPO):
         self._train_future: Optional[Future] = None
         self._data_future: Optional[Future] = None
         self._executor = ThreadPoolExecutor(max_workers=1)
-        self.eval_model_blend = 0.2
 
         # self.model_switch_interval = 8
         # self._last_switch_step = 0
@@ -278,12 +281,14 @@ class IMPALA(PPO):
         # self._adjust_kl_scale(kl)
         # NoisyLinear.randomize_network(self._train_model)
 
-        blend_models(self._train_model, eval_model, self.eval_model_blend)
         # self._copy_parameters(self._train_model, eval_modell)
-        # self._eval_no_copy_updates += 1
-        # if self._eval_no_copy_updates >= self.eval_model_update_interval:
-        #     self._eval_no_copy_updates = 0
-        #     self._copy_parameters(self._train_model, eval_model)
+        if self.smooth_model_blend:
+            blend_models(self._train_model, eval_model, self.eval_model_blend)
+        else:
+            self._eval_no_copy_updates += 1
+            if self._eval_no_copy_updates >= self.eval_model_update_interval:
+                self._eval_no_copy_updates = 0
+                self._copy_parameters(self._train_model, eval_model)
 
     def _impala_step(self, batch, do_log):
         with torch.enable_grad():
