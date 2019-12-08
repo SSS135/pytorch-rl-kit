@@ -161,6 +161,7 @@ class PPO(RLBase):
         self.advantage_scaled_clip = advantage_scaled_clip
         self.spu_dis_agg_lam = spu_dis_agg_lam
         self.use_pop_art = use_pop_art
+        self.lr_scheduler_factory = lr_scheduler_factory
 
         assert isinstance(constraint, str) or isinstance(constraint, list) or isinstance(constraint, tuple)
         self.constraint = (constraint,) if isinstance(constraint, str) else constraint
@@ -427,7 +428,7 @@ class PPO(RLBase):
         if self._has_constraint(Constraint.target):
             v_targ_clipped = values_old + (value_targets - values_old).clamp(-value_clip, value_clip)
             loss_value = self.value_loss_scale * barron_loss(values, v_targ_clipped, *self.barron_alpha_c, reduce=False)
-        elif self._has_constraint(Constraint.clip) or self._has_constraint(Constraint.kl):
+        elif self._has_constraint(Constraint.clip) or self._has_constraint(Constraint.kl) or self._has_constraint(Constraint.spu):
             if self.advantage_scaled_clip:
                 vclip = advantages.abs() * value_clip
                 v_pred_clipped = values_old + torch.min(torch.max(values - values_old, -vclip), vclip)
