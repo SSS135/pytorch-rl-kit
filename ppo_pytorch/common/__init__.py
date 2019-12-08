@@ -8,3 +8,6 @@ from .multiplayer_env_self_play_trainer import MultiplayerEnvSelfPlayTrainer
 from .repeat_env import RepeatEnv
 from .rl_base import RLBase
 from .value_decay import ValueDecay, DecayLR
+
+from .procgen_easy import register_environments
+register_environments()
