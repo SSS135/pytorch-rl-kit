@@ -25,7 +25,7 @@ def get_valid_filename(s):
 
 def get_log_dir(log_root_dir, alg_name, env_name, tag):
     timestr = time.strftime('%Y-%m-%d_%H-%M-%S')
-    dir_name = f'{alg_name}_{get_valid_filename(env_name)}_{tag}_{timestr}_'
+    dir_name = f'{alg_name}_{get_valid_filename(env_name)}_{timestr}_{tag}_'
     return tempfile.mkdtemp('', dir_name, log_root_dir)
 
 
