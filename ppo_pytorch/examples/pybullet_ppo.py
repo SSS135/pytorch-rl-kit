@@ -8,9 +8,9 @@ if __name__ == '__main__':
     alg_params = rl.algs.create_fc_kwargs(
         4e6,
         use_pop_art=True,
-        constraint='spu',
-        ppo_iters=9,
-        horizon=256,
+        # constraint='spu',
+        # ppo_iters=9,
+        horizon=128,
         batch_size=256,
         optimizer_factory=partial(optim.Adam, lr=5e-4, eps=1e-5),
         cuda_train=True,

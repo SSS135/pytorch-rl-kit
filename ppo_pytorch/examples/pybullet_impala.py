@@ -16,16 +16,16 @@ if __name__ == '__main__':
         cuda_eval=False,
         cuda_train=False,
 
-        replay_buf_size=3 * 128 * 1024,
+        replay_buf_size=2 * 128 * 1024,
         replay_end_sampling_factor=0.1,
         grad_clip_norm=None,
         use_pop_art=True,
-        eps_nu_alpha=(1.5, 0.005),
+        eps_nu_alpha=(0.1, 0.005),
         init_nu_alpha=(1.0, 5.0),
         vtrace_max_ratio=2.0,
         vtrace_kl_limit=0.5,
-        loss_type='impala',
-        eval_model_update_interval=5,
+        loss_type='v_mpo',
+        eval_model_update_interval=10,
         replay_ratio=7,
         upgo_scale=0.2,
         optimizer_factory=partial(optim.Adam, lr=5e-4, eps=1e-5),
@@ -33,6 +33,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
+        tag='[blend_0.2]',
         log_root_path=log_path,
         log_interval=10000,
     )
