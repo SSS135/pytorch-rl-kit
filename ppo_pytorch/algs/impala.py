@@ -194,7 +194,7 @@ class IMPALA(PPO):
         # return AttrDict(rand_samples)
 
         def cat_replay(last, rand):
-            return torch.cat([last, rand], 1)
+            # return torch.cat([last, rand], 1)
             # (H, B, *) + (H, B * replay, *) = (H, B, 1, *) + (H, B, replay, *) =
             # = (H, B, replay + 1, *) = (H, B * (replay + 1), *)
             H, B, *_ = last.shape
@@ -240,27 +240,29 @@ class IMPALA(PPO):
         assert len(rand_idx) == num_batches
 
         old_model = {k: v.clone() for k, v in self._train_model.state_dict().items()}
-        kl_list = []
+        kls_policy = []
+        kls_replay = []
         value_target_list = []
 
         with DataLoader(data, rand_idx, self.device_train, 4, dim=1) as data_loader:
             for batch_index in range(num_batches):
                 # prepare batch data
                 batch = AttrDict(data_loader.get_next_batch())
-                loss, kl = self._impala_step(batch, self._do_log and batch_index == num_batches - 1)
-                if loss is None:
-                    continue
-                kl_list.append(kl)
+                loss = self._impala_step(batch, self._do_log and batch_index == num_batches - 1)
+                kls_policy.append(batch.kl_policy.mean().item())
+                kls_replay.append(batch.kl.mean().item())
                 value_target_list.append(batch.value_targets.detach())
 
-        kl = np.mean(kl_list) if len(kl_list) > 0 else 0
+        kl_policy = np.mean(kls_policy)
+        kl_replay = np.mean(kls_replay)
 
         if self._do_log:
             self.logger.add_scalar('learning rate', self._learning_rate, self.frame_train)
             self.logger.add_scalar('clip mult', self._clip_mult, self.frame_train)
             if loss is not None:
                 self.logger.add_scalar('total loss', loss, self.frame_train)
-            self.logger.add_scalar('kl', kl, self.frame_train)
+            self.logger.add_scalar('kl', kl_policy, self.frame_train)
+            self.logger.add_scalar('kl_replay', kl_replay, self.frame_train)
             self.logger.add_scalar('kl scale', self.kl_scale, self.frame_train)
             self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame_train)
             self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame_train)
@@ -309,12 +311,10 @@ class IMPALA(PPO):
                 batch[k] = v if k == 'states' else v.cpu()
 
             # get loss
-            loss, kl = self._get_impala_loss(batch, do_log)
+            loss = self._get_impala_loss(batch, do_log)
             if loss is None:
-                return None, None
+                return None
             loss = loss.mean()
-
-        kl = kl.item()
 
         # optimize
         loss.backward()
@@ -324,9 +324,9 @@ class IMPALA(PPO):
         self._optimizer.zero_grad()
 
         self.nu_data.clamp_(min=math.sqrt(0.1 + 1) - 1)
-        self.alpha_data.clamp_(min=math.sqrt(0.5 + 1) - 1)
+        self.alpha_data.clamp_(min=math.sqrt(0.01 + 1) - 1)
 
-        return loss, kl
+        return loss
 
     def _get_impala_loss(self, data, do_log=False, pd=None, tag=''):
         """
@@ -352,25 +352,26 @@ class IMPALA(PPO):
             self._process_rewards(data)
         data.state_values = data.state_values[:-1]
 
-        data = AttrDict({k: v.flatten(end_dim=1) for k, v in data.items()})
+        for k, v in data.items():
+            data[k] = v.flatten(end_dim=1)
 
         eps_nu, eps_alpha = self.eps_nu_alpha
         # eps_alpha *= self._clip_mult
-        kl_policy = pd.kl(data.logits, data.logits_policy).sum(-1)
+        data.kl_policy = kl_policy = pd.kl(data.logits, data.logits_policy).sum(-1)
         if LossType.v_mpo in self.loss_type:
             losses = v_mpo_loss(
                 kl_policy, data.logp, data.advantages, data.advantages_upgo, data.vtrace_p,
                 self.nu, self.alpha, eps_nu, eps_alpha)
             if losses is None:
-                return None, None
+                return None
             loss_policy, loss_nu, loss_alpha = losses
             loss_policy = loss_policy + loss_nu + loss_alpha
         elif LossType.impala in self.loss_type:
             losses = scaled_impala_loss(
-                kl_policy, data.logp, data.advantages, data.advantages_upgo, data.vtrace_p,
+                kl_policy, data.kl, data.logp, data.advantages, data.advantages_upgo, data.vtrace_p,
                 self.nu, self.alpha, eps_nu, eps_alpha, self.kl_limit)
             if losses is None:
-                return None, None
+                return None
             loss_policy, loss_nu, loss_alpha, kurtosis = losses
             loss_policy = loss_policy + loss_nu + loss_alpha
 
@@ -427,7 +428,7 @@ class IMPALA(PPO):
                 # self.logger.add_histogram('loss ent hist' + tag, loss_ent, self.frame)
                 self.logger.add_histogram('ratio hist' + tag, ratio, self.frame_train)
 
-        return total_loss, kl_policy.mean()
+        return total_loss
 
     def _process_rewards(self, data, mean_norm=True):
         norm_rewards = self.reward_scale * data.rewards
@@ -450,8 +451,8 @@ class IMPALA(PPO):
             #     advantages_upgo /= pa_std
 
         # if LossType.impala is self.loss_type:
-        advantages = self._adv_norm(advantages)
-        advantages_upgo = self._adv_norm(advantages_upgo, update_stats=False)
+        # advantages = self._adv_norm(advantages)
+        # advantages_upgo = self._adv_norm(advantages_upgo, update_stats=False)
 
         data.vtrace_p, data.advantages_upgo = p, advantages_upgo
         data.value_targets, data.advantages, data.rewards = value_targets, advantages, norm_rewards

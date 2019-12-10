@@ -112,7 +112,7 @@ def v_mpo_loss(kl: torch.Tensor, logp: torch.Tensor, advantages: torch.Tensor, a
     # adv_norm = advantages.sign() * advantages.abs()#.pow(nu)
 
     #kl_mask = (kl <= kl_limit).float()
-    loss_policy = softmax.sub(softmax.median()).mul(softmax.numel()).detach() * -logp[mask]# * kl_mask
+    loss_policy = softmax.sub(softmax.median()).mul(softmax.numel()).mul(vtrace_p[mask]).detach() * -logp[mask]# * kl_mask
     loss_nu = nu * eps_nu + nu * adv_masked.exp().mean().log()
     loss_alpha = alpha * (eps_alpha - kl.detach()) + alpha.detach() * kl #* (kl_mask * 0.9 + 0.1)
 
@@ -124,26 +124,39 @@ def v_mpo_loss(kl: torch.Tensor, logp: torch.Tensor, advantages: torch.Tensor, a
 
 
 @torch.jit.script
-def scaled_impala_loss(kl: torch.Tensor, logp: torch.Tensor, advantages: torch.Tensor, advantages_upgo: torch.Tensor, vtrace_p: torch.Tensor,
-               nu: torch.Tensor, alpha: torch.Tensor, eps_nu: float, eps_alpha: float) \
-        -> Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
-    assert kl.dim() == logp.dim() == advantages.dim() == 1
+def scaled_impala_loss(kl_target: torch.Tensor, kl_replay: torch.Tensor, logp: torch.Tensor, advantages: torch.Tensor, advantages_upgo: torch.Tensor,
+                       vtrace_p: torch.Tensor, nu: torch.Tensor, alpha: torch.Tensor,
+                       eps_nu: float, eps_alpha: float, kl_limit: float) \
+        -> Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
+    assert kl_target.dim() == logp.dim() == advantages.dim() == 1
     assert nu.shape == alpha.shape == ()
-    assert eps_nu > 1, eps_nu
+    # assert eps_nu > 1, eps_nu
 
-    advmax = 10
-    advantages = (advantages.mul(vtrace_p) + advantages_upgo).clamp(-advmax, advmax)
-    adv_norm = advantages.sign() * advantages.abs().pow(nu.detach())
+    advantages = advantages.mul(vtrace_p).add_(advantages_upgo)
 
-    loss_policy = adv_norm.clamp(-advmax, advmax) * -logp
-    loss_nu = nu * (adv_norm.pow(4).mean() - eps_nu)
-    loss_alpha = alpha * (eps_alpha - kl.detach()) + alpha.detach() * kl
+    # old_rms = advantages.pow(2).mean().sqrt_().add_(1e-5)
+    # advantages = advantages.abs().pow_(nu).mul_(advantages.sign())
+    # advantages *= old_rms / advantages.pow(2).mean().sqrt_().add_(1e-5)
+
+    kl_mask = (kl_target <= kl_limit).float()
+    loss_policy = advantages.clamp(-5, 5).detach_() * -logp * kl_mask
+    loss_alpha = 0.1 * kl_replay
+
+    # mask = vtrace_p > 0.5
+    zero = torch.scalar_tensor(0.0, device=nu.device)
+    # if mask.float().mean().item() > 0.2:
+    #     adv_mask = advantages[mask]
+    #     std, mean = torch.std_mean(adv_mask)
+    #     kurtosis = adv_mask.sub(mean).div_(std + 1e-5).pow_(4).mean().pow_(1 / 4).detach_()
+    #     loss_nu = nu * (kurtosis - eps_nu).sign_()
+    # else:
+    loss_nu = kurtosis = zero
 
     assert loss_policy.shape == advantages.shape, (loss_policy.shape, advantages.shape)
     assert loss_nu.shape == (), loss_nu.shape
-    assert loss_alpha.shape == kl.shape, (loss_alpha.shape, kl.shape)
+    assert loss_alpha.shape == kl_target.shape, (loss_alpha.shape, kl_target.shape)
 
-    return loss_policy.mean(), loss_nu.mean(), loss_alpha.mean()
+    return loss_policy.mean(), loss_nu.mean(), loss_alpha.mean(), kurtosis
 
 
 class RunningNorm:
