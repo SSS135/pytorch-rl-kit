@@ -35,9 +35,18 @@ def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, 
     return ModularActor(models)
 
 
+def orthogonal_(tensor, gain=math.sqrt(2), mode='fan_in'):
+    with torch.no_grad():
+        tensor = torch.nn.init.orthogonal_(tensor)
+        fan = init._calculate_correct_fan(tensor, mode)
+        std = gain / math.sqrt(fan)
+        rms = tensor.pow(2).mean().sqrt()
+        return tensor.div_(rms).mul_(std)
+
+
 class FeatureExtractorBase(nn.Module, metaclass=ABCMeta):
     def __init__(self, norm_factory: NormFactory=None,
-                 weight_init_fn=init.kaiming_uniform_):
+                 weight_init_fn=orthogonal_):
         super().__init__()
         self.norm_factory = norm_factory
         self.weight_init_fn = weight_init_fn
