@@ -141,10 +141,24 @@ class ChannelTranspose(gym.ObservationWrapper):
     def __init__(self, env):
         super().__init__(env)
         obs = env.observation_space.shape
-        self.observation_space = spaces.Box(low=0, high=255, shape=(obs[2], obs[0], obs[1]), dtype=np.uint8)
+        low, high, dtype = env.observation_space.low[0, 0, 0], env.observation_space.high[0, 0, 0], env.observation_space.dtype
+        self.observation_space = spaces.Box(low=low, high=high, shape=(obs[2], obs[0], obs[1]), dtype=dtype)
 
     def observation(self, frame):
         return np.moveaxis(np.asarray(frame), -1, -3)
+
+
+class FloatToByteObs(gym.ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        obs = env.observation_space.shape
+        self.observation_space = spaces.Box(low=0, high=255, shape=obs, dtype=np.uint8)
+
+    def observation(self, frame):
+        frame = np.asarray(frame)
+        out = np.empty(frame.shape, np.uint8)
+        np.multiply(frame, 255, out=out, casting='unsafe')
+        return out
 
 
 class SimplifyFrame(gym.ObservationWrapper):
