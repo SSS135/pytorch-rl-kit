@@ -13,13 +13,16 @@ if __name__ == '__main__':
         num_actors=16,
         horizon=128,
         batch_size=256,
-        constraint='clip',
+        constraint='spu',
         value_loss_scale=0.5,
         grad_clip_norm=0.5,
         reward_discount=0.999,
-        ppo_iters=3,
+        ppo_iters=5,
         policy_clip=0.2,
         value_clip=0.2,
+        smooth_model_blend=True,
+        eval_model_update_interval=100,
+        eval_model_blend=0.01,
         model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
         cuda_eval=True,
         cuda_train=True,
@@ -30,7 +33,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[kl0.5]',
+        tag='[target0.01_spu_kl0.1]',
         log_root_path=log_path,
         log_interval=20000,
     )
