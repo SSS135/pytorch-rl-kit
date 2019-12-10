@@ -193,7 +193,7 @@ class MuZero(RLBase):
         with torch.no_grad():
             self._log_training_data(data)
             self._muzero_update(data)
-            self._model_saver.check_save_model(self._train_model, self.frame)
+            self._model_saver.check_save_model(self._train_model, self.frame_train)
 
     def _create_data(self):
         # (steps, actors, *)
@@ -238,10 +238,10 @@ class MuZero(RLBase):
         loss = self._update_traj(AttrDict({k: v.to(self.device_train, non_blocking=True) for k, v in data.items()}), self._do_log)
 
         if self._do_log:
-            self.logger.add_scalar('learning rate', self._optimizer.param_groups[0]['lr'], self.frame)
-            self.logger.add_scalar('total loss', loss, self.frame)
-            self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame)
-            self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame)
+            self.logger.add_scalar('learning rate', self._optimizer.param_groups[0]['lr'], self.frame_train)
+            self.logger.add_scalar('total loss', loss, self.frame_train)
+            self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame_train)
+            self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame_train)
 
         # self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
@@ -271,7 +271,7 @@ class MuZero(RLBase):
                 # loss += 0.5 * (logits_target - ac_out.logits).pow(2).mean(-1).mul(cum_nonterm).mean()
                 loss += 5 * self.pd.kl(logits_target, ac_out.logits).sum(-1).mul(cum_nonterm).mean()
                 loss += 0.01 * -self.pd.entropy(ac_out.logits).sum(-1).mul(cum_nonterm).mean()
-                if self.frame > 10000:
+                if self.frame_train > 10000:
                     loss += -self.pd.logp(batch.actions[i], ac_out.logits).sum(-1).mul(cum_nonterm).mean()
 
                 input_actions = self.pd.to_inputs(batch.actions[i])
@@ -285,10 +285,10 @@ class MuZero(RLBase):
 
         if do_log:
             rewards = self._train_model.reward_encoder(ac_out.reward_bins)
-            self.logger.add_scalar('reward rmse', (rewards - rtarg).pow(2).mean().sqrt(), self.frame)
+            self.logger.add_scalar('reward rmse', (rewards - rtarg).pow(2).mean().sqrt(), self.frame_train)
             state_values = self._train_model.value_encoder(ac_out_prev.state_value_bins)
-            self.logger.add_scalar('state_values rmse', (state_values - vtarg).pow(2).mean().sqrt(), self.frame)
-            self.logger.add_scalar('logits rmse', (ac_out_prev.logits - logits_target).pow(2).mean().sqrt(), self.frame)
+            self.logger.add_scalar('state_values rmse', (state_values - vtarg).pow(2).mean().sqrt(), self.frame_train)
+            self.logger.add_scalar('logits rmse', (ac_out_prev.logits - logits_target).pow(2).mean().sqrt(), self.frame_train)
 
         loss.backward()
         # clip_grad_norm_(self._train_model.parameters(), 4)
@@ -347,26 +347,26 @@ class MuZero(RLBase):
                 if data.states.dtype == torch.uint8:
                     img = img.float() / 255
                 img = make_grid(img, nrow=nrow, normalize=False)
-                self.logger.add_image('state', img, self.frame)
+                self.logger.add_image('state', img, self.frame_train)
             # vsize = data.value_targets.shape[-2] ** 0.5
             # targets = data.value_targets.sum(-2) / vsize
             # values = data.state_values.sum(-2) / vsize
             # v_mean = values.mean(-1)
             # t_mean = targets.mean(-1)
-            self.logger.add_scalar('entropy', self.pd.entropy(data.logits).mean(), self.frame)
-            self.logger.add_histogram('rewards', data.rewards, self.frame)
+            self.logger.add_scalar('entropy', self.pd.entropy(data.logits).mean(), self.frame_train)
+            self.logger.add_histogram('rewards', data.rewards, self.frame_train)
             # self.logger.add_histogram('value_targets', targets, self.frame)
             # self.logger.add_histogram('advantages', data.advantages, self.frame)
-            self.logger.add_histogram('values', data.state_values, self.frame)
+            self.logger.add_histogram('values', data.state_values, self.frame_train)
             # self.logger.add_scalar('value rmse', (v_mean - t_mean).pow(2).mean().sqrt(), self.frame)
             # self.logger.add_scalar('value abs err', (v_mean - t_mean).abs().mean(), self.frame)
             # self.logger.add_scalar('value max err', (v_mean - t_mean).abs().max(), self.frame)
             if isinstance(self.pd, DiagGaussianPd):
                 mean, std = data.logits.chunk(2, dim=1)
-                self.logger.add_histogram('logits mean', mean, self.frame)
-                self.logger.add_histogram('logits std', std, self.frame)
+                self.logger.add_histogram('logits mean', mean, self.frame_train)
+                self.logger.add_histogram('logits std', std, self.frame_train)
             elif isinstance(self.pd, CategoricalPd):
-                self.logger.add_histogram('logits log_softmax', F.log_softmax(data.logits, dim=-1), self.frame)
-            self.logger.add_histogram('logits', data.logits, self.frame)
+                self.logger.add_histogram('logits log_softmax', F.log_softmax(data.logits, dim=-1), self.frame_train)
+            self.logger.add_histogram('logits', data.logits, self.frame_train)
             for name, param in self._train_model.named_parameters():
-                self.logger.add_histogram(name, param, self.frame)
+                self.logger.add_histogram(name, param, self.frame_train)
