@@ -45,11 +45,11 @@ class IMPALA(PPO):
                  init_nu_alpha=(1.0, 5.0),
                  kl_limit=0.01,
                  replay_end_sampling_factor=0.1,
-                 eval_model_update_interval=5,
                  train_horizon=None,
                  loss_type='impala',
-                 eval_model_blend=0.2,
-                 smooth_model_blend=False,
+                 smooth_model_blend=True,
+                 eval_model_update_interval=100,
+                 eval_model_blend=0.01,
                  use_pop_art=True,
                  **kwargs):
         super().__init__(*args, grad_clip_norm=grad_clip_norm, use_pop_art=use_pop_art, **kwargs)
@@ -61,10 +61,10 @@ class IMPALA(PPO):
         self.min_replay_size = min_replay_size
         self.replay_end_sampling_factor = replay_end_sampling_factor
         self.eps_nu_alpha = eps_nu_alpha
-        self.eval_model_update_interval = eval_model_update_interval
         self.kl_limit = kl_limit
         self.train_horizon = self.horizon if train_horizon is None else train_horizon
         self.eval_model_blend = eval_model_blend
+        self.eval_model_update_interval = eval_model_update_interval
         self.smooth_model_blend = smooth_model_blend
         # self.batch_size = self.train_horizon * (1 + self.replay_ratio)
 
@@ -78,6 +78,7 @@ class IMPALA(PPO):
         init_nu_alpha = [max(1e-6, (x + 1) ** 0.5 - 1) for x in init_nu_alpha]
         self.nu_data = torch.scalar_tensor(init_nu_alpha[0], requires_grad=True)
         self.alpha_data = torch.scalar_tensor(init_nu_alpha[1], requires_grad=True)
+        self._optimizer.add_param_group(dict(params=[self.nu_data, self.alpha_data], lr=1e-4))
 
         # DataLoader limitation
         assert self.batch_size % self.train_horizon == 0 and self.horizon % self.train_horizon == 0, (self.batch_size, self.horizon)
@@ -89,27 +90,29 @@ class IMPALA(PPO):
         self._eval_steps = 0
         self._eval_no_copy_updates = 0
         self._adv_norm = RunningNorm(mean_norm=False)
-        self._target_model = self.model_factory(self.observation_space, self.action_space).to(self.device_train)
         self._train_future: Optional[Future] = None
         self._data_future: Optional[Future] = None
         self._executor = ThreadPoolExecutor(max_workers=1)
 
+        self._target_model = self.model_factory(self.observation_space, self.action_space).to(self.device_train)
+        self._target_model.load_state_dict(self._train_model.state_dict())
+
         # self.model_switch_interval = 8
         # self._last_switch_step = 0
-        self._discounts = [0.99]
-        self._train_models = [self.model_factory(self.observation_space, self.action_space).to(self.device_train)
-                              for _ in self._discounts]
-        self._eval_models = [copy.deepcopy(m).to(self.device_eval) for m in self._train_models]
-        self._optimizers = [self.optimizer_factory(m.parameters()) for m in self._train_models]
-        self._lr_schedulers = [self.lr_scheduler_factory(opt) if self.lr_scheduler_factory is not None else None
-                               for opt in self._optimizers]
-        self._train_model_index = 0
-        self._eval_model_index = 0
-
-        for opt in self._optimizers:
-            opt.add_param_group(dict(params=[self.nu_data, self.alpha_data]))
-
-        self._switch_model()
+        # self._discounts = [self.reward_discount]
+        # self._train_models = [self.model_factory(self.observation_space, self.action_space).to(self.device_train)
+        #                       for _ in self._discounts]
+        # self._eval_models = [copy.deepcopy(m).to(self.device_eval) for m in self._train_models]
+        # self._optimizers = [self.optimizer_factory(m.parameters()) for m in self._train_models]
+        # self._lr_schedulers = [self.lr_scheduler_factory(opt) if self.lr_scheduler_factory is not None else None
+        #                        for opt in self._optimizers]
+        # self._train_model_index = 0
+        # self._eval_model_index = 0
+        #
+        # for opt in self._optimizers:
+        #     opt.add_param_group(dict(params=[self.nu_data, self.alpha_data]))
+        #
+        # self._switch_model()
 
     @property
     def nu(self):
@@ -160,7 +163,7 @@ class IMPALA(PPO):
         if self._train_future is not None:
             self._train_future.result()
 
-        self._switch_model()
+        # self._switch_model()
 
         self._train_future = self._executor.submit(self._train_async, data)
 
@@ -172,14 +175,14 @@ class IMPALA(PPO):
             self._model_saver.check_save_model(self._train_model, self.frame_train)
             self._scheduler_step()
 
-    def _switch_model(self):
-        self._train_model_index = self._eval_model_index
-        self._eval_model_index = random.randrange(len(self._discounts))
-        self._train_model = self._train_models[self._train_model_index]
-        self._optimizer = self._optimizers[self._train_model_index]
-        self.reward_discount = self._discounts[self._train_model_index]
-        self._lr_scheduler = self._lr_schedulers[self._train_model_index]
-        self._eval_model = self._eval_models[self._eval_model_index]
+    # def _switch_model(self):
+    #     self._train_model_index = self._eval_model_index
+    #     self._eval_model_index = random.randrange(len(self._discounts))
+    #     self._train_model = self._train_models[self._train_model_index]
+    #     self._optimizer = self._optimizers[self._train_model_index]
+    #     self.reward_discount = self._discounts[self._train_model_index]
+    #     self._lr_scheduler = self._lr_schedulers[self._train_model_index]
+    #     self._eval_model = self._eval_models[self._eval_model_index]
 
     # def _switch_model(self):
     #     self._train_model_index = random.randrange(len(self._lrs_discounts))
@@ -223,8 +226,8 @@ class IMPALA(PPO):
             return AttrDict(last_samples)
 
     def _impala_update(self, data: AttrDict):
-        eval_model = self._eval_models[self._train_model_index]
-        self._target_model.load_state_dict(eval_model.state_dict())
+        # eval_model = self._eval_models[self._train_model_index]
+        # self._target_model.load_state_dict(eval_model.state_dict())
 
         if self.use_pop_art:
             self._train_model.heads.state_values.normalize(*self._pop_art.statistics)
@@ -250,7 +253,7 @@ class IMPALA(PPO):
                 batch = AttrDict(data_loader.get_next_batch())
                 loss = self._impala_step(batch, self._do_log and batch_index == num_batches - 1)
                 kls_policy.append(batch.kl_policy.mean().item())
-                kls_replay.append(batch.kl.mean().item())
+                kls_replay.append(batch.kl_replay.mean().item())
                 value_target_list.append(batch.value_targets.detach())
 
         kl_policy = np.mean(kls_policy)
@@ -283,14 +286,14 @@ class IMPALA(PPO):
         # self._adjust_kl_scale(kl)
         # NoisyLinear.randomize_network(self._train_model)
 
-        # self._copy_parameters(self._train_model, eval_modell)
+        self._copy_parameters(self._train_model, self._eval_model)
         if self.smooth_model_blend:
-            blend_models(self._train_model, eval_model, self.eval_model_blend)
+            blend_models(self._train_model, self._target_model, self.eval_model_blend)
         else:
             self._eval_no_copy_updates += 1
             if self._eval_no_copy_updates >= self.eval_model_update_interval:
                 self._eval_no_copy_updates = 0
-                self._copy_parameters(self._train_model, eval_model)
+                self._copy_parameters(self._train_model, self._target_model)
 
     def _impala_step(self, batch, do_log):
         with torch.enable_grad():
@@ -323,8 +326,8 @@ class IMPALA(PPO):
         self._optimizer.step()
         self._optimizer.zero_grad()
 
-        self.nu_data.clamp_(min=math.sqrt(0.1 + 1) - 1)
-        self.alpha_data.clamp_(min=math.sqrt(0.01 + 1) - 1)
+        self.nu_data.clamp_(math.sqrt(0.1 + 1) - 1, math.sqrt(10 + 1) - 1)
+        self.alpha_data.clamp_(math.sqrt(0.1 + 1) - 1, math.sqrt(10 + 1) - 1)
 
         return loss
 
@@ -346,7 +349,7 @@ class IMPALA(PPO):
         data.logp_policy = pd.logp(data.actions, data.logits_policy).sum(-1)
         data.logp = pd.logp(data.actions, data.logits).sum(-1)
         data.probs_ratio = (data.logp.detach() - data.logp_old).exp()
-        data.kl = pd.kl(data.logits, data.logits_old).sum(-1)
+        data.kl_replay = pd.kl(data.logits, data.logits_old).sum(-1)
 
         with torch.no_grad():
             self._process_rewards(data)
@@ -368,7 +371,7 @@ class IMPALA(PPO):
             loss_policy = loss_policy + loss_nu + loss_alpha
         elif LossType.impala in self.loss_type:
             losses = scaled_impala_loss(
-                kl_policy, data.kl, data.logp, data.advantages, data.advantages_upgo, data.vtrace_p,
+                kl_policy, data.kl_replay, data.logp, data.advantages, data.advantages_upgo, data.vtrace_p,
                 self.nu, self.alpha, eps_nu, eps_alpha, self.kl_limit)
             if losses is None:
                 return None
@@ -396,7 +399,7 @@ class IMPALA(PPO):
         # assert loss_policy.shape == loss_kl.shape, (loss_policy.shape, loss_kl.shape)
         # assert loss_policy.shape == loss_value.shape, (loss_policy.shape, loss_value.shape)
         # assert loss_nu.shape == (), loss_nu.shape
-        # assert loss_alpha.shape == (*loss_policy.shape, data.kl.shape[-1]), (loss_alpha.shape, loss_policy.shape)
+        # assert loss_alpha.shape == (*loss_policy.shape, data.kl_replay.shape[-1]), (loss_alpha.shape, loss_policy.shape)
 
         loss_ent = loss_ent.mean()
         # loss_policy = loss_policy.sum()
@@ -440,15 +443,15 @@ class IMPALA(PPO):
         # calculate value targets and advantages
         value_targets, advantages, advantages_upgo, p = calc_vtrace(
             norm_rewards, state_values,
-            data.dones, data.probs_ratio.detach(), data.kl.detach(),
+            data.dones, data.probs_ratio.detach(), data.kl_replay.detach(),
             self.reward_discount, self.vtrace_max_ratio, self.vtrace_kl_limit)
 
         advantages_upgo *= self.upgo_scale
         if self.use_pop_art:
             value_targets = (value_targets - pa_mean) / pa_std
-            # if LossType.impala is self.loss_type:
-            #     advantages /= pa_std
-            #     advantages_upgo /= pa_std
+            if LossType.impala is self.loss_type:
+                advantages /= pa_std
+                advantages_upgo /= pa_std
 
         # if LossType.impala is self.loss_type:
         # advantages = self._adv_norm(advantages)
