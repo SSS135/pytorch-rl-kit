@@ -4,6 +4,7 @@ import tempfile
 import time
 from collections import deque, namedtuple
 from typing import List
+from torch.utils.tensorboard import SummaryWriter
 
 import numpy as np
 
@@ -50,7 +51,6 @@ class TensorboardEnvLogger:
             reward_std_episodes: Reward statistics calculation window.
         """
         assert log_dir is not None
-        from tensorboardX import SummaryWriter  # to remove dependency if not used
         self.log_interval = log_interval
         self.log_dir = log_dir
         self.alg_name = alg_name

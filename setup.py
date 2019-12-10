@@ -8,7 +8,6 @@ if sys.version_info.major != 3:
 
 setup(name='ppo_pytorch',
     install_requires=[
-        'tensorboardX',
     ],
     description="Proximal Policy Optimization in PyTorch",
     author="Alexander Penkin",

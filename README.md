@@ -54,8 +54,7 @@ With some effort QRNN could be replaced with another RNN architecture like LSTM 
 Required packages:
 - PyTorch 0.4.1
 - gym
-- [tensorboardX](https://github.com/lanpa/tensorboardX)
-- [pytorch-qrnn](https://github.com/salesforce/pytorch-qrnn) (only if using QRNN)
+- [pytorch-qrnn](https://github.com/salesforce/pytorch-qrnn) (only when using QRNN)
 
 ## Training
 
