@@ -4,8 +4,8 @@ import torch
 import torch.jit
 
 
-def blend_models(src, dst, factor):
-    for src, dst in zip(src.state_dict().values(), dst.state_dict().values()):
+def blend_models(src_module, dst_module, factor):
+    for src, dst in zip(src_module.state_dict().values(), dst_module.state_dict().values()):
         if dst.dtype == torch.long:
             dst.data.copy_(src.data)
         else:
@@ -140,7 +140,8 @@ def scaled_impala_loss(kl_target: torch.Tensor, kl_replay: torch.Tensor, logp: t
 
     kl_mask = (kl_target <= kl_limit).float()
     loss_policy = advantages.clamp(-5, 5).detach_() * -logp * kl_mask
-    loss_alpha = 0.1 * kl_replay
+    # loss_alpha = alpha * (eps_alpha - kl_target.detach()) + alpha.detach() * kl_target
+    loss_alpha = 0.1 * kl_target
 
     # mask = vtrace_p > 0.5
     zero = torch.scalar_tensor(0.0, device=nu.device)

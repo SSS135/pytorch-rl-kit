@@ -1,5 +1,6 @@
 import copy
 import random
+from collections import deque
 from enum import Enum
 from functools import partial
 from typing import Optional
@@ -286,14 +287,14 @@ class IMPALA(PPO):
         # self._adjust_kl_scale(kl)
         # NoisyLinear.randomize_network(self._train_model)
 
-        self._copy_parameters(self._train_model, self._eval_model)
+        self._copy_state_dict(self._train_model, self._eval_model)
         if self.smooth_model_blend:
             blend_models(self._train_model, self._target_model, self.eval_model_blend)
         else:
             self._eval_no_copy_updates += 1
             if self._eval_no_copy_updates >= self.eval_model_update_interval:
                 self._eval_no_copy_updates = 0
-                self._copy_parameters(self._train_model, self._target_model)
+                self._copy_state_dict(self._train_model, self._target_model)
 
     def _impala_step(self, batch, do_log):
         with torch.enable_grad():
@@ -326,8 +327,8 @@ class IMPALA(PPO):
         self._optimizer.step()
         self._optimizer.zero_grad()
 
-        self.nu_data.clamp_(math.sqrt(0.1 + 1) - 1, math.sqrt(10 + 1) - 1)
-        self.alpha_data.clamp_(math.sqrt(0.1 + 1) - 1, math.sqrt(10 + 1) - 1)
+        self.nu_data.clamp_(min=math.sqrt(0.1 + 1) - 1)
+        self.alpha_data.clamp_(min=math.sqrt(0.1 + 1) - 1)
 
         return loss
 

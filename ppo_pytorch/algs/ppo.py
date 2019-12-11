@@ -170,12 +170,10 @@ class PPO(RLBase):
 
         self._train_model: Actor = model_factory(observation_space, action_space)
         self._eval_model: Actor = model_factory(observation_space, action_space)
-        self._copy_parameters(self._train_model, self._eval_model)
         if self.model_init_path is not None:
-            state_dict = torch.load(self.model_init_path)
-            self._train_model.load_state_dict(state_dict, True)
-            self._eval_model.load_state_dict(state_dict, True)
+            self._train_model.load_state_dict(torch.load(self.model_init_path), True)
             print(f'loaded model {self.model_init_path}')
+        self._copy_state_dict(self._train_model, self._eval_model)
         self._train_model = self._train_model.train().to(self.device_train, non_blocking=True)
         self._eval_model = self._eval_model.eval().to(self.device_eval, non_blocking=True)
 
@@ -293,7 +291,7 @@ class PPO(RLBase):
         self._adjust_kl_scale(kl)
         NoisyLinear.randomize_network(self._train_model)
 
-        self._copy_parameters(self._train_model, self._eval_model)
+        self._copy_state_dict(self._train_model, self._eval_model)
         # self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
     def _apply_pop_art(self, data):
@@ -580,7 +578,7 @@ class PPO(RLBase):
         return StepsProcessor(self._train_model.heads.logits.pd, self.reward_discount, self.advantage_discount,
                               self.reward_scale, True, self.barron_alpha_c, self.entropy_reward_scale, prev_processor)
 
-    def _copy_parameters(self, src, dst):
+    def _copy_state_dict(self, src, dst):
         for src, dst in zip(src.state_dict().values(), dst.state_dict().values()):
             dst.data.copy_(src.data)
 
