@@ -12,17 +12,17 @@ if __name__ == '__main__':
 
         num_actors=8,
         horizon=128,
-        batch_size=256,
+        batch_size=512,
         value_loss_scale=0.5,
         cuda_eval=True,
         cuda_train=True,
 
         replay_buf_size=1024 * 1024,
-        replay_end_sampling_factor=0.005,
+        replay_end_sampling_factor=0.01,
         grad_clip_norm=None,
         use_pop_art=True,
-        eps_nu_alpha=(0.1, 0.02),
-        init_nu_alpha=(1.0, 1.0),
+        eps_nu_alpha=(0.1, 0.01),
+        init_nu_alpha=(1.0, 5.0),
         vtrace_max_ratio=2.0,
         vtrace_kl_limit=1.0,
         loss_type='impala',
@@ -33,14 +33,14 @@ if __name__ == '__main__':
         upgo_scale=0.2,
         entropy_loss_scale=1e-3,
         model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
-        optimizer_factory=partial(AdamW, lr=5e-4, eps=1e-5, weight_decay=1e-5),
+        optimizer_factory=partial(AdamW, lr=5e-4, eps=1e-5, weight_decay=1e-4),
         # optimizer_factory=partial(GAdam, lr=3e-4, betas=(0.9, 0.9), amsgrad_decay=0.01),
         # optimizer_factory=partial(GAdam, lr=5e-4, betas=(0.9, 0.99), amsgrad_decay=0.0001, eps=1e-4),
     )
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[noadvnorm_slowtarg_ortinit_adamw_wd1e-5_prior0.005_bs256_no-kl-mask_alpha]',
+        tag='[noadvnorm_ortinit_prior0.01_bs256_kl-mask_wd1e-4_blend0.01]',
         log_root_path=log_path,
         log_interval=20000,
     )
