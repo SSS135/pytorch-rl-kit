@@ -67,8 +67,12 @@ class LayerNormFactory(NormFactory):
 
 
 class BatchNormFactory(NormFactory):
+    def __init__(self, *args, momentum=0.001, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.momentum = momentum
+
     def _fc_factory(self, num_features):
-        return nn.BatchNorm1d(num_features)
+        return nn.BatchNorm1d(num_features, momentum=self.momentum)
 
     def _cnn_factory(self, num_features):
-        return nn.BatchNorm2d(num_features)
+        return nn.BatchNorm2d(num_features, momentum=self.momentum)
