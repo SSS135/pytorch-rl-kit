@@ -83,10 +83,11 @@ def calc_value_targets(rewards: torch.Tensor, values: torch.Tensor, dones: torch
     for t_inv in range(rewards.shape[0]):
         t = rewards.shape[0] - 1 - t_inv
         if upgo and t + 1 < rewards.shape[0]:
-            good = (rewards[t + 1] + nonterminal[t + 1] * reward_discount * values[t + 2] >= values[t + 1]).float()
+            good = rewards[t + 1].addcmul(nonterminal[t + 1], values[t + 2], value=reward_discount).gt_(values[t + 1])
         else:
             good = one
-        targets[t] = R = rewards[t] + nonterminal[t] * reward_discount * torch.lerp(values[t + 1], R, gae_lambda * good)
+        rewards[t].addcmul(nonterminal[t], torch.lerp(values[t + 1], R, gae_lambda * good), value=reward_discount, out=targets[t])
+        R = targets[t]
 
     return targets
 
@@ -104,14 +105,15 @@ def calc_vtrace(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor
     if max_ratio > 1.0:
         for i_inv in range(probs_ratio.shape[0] - 1):
             i = probs_ratio.shape[0] - 2 - i_inv
-            probs_ratio[i] *= probs_ratio[i + 1].clamp(1.0, max_ratio) * nonterminal[i] + dones[i]
+            probs_ratio[i] *= torch.addcmul(dones[i], probs_ratio[i + 1].clamp(1.0, max_ratio), nonterminal[i])
     kl_mask = 1.0 - (kl_div / kl_limit).clamp_max(1.0)
     c = p = (probs_ratio.clamp_max(max_ratio) * kl_mask).clamp_max(1.0)
     deltas = p * (rewards + nonterminal * discount * values[1:] - values[:-1])
+    nonterm_c = nonterminal * c
     vs_minus_v_xs = torch.zeros_like(values)
     for i_inv in range(rewards.shape[0]):
         i = rewards.shape[0] - 1 - i_inv
-        vs_minus_v_xs[i] = deltas[i] + nonterminal[i] * discount * c[i] * vs_minus_v_xs[i + 1]
+        torch.addcmul(deltas[i], nonterm_c[i], vs_minus_v_xs[i + 1], value=discount, out=vs_minus_v_xs[i])
     value_targets = vs_minus_v_xs + values
     advantages_vtrace = rewards + nonterminal * discount * value_targets[1:] - values[:-1]
     advantages_upgo = calc_value_targets(rewards, values, dones, discount, upgo=True) - values[:-1]
