@@ -45,6 +45,7 @@ class IMPALA(PPO):
                  eps_nu_alpha=(3.0, 0.005), # (0.1, 0.005) for V-MPO
                  init_nu_alpha=(1.0, 5.0),
                  kl_limit=0.01,
+                 kl_scale=0.1,
                  replay_end_sampling_factor=0.1,
                  train_horizon=None,
                  loss_type='impala',
@@ -53,7 +54,7 @@ class IMPALA(PPO):
                  eval_model_blend=0.01,
                  use_pop_art=True,
                  **kwargs):
-        super().__init__(*args, grad_clip_norm=grad_clip_norm, use_pop_art=use_pop_art, **kwargs)
+        super().__init__(*args, grad_clip_norm=grad_clip_norm, use_pop_art=use_pop_art, kl_scale=kl_scale, **kwargs)
         self.replay_buf_size = replay_buf_size
         self.replay_ratio = replay_ratio
         self.vtrace_max_ratio = vtrace_max_ratio
@@ -373,7 +374,7 @@ class IMPALA(PPO):
         elif LossType.impala in self.loss_type:
             losses = scaled_impala_loss(
                 kl_policy, data.kl_replay, data.logp, data.advantages, data.advantages_upgo, data.vtrace_p,
-                self.nu, self.alpha, eps_nu, eps_alpha, self.kl_limit)
+                self.nu, self.alpha, eps_nu, eps_alpha, self.kl_limit, self.kl_scale)
             if losses is None:
                 return None
             loss_policy, loss_nu, loss_alpha, kurtosis = losses

@@ -126,7 +126,7 @@ def v_mpo_loss(kl: torch.Tensor, logp: torch.Tensor, advantages: torch.Tensor, a
 @torch.jit.script
 def scaled_impala_loss(kl_target: torch.Tensor, kl_replay: torch.Tensor, logp: torch.Tensor, advantages: torch.Tensor, advantages_upgo: torch.Tensor,
                        vtrace_p: torch.Tensor, nu: torch.Tensor, alpha: torch.Tensor,
-                       eps_nu: float, eps_alpha: float, kl_limit: float) \
+                       eps_nu: float, eps_alpha: float, kl_limit: float, kl_scale: float) \
         -> Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
     assert kl_target.dim() == logp.dim() == advantages.dim() == 1
     assert nu.shape == alpha.shape == ()
@@ -141,7 +141,7 @@ def scaled_impala_loss(kl_target: torch.Tensor, kl_replay: torch.Tensor, logp: t
     kl_mask = (kl_target <= kl_limit).float()
     loss_policy = advantages.clamp(-5, 5).detach_() * -logp * kl_mask
     # loss_alpha = alpha * (eps_alpha - kl_target.detach()) + alpha.detach() * kl_target
-    loss_alpha = 0.1 * kl_target
+    loss_alpha = kl_scale * kl_target
 
     # mask = vtrace_p > 0.5
     zero = torch.scalar_tensor(0.0, device=nu.device)
