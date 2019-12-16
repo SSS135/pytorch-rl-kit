@@ -110,18 +110,18 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                     nn.MaxPool2d(3, 2, 1),
                     ResidualBlock(
                         *cnn_norm_fn(c_out),
-                        nn.ReLU(),
+                        nn.ReLU(True),
                         nn.Conv2d(c_out, c_out, 3, 1, 1),
                         *cnn_norm_fn(c_out),
-                        nn.ReLU(),
+                        nn.ReLU(True),
                         nn.Conv2d(c_out, c_out, 3, 1, 1),
                     ),
                     ResidualBlock(
                         *cnn_norm_fn(c_out),
-                        nn.ReLU(),
+                        nn.ReLU(True),
                         nn.Conv2d(c_out, c_out, 3, 1, 1),
                         *cnn_norm_fn(c_out),
-                        nn.ReLU(),
+                        nn.ReLU(True),
                         nn.Conv2d(c_out, c_out, 3, 1, 1),
                     ),
                     # ActivationNorm(c_out, c_out // 16),
@@ -130,14 +130,17 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                 impala_block(input_channels, 16 * c_mult),
                 impala_block(16 * c_mult, 32 * c_mult),
                 impala_block(32 * c_mult, 32 * c_mult),
-                *cnn_norm_fn(32 * c_mult),
-                nn.ReLU(),
+                # impala_block(64 * c_mult, 64 * c_mult),
+                nn.Sequential(
+                    *cnn_norm_fn(32 * c_mult),
+                    nn.ReLU(True),
+                )
             )
             self.linear = nn.Sequential(
                 Linear(self._calc_linear_size(), 256),
                 # ActivationNorm(256, 256 // 16),
                 *fc_norm_fn(256),
-                nn.ReLU(),
+                nn.ReLU(True),
             )
         else:
             raise ValueError(self.cnn_kind)
