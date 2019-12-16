@@ -29,18 +29,20 @@ if __name__ == '__main__':
         smooth_model_blend=True,
         eval_model_update_interval=100,
         eval_model_blend=0.01,
+        kl_scale=0.5,
+        kl_limit=0.01,
         replay_ratio=7,
         upgo_scale=0.2,
         entropy_loss_scale=1e-3,
-        model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
-        optimizer_factory=partial(AdamW, lr=5e-4, eps=1e-5, weight_decay=1e-4),
+        model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large', norm_factory=rl.actors.BatchNormFactory()),
+        optimizer_factory=partial(AdamW, lr=5e-4, eps=1e-5, weight_decay=1e-5),
         # optimizer_factory=partial(GAdam, lr=3e-4, betas=(0.9, 0.9), amsgrad_decay=0.01),
         # optimizer_factory=partial(GAdam, lr=5e-4, betas=(0.9, 0.99), amsgrad_decay=0.0001, eps=1e-4),
     )
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[noadvnorm_ortinit_prior0.01_bs256_kl-mask_wd1e-4_blend0.01]',
+        tag='[prior0.01_wd1e-4_blend0.01_kl0.5_klclip0.01_bn_softclip0.2]',
         log_root_path=log_path,
         log_interval=20000,
     )

@@ -3,13 +3,13 @@
 import platform
 is_linux = platform.system() == 'Linux'
 
+import torch
 import ppo_pytorch as rl
 import gym
 import gym.spaces
 import math
 import numpy as np
 import numpy.random as rng
-import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
@@ -17,6 +17,7 @@ from functools import partial
 from torch.optim.rmsprop import RMSprop
 from ppo_pytorch.common.rl_alg_test import rl_alg_test, save_git_diff
 import time
+
 
 log_path = './tensorboard'
 diff_path = './diffs'
