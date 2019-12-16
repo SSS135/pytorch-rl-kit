@@ -149,10 +149,10 @@ class CNNFeatureExtractor(FeatureExtractorBase):
     def output_size(self):
         return self.linear[0].out_features
 
-    def reset_weights(self):
-        super().reset_weights()
-        if self.cnn_kind == 'impala':
-            fixup_init(self.convs)
+    # def reset_weights(self):
+    #     super().reset_weights()
+    #     if self.cnn_kind == 'impala':
+    #         fixup_init(self.convs)
 
     def _calc_linear_size(self):
         shape = 1, self.input_shape[0] + (2 if self.add_positional_features else 0), *self.input_shape[1:]
