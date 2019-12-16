@@ -26,6 +26,8 @@ from ..actors.utils import model_diff
 from .utils import v_mpo_loss, RunningNorm, scaled_impala_loss
 from asyncio import Future
 from concurrent.futures import ThreadPoolExecutor
+from ..actors.activation_norm import activation_norm_loss
+import torch.nn.functional as F
 
 
 class LossType(Enum):
@@ -319,7 +321,11 @@ class IMPALA(PPO):
             loss = self._get_impala_loss(batch, do_log)
             if loss is None:
                 return None
-            loss = loss.mean()
+            act_norm_loss = activation_norm_loss(self._train_model).cpu()
+            loss = loss.mean() + (0.001 if self.frame_train > 50000 else 1.0) * act_norm_loss
+
+        if do_log:
+            self.logger.add_scalar('activation norm loss', act_norm_loss, self.frame_train)
 
         # optimize
         loss.backward()

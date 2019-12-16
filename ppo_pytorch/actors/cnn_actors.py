@@ -1,4 +1,5 @@
 import math
+from functools import partial
 
 import torch
 import torch.nn as nn
@@ -6,12 +7,13 @@ from optfn.skip_connections import ResidualBlock
 from torch import autograd
 from torch.autograd import Variable
 
-from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor
+from .actors import FeatureExtractorBase, create_ppo_actor
 from .norm_factory import NormFactory
 from .utils import make_conv_heatmap, image_to_float
 from ..common.make_grid import make_grid
 from ..config import Linear
 from .utils import fixup_init
+from .activation_norm import ActivationNorm, ActivationNormWrapper
 
 
 class GroupTranspose(nn.Module):
@@ -38,7 +40,8 @@ class CNNFeatureExtractor(FeatureExtractorBase):
     """
     Convolution network.
     """
-    def __init__(self, input_shape, cnn_kind='normal', cnn_activation=nn.ReLU, fc_activation=nn.ReLU,
+    def __init__(self, input_shape, cnn_kind='normal',
+                 cnn_activation=partial(nn.ReLU, inplace=True), fc_activation=partial(nn.ReLU, inplace=True),
                  add_positional_features=False, normalize_input=False, **kwargs):
         """
         Args:
@@ -104,7 +107,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
             def impala_block(c_in, c_out):
                 return nn.Sequential(
                     nn.Conv2d(c_in, c_out, 3, 1, 1),
-                    nn.MaxPool2d(3, 2),
+                    nn.MaxPool2d(3, 2, 1),
                     ResidualBlock(
                         *cnn_norm_fn(c_out),
                         nn.ReLU(),
@@ -120,7 +123,8 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                         *cnn_norm_fn(c_out),
                         nn.ReLU(),
                         nn.Conv2d(c_out, c_out, 3, 1, 1),
-                    )
+                    ),
+                    # ActivationNorm(c_out, c_out // 16),
                 )
             self.convs = nn.Sequential(
                 impala_block(input_channels, 16 * c_mult),
@@ -131,6 +135,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
             )
             self.linear = nn.Sequential(
                 Linear(self._calc_linear_size(), 256),
+                # ActivationNorm(256, 256 // 16),
                 *fc_norm_fn(256),
                 nn.ReLU(),
             )
@@ -163,12 +168,14 @@ class CNNFeatureExtractor(FeatureExtractorBase):
         is_linear = isinstance(transf, nn.Linear) or isinstance(transf, Linear)
         features = transf.out_features if is_linear else transf.out_channels
 
+        # parts = [ActivationNormWrapper(transf)]
         parts = [transf]
         if self.norm_factory is not None and \
                 (self.norm_factory.allow_after_first_layer or not first_layer) and \
                 (self.norm_factory.allow_fc if is_linear else self.norm_factory.allow_cnn):
             func = self.norm_factory.create_fc_norm if is_linear else self.norm_factory.create_cnn_norm
             parts.append(func(features, first_layer))
+        # parts.append(ActivationNorm(features, features // 16))
         parts.append(self.linear_activation() if is_linear else self.cnn_activation())
         return nn.Sequential(*parts)
 
