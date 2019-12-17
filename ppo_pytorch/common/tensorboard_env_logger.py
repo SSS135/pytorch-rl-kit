@@ -96,27 +96,27 @@ class TensorboardEnvLogger:
             self.last_log_frame += self.log_interval
             wrmean = np.mean(self.reward_window)
             wrstd = np.std(self.reward_window)
-            self.logger.add_scalar('reward mean window by episode', wrmean, self.frame)
-            self.logger.add_scalar('reward std window by episode', wrstd, self.frame)
-            self.logger.add_scalar('reward norm std window by episode', wrstd / max(1e-5, abs(wrmean)), self.frame)
-            self.logger.add_scalar('episode lengths', self.new_rewards[-1].info.len, self.new_rewards[-1].episode)
-            self.logger.add_scalar('reward by episode', self.new_rewards[-1].info.reward, self.new_rewards[-1].episode)
-            self.logger.add_scalar('reward by frame', self.new_rewards[-1].info.reward, self.new_rewards[-1].frame)
+            self.logger.add_scalar('reward_mean_window_by_episode', wrmean, self.frame)
+            self.logger.add_scalar('reward_std_window_by_episode', wrstd, self.frame)
+            self.logger.add_scalar('reward_norm_std_window_by_episode', wrstd / max(1e-5, abs(wrmean)), self.frame)
+            self.logger.add_scalar('episode_lengths', self.new_rewards[-1].info.len, self.new_rewards[-1].episode)
+            self.logger.add_scalar('reward_by_episode', self.new_rewards[-1].info.reward, self.new_rewards[-1].episode)
+            self.logger.add_scalar('reward_by_frame', self.new_rewards[-1].info.reward, self.new_rewards[-1].frame)
 
             avg_ep = np.mean([r.episode for r in self.new_rewards])
             avg_frame = np.mean([r.frame for r in self.new_rewards])
             avg_len = np.mean([r.info.len for r in self.new_rewards])
             avg_r = np.mean([r.info.reward for r in self.new_rewards])
-            self.logger.add_scalar('avg episode lengths', avg_len, avg_ep)
-            self.logger.add_scalar('avg reward by episode', avg_r, avg_ep)
+            self.logger.add_scalar('avg_episode_lengths', avg_len, avg_ep)
+            self.logger.add_scalar('avg_reward_by_episode', avg_r, avg_ep)
 
             for name in self.new_rewards[0].info.keys():
                 avg = np.mean([r.info[name] for r in self.new_rewards])
-                self.logger.add_scalar(f'avg {name} by frame', avg, avg_frame)
+                self.logger.add_scalar(f'avg_{name}_by_frame', avg, avg_frame)
 
             if len(self.new_rewards_orig) != 0:
                 avg_r_orig = np.mean([r.info.reward for r in self.new_rewards_orig])
-                self.logger.add_scalar('avg reward by frame orig', avg_r_orig, avg_frame)
+                self.logger.add_scalar('avg_reward_by_frame_orig', avg_r_orig, avg_frame)
                 self.new_rewards_orig.clear()
 
             self.new_rewards.clear()

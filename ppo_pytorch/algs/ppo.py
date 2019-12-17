@@ -279,13 +279,13 @@ class PPO(RLBase):
         kl = np.mean(kl_list)
 
         if self._do_log:
-            self.logger.add_scalar('learning rate', self._learning_rate, self.frame_train)
-            self.logger.add_scalar('clip mult', self._clip_mult, self.frame_train)
-            self.logger.add_scalar('total loss', loss, self.frame_train)
+            self.logger.add_scalar('learning_rate', self._learning_rate, self.frame_train)
+            self.logger.add_scalar('clip_mult', self._clip_mult, self.frame_train)
+            self.logger.add_scalar('total_loss', loss, self.frame_train)
             self.logger.add_scalar('kl', kl, self.frame_train)
-            self.logger.add_scalar('kl scale', self.kl_scale, self.frame_train)
-            self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame_train)
-            self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame_train)
+            self.logger.add_scalar('kl_scale', self.kl_scale, self.frame_train)
+            self.logger.add_scalar('model_abs_diff', model_diff(old_model, self._train_model), self.frame_train)
+            self.logger.add_scalar('model_max_diff', model_diff(old_model, self._train_model, True), self.frame_train)
 
         self._unapply_pop_art()
         self._adjust_kl_scale(kl)
@@ -305,8 +305,8 @@ class PPO(RLBase):
             data.state_values = (data.state_values - pa_mean) / pa_std
             data.value_targets = (data.value_targets - pa_mean) / pa_std
             if self._do_log:
-                self.logger.add_scalar('pop art mean', pa_mean, self.frame_train)
-                self.logger.add_scalar('pop art std', pa_std, self.frame_train)
+                self.logger.add_scalar('pop_art_mean', pa_mean, self.frame_train)
+                self.logger.add_scalar('pop_art_std', pa_std, self.frame_train)
 
     def _unapply_pop_art(self):
         if self.use_pop_art:
@@ -455,12 +455,12 @@ class PPO(RLBase):
         if do_log and tag is not None:
             with torch.no_grad():
                 self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame_train)
-                self.logger.add_scalar('loss entropy' + tag, loss_ent.mean(), self.frame_train)
-                self.logger.add_scalar('loss state value' + tag, loss_value.mean(), self.frame_train)
-                self.logger.add_scalar('ratio mean' + tag, ratio.mean(), self.frame_train)
-                self.logger.add_scalar('ratio abs mean' + tag, ratio.abs().mean(), self.frame_train)
-                self.logger.add_scalar('ratio abs max' + tag, ratio.abs().max(), self.frame_train)
-                self.logger.add_scalar('loss policy' + tag, loss_clip.mean(), self.frame_train)
+                self.logger.add_scalar('loss_entropy' + tag, loss_ent.mean(), self.frame_train)
+                self.logger.add_scalar('loss_state_value' + tag, loss_value.mean(), self.frame_train)
+                self.logger.add_scalar('ratio_mean' + tag, ratio.mean(), self.frame_train)
+                self.logger.add_scalar('ratio_abs_mean' + tag, ratio.abs().mean(), self.frame_train)
+                self.logger.add_scalar('ratio_abs_max' + tag, ratio.abs().max(), self.frame_train)
+                self.logger.add_scalar('loss_policy' + tag, loss_clip.mean(), self.frame_train)
 
         return total_loss, kl.mean()
 
@@ -511,8 +511,8 @@ class PPO(RLBase):
             logits_opt.zero_grad()
 
         if self._do_log:
-            self.logger.add_scalar('target kl', pd.kl(logits_old, logits_target).sum(-1).mean(), self.frame_train)
-            self.logger.add_scalar('target end iter', iter, self.frame_train)
+            self.logger.add_scalar('target_kl', pd.kl(logits_old, logits_target).sum(-1).mean(), self.frame_train)
+            self.logger.add_scalar('target_end_iter', iter, self.frame_train)
 
         logits_target.requires_grad = False
         return logits_target
@@ -561,13 +561,13 @@ class PPO(RLBase):
             self.logger.add_histogram('value_targets', targets, self.frame_train)
             self.logger.add_histogram('advantages', data.advantages, self.frame_train)
             self.logger.add_histogram('values', values, self.frame_train)
-            self.logger.add_scalar('value rmse', (v_mean - t_mean).pow(2).mean().sqrt(), self.frame_train)
-            self.logger.add_scalar('value abs err', (v_mean - t_mean).abs().mean(), self.frame_train)
-            self.logger.add_scalar('value max err', (v_mean - t_mean).abs().max(), self.frame_train)
+            self.logger.add_scalar('value_rmse', (v_mean - t_mean).pow(2).mean().sqrt(), self.frame_train)
+            self.logger.add_scalar('value_abs_err', (v_mean - t_mean).abs().mean(), self.frame_train)
+            self.logger.add_scalar('value_max_err', (v_mean - t_mean).abs().max(), self.frame_train)
             if isinstance(self._train_model.heads.logits.pd, DiagGaussianPd):
                 mean, std = data.logits.chunk(2, dim=1)
-                self.logger.add_histogram('logits mean', mean, self.frame_train)
-                self.logger.add_histogram('logits std', std, self.frame_train)
+                self.logger.add_histogram('logits_mean', mean, self.frame_train)
+                self.logger.add_histogram('logits_std', std, self.frame_train)
             elif isinstance(self._train_model.heads.logits.pd, CategoricalPd):
                 self.logger.add_histogram('logits log_softmax', F.log_softmax(data.logits, dim=-1), self.frame_train)
             self.logger.add_histogram('logits', data.logits, self.frame_train)

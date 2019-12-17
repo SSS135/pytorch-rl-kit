@@ -210,7 +210,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
         x = self.linear(x)
 
         if logger is not None:
-            logger.add_histogram('conv activations linear', x, cur_step)
+            logger.add_histogram('conv_activations_linear', x, cur_step)
 
         return x
 
@@ -219,8 +219,8 @@ class CNNFeatureExtractor(FeatureExtractorBase):
             img = x[0].unsqueeze(1).clone()
             img = make_conv_heatmap(img)
             img = make_grid(img, nrow=round(math.sqrt(x.shape[1])), normalize=False, fill_value=0.1)
-            logger.add_image('conv activations {} img'.format(index), img, cur_step)
-            logger.add_histogram('conv activations {} hist'.format(index), x[0], cur_step)
+            logger.add_image('conv_activations_{}_img'.format(index), img, cur_step)
+            logger.add_histogram('conv_activations_{}_hist'.format(index), x[0], cur_step)
 
     def _log_conv_filters(self, index: int, conv: nn.Conv2d, logger, cur_step):
         with torch.no_grad():
@@ -236,8 +236,8 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                 img = img[:channels]
             img = make_conv_heatmap(img, scale=2 * img.std())
             img = make_grid(img, nrow=round(math.sqrt(channels)), normalize=False, fill_value=0.1)
-            logger.add_image('conv featrues {} img'.format(index), img, cur_step)
-            logger.add_histogram('conv features {} hist'.format(index), conv.weight, cur_step)
+            logger.add_image('conv_featrues_{}_img'.format(index), img, cur_step)
+            logger.add_histogram('conv_features_{}_hist'.format(index), conv.weight, cur_step)
 
     def _log_policy_attention(self, states, head_out, logger, cur_step):
         states_grad = autograd.grad(
@@ -249,7 +249,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
             img /= img.view(4, -1).pow(2).mean(1).sqrt_().add_(1e-5).view(4, 1, 1, 1)
             img = img.view(-1, 1, *img.shape[2:]).abs()
             img = make_grid(img, 4, normalize=True, fill_value=0.1)
-            logger.add_image('state attention', img, cur_step)
+            logger.add_image('state_attention', img, cur_step)
 
 
 class Sega_CNNFeatureExtractor(CNNFeatureExtractor):

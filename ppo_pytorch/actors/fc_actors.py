@@ -93,7 +93,7 @@ class FCFeatureExtractor(FeatureExtractorBase):
         for i, layer in enumerate(self.model):
             x = layer(x)
             if logger is not None:
-                logger.add_histogram(f'layer {i} output', x, cur_step)
+                logger.add_histogram(f'layer_{i}_output', x, cur_step)
         return x.view(*input.shape[:-1], -1)
 
 
@@ -117,7 +117,7 @@ class FCActionFeatureExtractor(FeatureExtractorBase):
         for i, layer in enumerate(self.model):
             x = layer(torch.cat([x, ac_inputs], -1))
             if logger is not None:
-                logger.add_histogram(f'layer {i} output', x, cur_step)
+                logger.add_histogram(f'layer_{i}_output', x, cur_step)
         return x.view(*input.shape[:-1], -1)
 
     def reset_weights(self):
