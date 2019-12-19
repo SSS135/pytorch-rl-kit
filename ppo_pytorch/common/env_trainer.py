@@ -78,8 +78,6 @@ class EnvTrainer:
     def train(self, max_frames):
         """Train for specified number of frames and return episode info"""
         self.all_rewards = []
-        for _ in count():
-            self.step(self.frame + self.env.num_envs >= max_frames)
-            if self.frame >= max_frames:
-                break
-        # return self.all_rewards
+        while self.frame < max_frames:
+            self.step()
+        return self.all_rewards
