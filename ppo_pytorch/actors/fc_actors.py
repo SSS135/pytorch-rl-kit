@@ -2,6 +2,7 @@ import math
 from typing import List, Callable
 
 import torch.nn as nn
+from .activation_norm import ActivationNorm
 
 from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor
 from .heads import PolicyHead, StateValueHead
@@ -14,7 +15,7 @@ from .utils import fixup_init
 import torch.jit
 
 
-def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm: NormFactory = None):
+def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm: NormFactory = None, activation_norm=True):
     """
     Create fully connected network
     Args:
@@ -33,6 +34,8 @@ def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm:
         n_in = in_size if i == 0 else hidden_sizes[i - 1]
         n_out = hidden_sizes[i]
         layer = [Linear(n_in, n_out, bias=norm is None or not norm.disable_bias)]
+        if activation_norm:
+            layer.append(ActivationNorm())
         if norm is not None and norm.allow_fc and (norm.allow_after_first_layer or i != 0):
             layer.append(norm.create_fc_norm(n_out, i == 0))
         layer.append(activation())
@@ -88,13 +91,13 @@ class FCFeatureExtractor(FeatureExtractorBase):
         return self.hidden_sizes[-1]
 
     def forward(self, input: torch.Tensor, logger=None, cur_step=None, **kwargs):
-        x = input.view(-1, input.shape[-1])
+        x = input.reshape(-1, input.shape[-1])
         # x = self.model(x)
         for i, layer in enumerate(self.model):
             x = layer(x)
             if logger is not None:
                 logger.add_histogram(f'layer_{i}_output', x, cur_step)
-        return x.view(*input.shape[:-1], -1)
+        return x.reshape(*input.shape[:-1], -1)
 
 
 class FCActionFeatureExtractor(FeatureExtractorBase):

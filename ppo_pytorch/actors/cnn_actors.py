@@ -159,26 +159,29 @@ class CNNFeatureExtractor(FeatureExtractorBase):
         out_shape = self._extract_features(torch.randn(shape)).shape
         return out_shape[1] * out_shape[2] * out_shape[3]
 
-    def _make_fc_layer(self, in_features, out_features, first_layer=False):
+    def _make_fc_layer(self, in_features, out_features, first_layer=False, activation_norm=True):
         bias = self.norm_factory is None or not self.norm_factory.disable_bias or not self.norm_factory.allow_fc
-        return self._make_layer(Linear(in_features, out_features, bias=bias), first_layer=first_layer)
+        return self._make_layer(Linear(in_features, out_features, bias=bias),
+                                first_layer=first_layer, activation_norm=activation_norm)
 
-    def _make_cnn_layer(self, *args, first_layer=False, **kwargs):
+    def _make_cnn_layer(self, *args, first_layer=False, activation_norm=True, **kwargs):
         bias = self.norm_factory is None or not self.norm_factory.disable_bias or not self.norm_factory.allow_cnn
-        return self._make_layer(nn.Conv2d(*args, **kwargs, bias=bias), first_layer=first_layer)
+        return self._make_layer(nn.Conv2d(*args, **kwargs, bias=bias),
+                                first_layer=first_layer, activation_norm=activation_norm)
 
-    def _make_layer(self, transf, first_layer=False):
+    def _make_layer(self, transf, first_layer=False, activation_norm=True):
         is_linear = isinstance(transf, nn.Linear) or isinstance(transf, Linear)
         features = transf.out_features if is_linear else transf.out_channels
 
         # parts = [ActivationNormWrapper(transf)]
         parts = [transf]
+        if activation_norm:
+            parts.append(ActivationNorm())
         if self.norm_factory is not None and \
                 (self.norm_factory.allow_after_first_layer or not first_layer) and \
                 (self.norm_factory.allow_fc if is_linear else self.norm_factory.allow_cnn):
             func = self.norm_factory.create_fc_norm if is_linear else self.norm_factory.create_cnn_norm
             parts.append(func(features, first_layer))
-        # parts.append(ActivationNorm(features, features // 16))
         parts.append(self.linear_activation() if is_linear else self.cnn_activation())
         return nn.Sequential(*parts)
 
