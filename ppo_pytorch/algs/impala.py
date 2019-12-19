@@ -318,7 +318,7 @@ class IMPALA(PPO):
             if loss is None:
                 return None
             act_norm_loss = activation_norm_loss(self._train_model).cpu()
-            loss = loss.mean() + (0.001 if self.frame_train > 50000 else 1.0) * act_norm_loss
+            loss = loss.mean() + 0.003 * act_norm_loss
 
         if do_log:
             self.logger.add_scalar('activation_norm_loss', act_norm_loss, self.frame_train)
@@ -330,8 +330,8 @@ class IMPALA(PPO):
         self._optimizer.step()
         self._optimizer.zero_grad()
 
-        self.nu_data.clamp_(math.log(0.01), math.log(100))
-        self.alpha_data.clamp_(math.log(0.01), math.log(100))
+        self.nu_data.clamp_(math.log(0.001), math.log(100))
+        self.alpha_data.clamp_(math.log(0.001), math.log(100))
 
         return loss
 
@@ -376,7 +376,7 @@ class IMPALA(PPO):
         elif LossType.impala in self.loss_type:
             losses = scaled_impala_loss(
                 kl_policy, data.kl_replay, data.logp, data.advantages, data.advantages_upgo, data.vtrace_p,
-                self.nu, self.alpha, eps_nu, eps_alpha, self.kl_limit, self.kl_scale)
+                self.nu, self.alpha, eps_nu, eps_alpha, self.kl_limit)
             if losses is None:
                 return None
             loss_policy, loss_nu, loss_alpha, kurtosis = losses
