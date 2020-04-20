@@ -60,11 +60,16 @@ class FeatureExtractorBase(nn.Module, metaclass=ABCMeta):
         pass
 
 
+def recursive_reset_weights(module):
+    for m in module.children():
+        if hasattr(m, 'reset_weights'):
+            m.reset_weights()
+        recursive_reset_weights(m)
+
+
 class Actor(nn.Module, metaclass=ABCMeta):
     def reset_weights(self):
-        for m in self.modules():
-            if m is not self and hasattr(m, 'reset_weights'):
-                m.reset_weights()
+        recursive_reset_weights(self)
 
     @abstractmethod
     def forward(self, input, **kwargs) -> AttrDict:
