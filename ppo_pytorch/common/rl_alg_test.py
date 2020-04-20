@@ -16,7 +16,7 @@ from . import EnvTrainer
 
 
 def save_git_diff(save_folder, tag, repo_path):
-    diff = subprocess.check_output('git diff', cwd=repo_path)
+    diff = subprocess.check_output(['git', 'diff'], cwd=repo_path)
     with open(f'{save_folder}/{Path(repo_path).name}_{tag}.diff', 'wb') as file:
         file.write(diff)
 

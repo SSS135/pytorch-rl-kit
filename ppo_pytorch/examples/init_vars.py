@@ -21,12 +21,13 @@ import time
 
 log_path = './tensorboard'
 diff_path = './diffs'
+src_root = '/home/alexander/PyCharm' if is_linux else 'c:/Users/Alexander/sync-pc/PyCharm'
 
 time_str = time.strftime("%Y-%m-%d %H_%M_%S")
-save_git_diff(diff_path, time_str, 'c:/Users/Alexander/sync-pc/PyCharm/ppo_pytorch')
-save_git_diff(diff_path, time_str, 'c:/Users/Alexander/sync-pc/PyCharm/rl_exp')
-save_git_diff(diff_path, time_str, 'c:/Users/Alexander/sync-pc/PyCharm/optfn')
-save_git_diff(diff_path, time_str, 'c:/Users/Alexander/sync-pc/PyCharm/raic2019')
+save_git_diff(diff_path, time_str, f'{src_root}/ppo_pytorch')
+save_git_diff(diff_path, time_str, f'{src_root}/rl_exp')
+save_git_diff(diff_path, time_str, f'{src_root}/optfn')
+save_git_diff(diff_path, time_str, f'{src_root}/raic2019')
 print()
 print(time_str, '\n')
 
