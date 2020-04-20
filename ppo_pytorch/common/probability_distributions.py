@@ -509,21 +509,14 @@ class FixedStdGaussianPd(ProbabilityDistribution):
         return torch.float
 
     def logp(self, x, mean):
-        std = self.std
-        logstd = math.log(self.std)
         assert x.shape == mean.shape
-        return -((x - mean) ** 2) / (2 * std ** 2) - logstd - math.log(math.sqrt(2 * math.pi))
+        return -((x - mean) ** 2) / 2 - math.log(math.sqrt(2 * math.pi))
 
     def kl(self, mean1, mean2):
-        logstd1 = math.log(self.std)
-        logstd2 = math.log(self.std)
-        std1 = math.exp(logstd1)
-        std2 = math.exp(logstd2)
-        kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
-        return kl
+        return 0.5 * (mean2 - mean1) ** 2
 
     def entropy(self, mean):
-        return torch.zeros_like(mean) + 0.5 + 0.5 * math.log(2 * math.pi) + math.log(self.std)
+        return torch.zeros_like(mean) + (0.5 + 0.5 * math.log(2 * math.pi) + math.log(self.std))
 
     def sample(self, mean):
         return mean + self.std * torch.randn_like(mean)
