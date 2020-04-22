@@ -23,7 +23,6 @@ from .utils import v_mpo_loss, RunningNorm, scaled_impala_loss
 from asyncio import Future
 from concurrent.futures import ThreadPoolExecutor
 from ..actors.activation_norm import activation_norm_loss
-import torch.nn.functional as F
 
 
 class LossType(Enum):
@@ -40,8 +39,7 @@ class IMPALA(PPO):
                  vtrace_kl_limit=0.2,
                  upgo_scale=0.2,
                  grad_clip_norm=None,
-                 eps_nu_alpha=(3.0, 0.005), # (0.1, 0.005) for V-MPO
-                 init_nu_alpha=(1.0, 5.0),
+                 kl_pull=0.1,
                  kl_limit=0.01,
                  kl_scale=0.1,
                  replay_end_sampling_factor=0.1,
@@ -60,25 +58,17 @@ class IMPALA(PPO):
         self.upgo_scale = upgo_scale
         self.min_replay_size = min_replay_size
         self.replay_end_sampling_factor = replay_end_sampling_factor
-        self.eps_nu_alpha = eps_nu_alpha
+        self.kl_pull = kl_pull
         self.kl_limit = kl_limit
         self.train_horizon = self.horizon if train_horizon is None else train_horizon
         self.eval_model_blend = eval_model_blend
         self.eval_model_update_interval = eval_model_update_interval
         self.smooth_model_blend = smooth_model_blend
-        # self.batch_size = self.train_horizon * (1 + self.replay_ratio)
-
-        # print(self.horizon // self.train_horizon * self.num_actors, 'x', self.batch_size, 'batches per update')
 
         assert isinstance(loss_type, str) or isinstance(loss_type, list) or isinstance(loss_type, tuple)
         self.loss_type = (loss_type,) if isinstance(loss_type, str) else loss_type
         self.loss_type = [LossType[c] for c in self.loss_type]
         assert len(set(self.loss_type) - set(c for c in LossType)) == 0
-
-        init_nu_alpha = [math.log(x) for x in init_nu_alpha]
-        self.nu_data = torch.scalar_tensor(init_nu_alpha[0], requires_grad=True)
-        self.alpha_data = torch.scalar_tensor(init_nu_alpha[1], requires_grad=True)
-        self._optimizer.add_param_group(dict(params=[self.nu_data, self.alpha_data], lr=5e-5))
 
         # DataLoader limitation
         assert self.batch_size % self.train_horizon == 0 and self.horizon % self.train_horizon == 0, (self.batch_size, self.horizon)
@@ -98,34 +88,6 @@ class IMPALA(PPO):
         self._target_model.load_state_dict(self._train_model.state_dict())
         self._eval_model = self._eval_model.eval()
 
-        # self.model_switch_interval = 8
-        # self._last_switch_step = 0
-        # self._discounts_lrs = [dict(discount=disc, lr=lr) for disc in [0.97, 0.99, 0.997] for lr in [1e-4, 2e-4, 5e-4]]
-        # self._train_models = [self.model_factory(self.observation_space, self.action_space).to(self.device_train)
-        #                       for _ in self._discounts_lrs]
-        # self._eval_models = [copy.deepcopy(m).to(self.device_eval) for m in self._train_models]
-        # self._target_models = [copy.deepcopy(m).to(self.device_train) for m in self._train_models]
-        # self._pop_arts = [PopArt() for _ in self._train_models]
-        # self._optimizers = [self.optimizer_factory(m.parameters(), lr=disclr['lr'])
-        #                     for m, disclr in zip(self._train_models, self._discounts_lrs)]
-        # self._lr_schedulers = [self.lr_scheduler_factory(opt) if self.lr_scheduler_factory is not None else None
-        #                        for opt in self._optimizers]
-        # self._train_model_index = 0
-        # self._eval_model_index = 0
-        #
-        # for opt in self._optimizers:
-        #     opt.add_param_group(dict(params=[self.nu_data, self.alpha_data]))
-        #
-        # self._switch_model()
-
-    @property
-    def nu(self):
-        return self.nu_data.exp()
-
-    @property
-    def alpha(self):
-        return self.alpha_data.exp()
-
     def _step(self, rewards, dones, states) -> torch.Tensor:
         with torch.no_grad():
             # run network
@@ -134,11 +96,6 @@ class IMPALA(PPO):
             actions = self._eval_model.heads.logits.pd.sample(ac_out.logits).cpu()
 
             self._eval_steps += 1
-
-            # if self._eval_steps > self._last_switch_step + self.model_switch_interval:
-            #     self._last_switch_step = self._eval_steps
-            #     index = random.randrange(len(self._lrs_discounts))
-            #     self._eval_model = self._eval_models[index]
 
             if not self.disable_training:
                 if self._prev_data is not None and rewards is not None:
@@ -167,36 +124,17 @@ class IMPALA(PPO):
         if self._train_future is not None:
             self._train_future.result()
 
-        # self._switch_model()
-
         self._train_future = self._executor.submit(self._train_async, data)
 
     def _train_async(self, data):
         with torch.no_grad():
             self._check_log()
-            # self._log_training_data(data)
             self._impala_update(data)
             self._model_saver.check_save_model(self._train_model, self.frame_train)
             self._scheduler_step()
 
-    # def _switch_model(self):
-    #     self._train_model_index = self._eval_model_index
-    #     self._eval_model_index = (self._eval_model_index + 1) % len(self._eval_models)
-    #     self._train_model = self._train_models[self._train_model_index]
-    #     self._optimizer = self._optimizers[self._train_model_index]
-    #     self.reward_discount = self._discounts_lrs[self._train_model_index]['discount']
-    #     self._lr_scheduler = self._lr_schedulers[self._train_model_index]
-    #     self._target_model = self._target_models[self._train_model_index]
-    #     self._pop_art = self._pop_arts[self._train_model_index]
-    #     self._eval_model = self._eval_models[self._eval_model_index]
-
     def _create_data(self):
-        # rand_actors = self.batch_size * self.off_policy_batches // self.horizon
-        # rand_samples = self._replay_buffer.sample(rand_actors, self.horizon + 1)
-        # return AttrDict(rand_samples)
-
         def cat_replay(last, rand):
-            # return torch.cat([last, rand], 1)
             # (H, B, *) + (H, B * replay, *) = (H, B, 1, *) + (H, B, replay, *) =
             # = (H, B, replay + 1, *) = (H, B * (replay + 1), *)
             H, B, *_ = last.shape
@@ -226,8 +164,6 @@ class IMPALA(PPO):
 
     def _impala_update(self, data: AttrDict):
         eval_model = self._eval_model
-        # eval_model = self._eval_models[self._train_model_index]
-        # self._target_model.load_state_dict(eval_model.state_dict())
 
         if self.use_pop_art:
             self._train_model.heads.state_values.normalize(*self._pop_art.statistics)
@@ -269,8 +205,6 @@ class IMPALA(PPO):
             self.logger.add_scalar('kl_scale', self.kl_scale, self.frame_train)
             self.logger.add_scalar('model_abs_diff', model_diff(old_model, self._train_model), self.frame_train)
             self.logger.add_scalar('model_max_diff', model_diff(old_model, self._train_model, True), self.frame_train)
-            self.logger.add_scalar('nu', self.nu, self.frame_train)
-            self.logger.add_scalar('alpha', self.alpha, self.frame_train)
 
         if self.use_pop_art:
             pa_mean, pa_std = self._pop_art.statistics
@@ -282,9 +216,6 @@ class IMPALA(PPO):
             if self._do_log:
                 self.logger.add_scalar('pop_art_mean', pa_mean, self.frame_train)
                 self.logger.add_scalar('pop_art_std', pa_std, self.frame_train)
-
-        # self._adjust_kl_scale(kl)
-        # NoisyLinear.randomize_network(self._train_model)
 
         self._copy_state_dict(self._train_model, eval_model)
         if self.smooth_model_blend:
@@ -330,9 +261,6 @@ class IMPALA(PPO):
         self._optimizer.step()
         self._optimizer.zero_grad()
 
-        self.nu_data.clamp_(math.log(0.001), math.log(100))
-        self.alpha_data.clamp_(math.log(0.001), math.log(100))
-
         return loss
 
     def _get_impala_loss(self, data, do_log=False, pd=None, tag=''):
@@ -362,58 +290,37 @@ class IMPALA(PPO):
         for k, v in data.items():
             data[k] = v.flatten(end_dim=1)
 
-        eps_nu, eps_alpha = self.eps_nu_alpha
-        # eps_alpha *= self._clip_mult
         data.kl_policy = kl_policy = pd.kl(data.logits, data.logits_policy).sum(-1)
         if LossType.v_mpo in self.loss_type:
             losses = v_mpo_loss(
-                kl_policy, data.kl_replay, data.logp, data.advantages, data.advantages_upgo, data.vtrace_p,
-                self.nu, self.alpha, eps_nu, eps_alpha)
+                kl_policy, data.logp, data.advantages, data.advantages_upgo, data.vtrace_p, self.kl_pull)
             if losses is None:
                 return None
-            loss_policy, loss_nu, loss_alpha = losses
-            loss_policy = loss_policy + loss_nu + loss_alpha
+            loss_policy, loss_kl = losses
+            loss_policy = loss_policy + loss_kl
         elif LossType.impala in self.loss_type:
             losses = scaled_impala_loss(
-                kl_policy, data.kl_replay, data.logp, data.advantages, data.advantages_upgo, data.vtrace_p,
-                self.nu, self.alpha, eps_nu, eps_alpha, self.kl_limit)
+                kl_policy, data.logp, data.advantages, data.advantages_upgo,
+                data.vtrace_p, self.kl_pull, self.kl_limit)
             if losses is None:
                 return None
-            loss_policy, loss_nu, loss_alpha, kurtosis = losses
-            loss_policy = loss_policy + loss_nu + loss_alpha
+            loss_policy, loss_kl = losses
+            loss_policy = loss_policy + loss_kl
 
             if do_log:
-                self.logger.add_scalar('kurtosis' + tag, kurtosis, self.frame_train)
-                self.logger.add_scalar('loss_nu' + tag, loss_nu, self.frame_train)
-                self.logger.add_scalar('loss_alpha' + tag, loss_alpha, self.frame_train)
+                self.logger.add_scalar('loss_alpha' + tag, loss_kl, self.frame_train)
 
-            # loss_alpha = self.alpha * (eps_alpha - kl_policy.detach()) + self.alpha.detach() * kl_policy
-            # loss_policy = -data.logp * data.advantages
-            # loss_policy = loss_policy.mean() + loss_alpha.mean()
-
-        # adv_u = data.advantages.unsqueeze(-1)
         entropy = pd.entropy(data.logits).sum(-1)
         loss_ent = self.entropy_loss_scale * -entropy
-        # loss_policy = -data.logp * adv_u
         loss_value = self.value_loss_scale * barron_loss(data.state_values, data.value_targets, *self.barron_alpha_c, reduce=False)
-        # loss_kl = self.kl_scale * kl
 
         assert loss_value.shape == data.state_values.shape, (loss_value.shape, data.state_values.shape)
-        # assert loss_ent.shape == loss_policy.shape, (loss_ent.shape, loss_policy.shape)
-        # assert loss_policy.shape == loss_kl.shape, (loss_policy.shape, loss_kl.shape)
-        # assert loss_policy.shape == loss_value.shape, (loss_policy.shape, loss_value.shape)
-        # assert loss_nu.shape == (), loss_nu.shape
-        # assert loss_alpha.shape == (*loss_policy.shape, data.kl_replay.shape[-1]), (loss_alpha.shape, loss_policy.shape)
 
         loss_ent = loss_ent.mean()
-        # loss_policy = loss_policy.sum()
-        # loss_nu = loss_nu.mean()
-        # loss_alpha = loss_alpha.mean()
-        # loss_kl = loss_kl.mean()
         loss_value = loss_value.mean()
 
         # sum all losses
-        total_loss = loss_policy + loss_value + loss_ent #+ loss_kl
+        total_loss = loss_policy + loss_value + loss_ent
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_policy.mean().item(), loss_value.mean().item())
 
@@ -426,13 +333,10 @@ class IMPALA(PPO):
                 self.logger.add_scalar('ratio_abs_max' + tag, ratio.abs().max(), self.frame_train)
                 self.logger.add_scalar('success_updates', data.vtrace_p.mean(), self.frame_train)
                 self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame_train)
-                # self.logger.add_scalar('loss entropy' + tag, loss_ent.mean(), self.frame)
                 self.logger.add_scalar('loss_state_value' + tag, loss_value.mean(), self.frame_train)
                 if LossType.v_mpo is self.loss_type:
-                    self.logger.add_scalar('loss_nu' + tag, loss_nu, self.frame_train)
-                    self.logger.add_scalar('loss_alpha' + tag, loss_alpha, self.frame_train)
+                    self.logger.add_scalar('loss_alpha' + tag, loss_kl, self.frame_train)
                 self.logger.add_histogram('loss_value_hist' + tag, loss_value, self.frame_train)
-                # self.logger.add_histogram('loss ent hist' + tag, loss_ent, self.frame)
                 self.logger.add_histogram('ratio_hist' + tag, ratio, self.frame_train)
 
         return total_loss
