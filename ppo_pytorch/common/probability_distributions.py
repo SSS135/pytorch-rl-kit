@@ -100,10 +100,9 @@ class ProbabilityDistribution:
 
 
 class CategoricalPd(ProbabilityDistribution):
-    def __init__(self, n, max_logit_norm=None):
+    def __init__(self, n):
         super().__init__(locals())
         self.n = n
-        self.max_logit_norm = max_logit_norm
 
     @property
     def prob_vector_len(self):
@@ -122,38 +121,25 @@ class CategoricalPd(ProbabilityDistribution):
         return torch.int64
 
     def logp(self, a, logits):
-        logits = self._clamp_logits(logits)
         logp = F.log_softmax(logits, dim=-1)
         return logp.gather(dim=-1, index=a)
 
     def kl(self, logits0, logits1):
-        logits0 = self._clamp_logits(logits0)
-        logits1 = self._clamp_logits(logits1)
-        logp0 = F.log_softmax(logits0, dim=-1)
-        logp1 = F.log_softmax(logits1, dim=-1)
-        return (logp0.exp() * (logp0 - logp1)).sum(dim=-1, keepdim=True)
+        return (logits0 - logits1).pow(2).mean(-1, keepdim=True)
 
     def entropy(self, logits):
-        logits = self._clamp_logits(logits)
         logits = logits - logits.logsumexp(dim=-1, keepdim=True)
         p_log_p = logits * logits.softmax(-1)
         return -p_log_p.sum(-1, keepdim=True)
 
     def sample(self, logits):
-        logits = self._clamp_logits(logits)
         return F.softmax(logits.reshape(-1, logits.shape[-1]), dim=-1).multinomial(1).reshape(*logits.shape[:-1], -1)
 
     def to_inputs(self, action):
         with torch.no_grad():
             onehot = torch.zeros((*action.shape[:-1], self.n), device=action.device)
             onehot.scatter_(dim=-1, index=action, value=1)
-            # onehot = onehot - 1 / self.n
         return onehot
-
-    def _clamp_logits(self, logits):
-        if self.max_logit_norm is None:
-            return logits
-        return logits * (self.max_logit_norm / logits.norm(2, dim=-1, keepdim=True).clamp_min(self.max_logit_norm))
 
 
 class MultiCategoricalPd(ProbabilityDistribution):
