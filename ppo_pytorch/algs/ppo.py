@@ -555,15 +555,13 @@ class PPO(RLBase):
                 self.logger.add_image('state', img, self.frame_train)
             targets = data.value_targets
             values = data.state_values
-            v_mean = values.mean(-1)
-            t_mean = targets.mean(-1)
             self.logger.add_histogram('rewards', data.rewards, self.frame_train)
             self.logger.add_histogram('value_targets', targets, self.frame_train)
             self.logger.add_histogram('advantages', data.advantages, self.frame_train)
             self.logger.add_histogram('values', values, self.frame_train)
-            self.logger.add_scalar('value_rmse', (v_mean - t_mean).pow(2).mean().sqrt(), self.frame_train)
-            self.logger.add_scalar('value_abs_err', (v_mean - t_mean).abs().mean(), self.frame_train)
-            self.logger.add_scalar('value_max_err', (v_mean - t_mean).abs().max(), self.frame_train)
+            self.logger.add_scalar('value_rmse', (values - targets).pow(2).mean().sqrt(), self.frame_train)
+            self.logger.add_scalar('value_abs_err', (values - targets).abs().mean(), self.frame_train)
+            self.logger.add_scalar('value_max_err', (values - targets).abs().max(), self.frame_train)
             if isinstance(self._train_model.heads.logits.pd, DiagGaussianPd):
                 mean, std = data.logits.chunk(2, dim=1)
                 self.logger.add_histogram('logits_mean', mean, self.frame_train)
