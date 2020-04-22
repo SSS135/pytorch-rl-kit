@@ -26,7 +26,6 @@ if __name__ == '__main__':
         vtrace_max_ratio=1.0,
         vtrace_kl_limit=0.2,
         loss_type='impala',
-        smooth_model_blend=True,
         eval_model_blend=0.1,
         kl_limit=0.2,
         replay_ratio=7,

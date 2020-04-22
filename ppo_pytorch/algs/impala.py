@@ -57,17 +57,15 @@ class IMPALA(RLBase):
                  min_replay_size=10000,
                  vtrace_max_ratio=1.0,
                  vtrace_kl_limit=0.2,
-                 upgo_scale=0.2,
+                 upgo_scale=0.0,
                  grad_clip_norm=None,
                  kl_pull=0.1,
-                 kl_limit=0.01,
+                 kl_limit=0.2,
                  kl_scale=0.1,
                  replay_end_sampling_factor=0.1,
                  train_horizon=None,
                  loss_type='impala',
-                 smooth_model_blend=True,
-                 eval_model_update_interval=100,
-                 eval_model_blend=0.01,
+                 eval_model_blend=0.1,
 
                  **kwargs):
         super().__init__(observation_space, action_space, **kwargs)
@@ -99,8 +97,6 @@ class IMPALA(RLBase):
         self.kl_limit = kl_limit
         self.train_horizon = self.horizon if train_horizon is None else train_horizon
         self.eval_model_blend = eval_model_blend
-        self.eval_model_update_interval = eval_model_update_interval
-        self.smooth_model_blend = smooth_model_blend
 
         self._train_model: Actor = model_factory(observation_space, action_space)
         self._eval_model: Actor = model_factory(observation_space, action_space)
@@ -272,13 +268,7 @@ class IMPALA(RLBase):
                 self.logger.add_scalar('pop_art_std', pa_std, self.frame_train)
 
         copy_state_dict(self._train_model, eval_model)
-        if self.smooth_model_blend:
-            lerp_module_(self._target_model, self._train_model, self.eval_model_blend)
-        else:
-            self._eval_no_copy_updates += 1
-            if self._eval_no_copy_updates >= self.eval_model_update_interval:
-                self._eval_no_copy_updates = 0
-                copy_state_dict(self._train_model, self._target_model)
+        lerp_module_(self._target_model, self._train_model, self.eval_model_blend)
 
     def _impala_step(self, batch, do_log):
         with torch.enable_grad():
