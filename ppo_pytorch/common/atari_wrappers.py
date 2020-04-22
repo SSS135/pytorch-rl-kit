@@ -174,7 +174,7 @@ class FrameStack(gym.Wrapper):
 
     def _get_ob(self):
         assert len(self.frames) == self.k
-        return np.concatenate(self.frames, axis=0)
+        return np.concatenate(self.frames, axis=-3)
 
 
 class ScaledFloatFrame(gym.ObservationWrapper):
