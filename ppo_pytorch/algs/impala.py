@@ -1,28 +1,30 @@
-import copy
-import random
+import pprint
+from asyncio import Future
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
+from functools import partial
 from typing import Optional
-
-import math
 
 import numpy as np
 import torch
-from ..common.pop_art import PopArt
-
-from ..algs.utils import lerp_module_
+import torch.autograd
+import torch.optim as optim
+from ppo_pytorch.algs.ppo import SchedulerManager, copy_state_dict, log_training_data
 from torch.nn.utils import clip_grad_norm_
 
-from .ppo import PPO
 from .replay_buffer import ReplayBuffer
+from .utils import RunningNorm, scaled_impala_loss
+from .utils import v_mpo_loss
+from ..actors import create_ppo_fc_actor, Actor
+from ..actors.activation_norm import activation_norm_loss
+from ..actors.utils import model_diff
+from ..algs.utils import lerp_module_
 from ..common.attr_dict import AttrDict
 from ..common.barron_loss import barron_loss
 from ..common.data_loader import DataLoader
 from ..common.gae import calc_vtrace
-from ..actors.utils import model_diff
-from .utils import v_mpo_loss, RunningNorm, scaled_impala_loss
-from asyncio import Future
-from concurrent.futures import ThreadPoolExecutor
-from ..actors.activation_norm import activation_norm_loss
+from ..common.pop_art import PopArt
+from ..common.rl_base import RLBase
 
 
 class LossType(Enum):
@@ -30,8 +32,26 @@ class LossType(Enum):
     impala = 'impala'
 
 
-class IMPALA(PPO):
-    def __init__(self, *args,
+class IMPALA(RLBase):
+    def __init__(self, observation_space, action_space,
+
+                 use_pop_art=True,
+                 reward_discount=0.99,
+                 advantage_discount=0.95,
+                 horizon=64,
+                 batch_size=64,
+                 model_factory=create_ppo_fc_actor,
+                 optimizer_factory=partial(optim.Adam, lr=3e-4),
+                 value_loss_scale=0.5,
+                 entropy_loss_scale=0.01,
+                 cuda_eval=False,
+                 cuda_train=False,
+                 reward_scale=1.0,
+                 barron_alpha_c=(1.5, 1),
+                 lr_scheduler_factory=None,
+                 clip_decay_factory=None,
+                 entropy_decay_factory=None,
+
                  replay_buf_size=256 * 1024,
                  replay_ratio=7,
                  min_replay_size=10000,
@@ -48,9 +68,26 @@ class IMPALA(PPO):
                  smooth_model_blend=True,
                  eval_model_update_interval=100,
                  eval_model_blend=0.01,
-                 use_pop_art=True,
+
                  **kwargs):
-        super().__init__(*args, grad_clip_norm=grad_clip_norm, use_pop_art=use_pop_art, kl_scale=kl_scale, **kwargs)
+        super().__init__(observation_space, action_space, **kwargs)
+        self._init_args = locals()
+        self.reward_discount = reward_discount
+        self.advantage_discount = advantage_discount
+        self.entropy_loss_scale = entropy_loss_scale
+        self.horizon = horizon
+        self.batch_size = batch_size
+        self.device_eval = torch.device('cuda' if cuda_eval else 'cpu')
+        self.device_train = torch.device('cuda' if cuda_train else 'cpu')
+        self.grad_clip_norm = grad_clip_norm
+        self.value_loss_scale = value_loss_scale
+        self.model_factory = model_factory
+        self.optimizer_factory = optimizer_factory
+        self.reward_scale = reward_scale
+        self.kl_scale = self._init_kl_scale = kl_scale
+        self.barron_alpha_c = barron_alpha_c
+        self.use_pop_art = use_pop_art
+        self.lr_scheduler_factory = lr_scheduler_factory
         self.replay_buf_size = replay_buf_size
         self.replay_ratio = replay_ratio
         self.vtrace_max_ratio = vtrace_max_ratio
@@ -65,6 +102,22 @@ class IMPALA(PPO):
         self.eval_model_update_interval = eval_model_update_interval
         self.smooth_model_blend = smooth_model_blend
 
+        self._train_model: Actor = model_factory(observation_space, action_space)
+        self._eval_model: Actor = model_factory(observation_space, action_space)
+        if self.model_init_path is not None:
+            self._train_model.load_state_dict(torch.load(self.model_init_path), True)
+            print(f'loaded model {self.model_init_path}')
+        copy_state_dict(self._train_model, self._eval_model)
+        self._train_model = self._train_model.train().to(self.device_train, non_blocking=True)
+        self._eval_model = self._eval_model.eval().to(self.device_eval, non_blocking=True)
+
+        self._optimizer = optimizer_factory(self._train_model.parameters())
+        self._scheduler = SchedulerManager(self._optimizer, lr_scheduler_factory, clip_decay_factory, entropy_decay_factory)
+        self._last_model_save_frame = 0
+        self._pop_art = PopArt()
+        self._first_pop_art_update = True
+        self._target_step = 0
+
         assert isinstance(loss_type, str) or isinstance(loss_type, list) or isinstance(loss_type, tuple)
         self.loss_type = (loss_type,) if isinstance(loss_type, str) else loss_type
         self.loss_type = [LossType[c] for c in self.loss_type]
@@ -72,8 +125,6 @@ class IMPALA(PPO):
 
         # DataLoader limitation
         assert self.batch_size % self.train_horizon == 0 and self.horizon % self.train_horizon == 0, (self.batch_size, self.horizon)
-
-        del self._steps_processor
 
         self._replay_buffer = ReplayBuffer(replay_buf_size)
         self._prev_data = None
@@ -87,6 +138,10 @@ class IMPALA(PPO):
         self._target_model = self.model_factory(self.observation_space, self.action_space).to(self.device_train).train()
         self._target_model.load_state_dict(self._train_model.state_dict())
         self._eval_model = self._eval_model.eval()
+
+    @property
+    def _learning_rate(self):
+        return self._optimizer.param_groups[0]['lr']
 
     def _step(self, rewards, dones, states) -> torch.Tensor:
         with torch.no_grad():
@@ -131,7 +186,7 @@ class IMPALA(PPO):
             self._check_log()
             self._impala_update(data)
             self._model_saver.check_save_model(self._train_model, self.frame_train)
-            self._scheduler_step()
+            self._scheduler.step(self.frame_train)
 
     def _create_data(self):
         def cat_replay(last, rand):
@@ -197,7 +252,6 @@ class IMPALA(PPO):
 
         if self._do_log:
             self.logger.add_scalar('learning_rate', self._learning_rate, self.frame_train)
-            self.logger.add_scalar('clip_mult', self._clip_mult, self.frame_train)
             if loss is not None:
                 self.logger.add_scalar('total_loss', loss, self.frame_train)
             self.logger.add_scalar('kl', kl_policy, self.frame_train)
@@ -217,14 +271,14 @@ class IMPALA(PPO):
                 self.logger.add_scalar('pop_art_mean', pa_mean, self.frame_train)
                 self.logger.add_scalar('pop_art_std', pa_std, self.frame_train)
 
-        self._copy_state_dict(self._train_model, eval_model)
+        copy_state_dict(self._train_model, eval_model)
         if self.smooth_model_blend:
             lerp_module_(self._target_model, self._train_model, self.eval_model_blend)
         else:
             self._eval_no_copy_updates += 1
             if self._eval_no_copy_updates >= self.eval_model_update_interval:
                 self._eval_no_copy_updates = 0
-                self._copy_state_dict(self._train_model, self._target_model)
+                copy_state_dict(self._train_model, self._target_model)
 
     def _impala_step(self, batch, do_log):
         with torch.enable_grad():
@@ -326,7 +380,7 @@ class IMPALA(PPO):
 
         with torch.no_grad():
             if do_log:
-                self._log_training_data(data)
+                log_training_data(self._do_log, self.logger, self.frame_train, self._train_model, data)
                 ratio = (data.logp - data.logp_policy).exp() - 1
                 self.logger.add_scalar('ratio_mean' + tag, ratio.mean(), self.frame_train)
                 self.logger.add_scalar('ratio_abs_mean' + tag, ratio.abs().mean(), self.frame_train)
@@ -370,3 +424,15 @@ class IMPALA(PPO):
 
     def drop_collected_steps(self):
         self._prev_data = None
+
+    def _log_set(self):
+        self.logger.add_text(self.__class__.__name__, pprint.pformat(self._init_args))
+        self.logger.add_text('Model', str(self._train_model))
+
+    def __getstate__(self):
+        d = dict(self.__dict__)
+        d['_logger'] = None
+        return d
+
+    def __setstate__(self, d):
+        self.__dict__ = d

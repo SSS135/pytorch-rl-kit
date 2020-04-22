@@ -1,11 +1,7 @@
-import random
-from enum import Enum
-
 import math
 import pprint
-from asyncio import Future
-from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from enum import Enum
 from functools import partial
 from typing import Optional
 
@@ -19,18 +15,15 @@ from rl_exp.noisy_linear import NoisyLinear
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 
-from ..common.barron_loss import barron_loss
-from ..common.opt_clip import opt_clip
-from ..common.probability_distributions import DiagGaussianPd, CategoricalPd, ProbabilityDistribution
-from ..common.rl_base import RLBase
-from ..common.pop_art import PopArt
-from ..common.attr_dict import AttrDict
-from ..common.data_loader import DataLoader
+from .steps_processor import StepsProcessor
 from ..actors import create_ppo_fc_actor, Actor
 from ..actors.utils import model_diff
-from .steps_processor import StepsProcessor
-from ..common.target_logits import get_target_logits
-from .utils import v_mpo_loss
+from ..common.attr_dict import AttrDict
+from ..common.barron_loss import barron_loss
+from ..common.data_loader import DataLoader
+from ..common.pop_art import PopArt
+from ..common.probability_distributions import DiagGaussianPd, CategoricalPd, ProbabilityDistribution
+from ..common.rl_base import RLBase
 
 
 class Constraint(Enum):
@@ -39,7 +32,68 @@ class Constraint(Enum):
     # v_mpo = 'v_mpo'
     kl = 'kl'
     target = 'target'
+    
+    
+class SchedulerManager:
+    def __init__(self, optimizer,
+                 lr_scheduler_factory=None,
+                 clip_decay_factory=None,
+                 entropy_decay_factory=None):
+        self._lr_scheduler = lr_scheduler_factory(optimizer) if lr_scheduler_factory is not None else None
+        self._clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
+        self._entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
 
+    @property
+    def clip_decay(self):
+        return self._clip_decay.value if self._clip_decay is not None else 1
+    
+    def step(self, current_frame):
+        # update clipping and learning rate decay schedulers
+        if self._lr_scheduler is not None:
+            self._lr_scheduler.step(current_frame)
+        if self._clip_decay is not None:
+            self._clip_decay.step(current_frame)
+        if self._entropy_decay is not None:
+            self._entropy_decay.step(current_frame)
+
+
+def copy_state_dict(src, dst):
+    for src, dst in zip(src.state_dict().values(), dst.state_dict().values()):
+        dst.data.copy_(src.data)
+
+
+def log_training_data(do_log, logger, frame_train, train_model, data: AttrDict):
+    if do_log:
+        if data.states.dim() == 4:
+            if data.states.shape[1] in (1, 3):
+                img = data.states[:4]
+                nrow = 2
+            else:
+                img = data.states[:4]
+                img = img.view(-1, *img.shape[2:]).unsqueeze(1)
+                nrow = data.states.shape[1]
+            if data.states.dtype == torch.uint8:
+                img = img.float() / 255
+            img = make_grid(img, nrow=nrow, normalize=False)
+            logger.add_image('state', img, frame_train)
+        targets = data.value_targets
+        values = data.state_values
+        logger.add_histogram('rewards', data.rewards, frame_train)
+        logger.add_histogram('value_targets', targets, frame_train)
+        logger.add_histogram('advantages', data.advantages, frame_train)
+        logger.add_histogram('values', values, frame_train)
+        logger.add_scalar('value_rmse', (values - targets).pow(2).mean().sqrt(), frame_train)
+        logger.add_scalar('value_abs_err', (values - targets).abs().mean(), frame_train)
+        logger.add_scalar('value_max_err', (values - targets).abs().max(), frame_train)
+        if isinstance(train_model.heads.logits.pd, DiagGaussianPd):
+            mean, std = data.logits.chunk(2, dim=1)
+            logger.add_histogram('logits_mean', mean, frame_train)
+            logger.add_histogram('logits_std', std, frame_train)
+        elif isinstance(train_model.heads.logits.pd, CategoricalPd):
+            logger.add_histogram('logits log_softmax', F.log_softmax(data.logits, dim=-1), frame_train)
+        logger.add_histogram('logits', data.logits, frame_train)
+        for name, param in train_model.named_parameters():
+            logger.add_histogram(name, param, frame_train)
 
 
 class PPO(RLBase):
@@ -172,14 +226,12 @@ class PPO(RLBase):
         if self.model_init_path is not None:
             self._train_model.load_state_dict(torch.load(self.model_init_path), True)
             print(f'loaded model {self.model_init_path}')
-        self._copy_state_dict(self._train_model, self._eval_model)
+        copy_state_dict(self._train_model, self._eval_model)
         self._train_model = self._train_model.train().to(self.device_train, non_blocking=True)
         self._eval_model = self._eval_model.eval().to(self.device_eval, non_blocking=True)
 
         self._optimizer = optimizer_factory(self._train_model.parameters())
-        self._lr_scheduler = lr_scheduler_factory(self._optimizer) if lr_scheduler_factory is not None else None
-        self._clip_decay = clip_decay_factory() if clip_decay_factory is not None else None
-        self._entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
+        self._scheduler = SchedulerManager(self._optimizer, lr_scheduler_factory, clip_decay_factory, entropy_decay_factory)
         self._last_model_save_frame = 0
         self._pop_art = PopArt()
         self._first_pop_art_update = True
@@ -210,21 +262,12 @@ class PPO(RLBase):
 
             return actions
 
-    def _scheduler_step(self):
-        # update clipping and learning rate decay schedulers
-        if self._lr_scheduler is not None:
-            self._lr_scheduler.step(self.frame_train)
-        if self._clip_decay is not None:
-            self._clip_decay.step(self.frame_train)
-        if self._entropy_decay is not None:
-            self._entropy_decay.step(self.frame_train)
-
     def _train(self):
         self.step_train = self.step_eval
         self._check_log()
         data = self._create_data()
         self._train_async(data)
-        self._scheduler_step()
+        self._scheduler.step(self.frame_train)
         # if self._train_future is not None:
         #     self._train_future.result()
         # self._train_future = self._train_executor.submit(self._train_async, data)
@@ -237,7 +280,7 @@ class PPO(RLBase):
 
     def _train_async(self, data):
         with torch.no_grad():
-            self._log_training_data(data)
+            log_training_data(self._do_log, self.logger, self.frame_train, self._train_model, data)
             self._ppo_update(data)
             self._model_saver.check_save_model(self._train_model, self.frame_train)
 
@@ -290,7 +333,7 @@ class PPO(RLBase):
         self._adjust_kl_scale(kl)
         NoisyLinear.randomize_network(self._train_model)
 
-        self._copy_state_dict(self._train_model, self._eval_model)
+        copy_state_dict(self._train_model, self._eval_model)
         # self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
     def _apply_pop_art(self, data):
@@ -529,7 +572,7 @@ class PPO(RLBase):
 
     @property
     def _clip_mult(self):
-        return self._clip_decay.value if self._clip_decay is not None else 1
+        return self._scheduler.clip_decay
 
     def _log_set(self):
         self.logger.add_text(self.__class__.__name__, pprint.pformat(self._init_args))
@@ -538,46 +581,9 @@ class PPO(RLBase):
     def drop_collected_steps(self):
         self._steps_processor = self._create_steps_processor(self._steps_processor)
 
-    def _log_training_data(self, data: AttrDict):
-        if self._do_log:
-            if data.states.dim() == 4:
-                if data.states.shape[1] in (1, 3):
-                    img = data.states[:4]
-                    nrow = 2
-                else:
-                    img = data.states[:4]
-                    img = img.view(-1, *img.shape[2:]).unsqueeze(1)
-                    nrow = data.states.shape[1]
-                if data.states.dtype == torch.uint8:
-                    img = img.float() / 255
-                img = make_grid(img, nrow=nrow, normalize=False)
-                self.logger.add_image('state', img, self.frame_train)
-            targets = data.value_targets
-            values = data.state_values
-            self.logger.add_histogram('rewards', data.rewards, self.frame_train)
-            self.logger.add_histogram('value_targets', targets, self.frame_train)
-            self.logger.add_histogram('advantages', data.advantages, self.frame_train)
-            self.logger.add_histogram('values', values, self.frame_train)
-            self.logger.add_scalar('value_rmse', (values - targets).pow(2).mean().sqrt(), self.frame_train)
-            self.logger.add_scalar('value_abs_err', (values - targets).abs().mean(), self.frame_train)
-            self.logger.add_scalar('value_max_err', (values - targets).abs().max(), self.frame_train)
-            if isinstance(self._train_model.heads.logits.pd, DiagGaussianPd):
-                mean, std = data.logits.chunk(2, dim=1)
-                self.logger.add_histogram('logits_mean', mean, self.frame_train)
-                self.logger.add_histogram('logits_std', std, self.frame_train)
-            elif isinstance(self._train_model.heads.logits.pd, CategoricalPd):
-                self.logger.add_histogram('logits log_softmax', F.log_softmax(data.logits, dim=-1), self.frame_train)
-            self.logger.add_histogram('logits', data.logits, self.frame_train)
-            for name, param in self._train_model.named_parameters():
-                self.logger.add_histogram(name, param, self.frame_train)
-
     def _create_steps_processor(self, prev_processor: Optional[StepsProcessor]) -> StepsProcessor:
         return StepsProcessor(self._train_model.heads.logits.pd, self.reward_discount, self.advantage_discount,
                               self.reward_scale, True, self.barron_alpha_c, self.entropy_reward_scale, prev_processor)
-
-    def _copy_state_dict(self, src, dst):
-        for src, dst in zip(src.state_dict().values(), dst.state_dict().values()):
-            dst.data.copy_(src.data)
 
     def __getstate__(self):
         d = dict(self.__dict__)
