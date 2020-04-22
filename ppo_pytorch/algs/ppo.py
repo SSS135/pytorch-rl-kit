@@ -30,7 +30,6 @@ from ..actors import create_ppo_fc_actor, Actor
 from ..actors.utils import model_diff
 from .steps_processor import StepsProcessor
 from ..common.target_logits import get_target_logits
-from ..algs.utils import blend_models
 from .utils import v_mpo_loss
 
 

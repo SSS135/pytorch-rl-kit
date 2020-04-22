@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from ..common.pop_art import PopArt
 
-from ..algs.utils import blend_models
+from ..algs.utils import lerp_module_
 from torch.nn.utils import clip_grad_norm_
 
 from .ppo import PPO
@@ -288,7 +288,7 @@ class IMPALA(PPO):
 
         self._copy_state_dict(self._train_model, eval_model)
         if self.smooth_model_blend:
-            blend_models(self._train_model, self._target_model, self.eval_model_blend)
+            lerp_module_(self._target_model, self._train_model, self.eval_model_blend)
         else:
             self._eval_no_copy_updates += 1
             if self._eval_no_copy_updates >= self.eval_model_update_interval:

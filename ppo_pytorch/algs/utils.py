@@ -2,14 +2,20 @@ from typing import Optional, Tuple
 
 import torch
 import torch.jit
+from torch import nn
 
 
-def blend_models(src_module, dst_module, factor):
-    for src, dst in zip(src_module.state_dict().values(), dst_module.state_dict().values()):
-        if not torch.is_floating_point(dst):
-            dst.data.copy_(src.data)
+def lerp_module_(start, end, factor):
+    if isinstance(start, nn.Module):
+        start = start.state_dict().values()
+    if isinstance(end, nn.Module):
+        end = end.state_dict().values()
+
+    for a, b in zip(start, end):
+        if not torch.is_floating_point(a):
+            a.data.copy_(b.data)
         else:
-            dst.data.lerp_(src.data.to(dst.device), factor)
+            a.data.lerp_(b.data.to(a.device), factor)
 
 
 @torch.jit.script

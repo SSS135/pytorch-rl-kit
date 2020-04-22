@@ -14,7 +14,7 @@ from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 
 from .replay_buffer import ReplayBuffer
-from .utils import blend_models
+from .utils import lerp_module_
 from ..actors import ModularActor, create_td3_fc_actor
 from ..actors.utils import model_diff
 from ..common.attr_dict import AttrDict
@@ -171,7 +171,7 @@ class TD3(RLBase):
                 batch = AttrDict(data_loader.get_next_batch())
                 loss = self._batch_update(batch, self._do_log and batch_index == self.num_batches - 1)
                 if self._do_actor_update:
-                    blend_models(self._train_model, self._target_model, self.target_model_blend)
+                    lerp_module_(self._target_model, self._train_model, self.target_model_blend)
                 self._update_iter += 1
 
         if self._do_log:
