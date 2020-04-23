@@ -75,7 +75,7 @@ class ReplayBuffer:
 
     def __len__(self):
         with self._lock:
-            return self._len_horizon * self._num_actors
+            return 0 if self._num_actors is None else self._len_horizon * self._num_actors
 
 
 def test_replay_buffer():
