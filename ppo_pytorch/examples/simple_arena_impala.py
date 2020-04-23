@@ -39,7 +39,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[lr1]',
+        tag='[lr1_anw0]',
         log_root_path=log_path,
         log_interval=20000,
     )

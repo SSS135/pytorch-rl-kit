@@ -15,7 +15,7 @@ from .utils import fixup_init
 import torch.jit
 
 
-def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm: NormFactory = None, activation_norm=True):
+def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm: NormFactory = None, activation_norm=False):
     """
     Create fully connected network
     Args:
