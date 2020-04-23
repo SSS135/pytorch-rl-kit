@@ -22,7 +22,7 @@ if __name__ == '__main__':
         kl_pull=0.1,
         vtrace_max_ratio=2.0,
         vtrace_kl_limit=0.5,
-        loss_type='impala',
+        loss_type='v_mpo',
         eval_model_blend=0.1,
         kl_limit=0.01,
         replay_ratio=3,

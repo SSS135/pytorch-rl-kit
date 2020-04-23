@@ -4,7 +4,7 @@ if __name__ == '__main__':
     from optfn.gadam import GAdam
     from torch.optim import AdamW
 
-    env_factory = partial(rl.common.SimpleVecEnv, 'HopperBulletEnv-v0', parallel='dummy')
+    env_factory = partial(rl.common.SimpleVecEnv, 'AntBulletEnv-v0', parallel='dummy')
 
     alg_class = rl.algs.IMPALA
     alg_params = rl.algs.create_ppo_kwargs(
@@ -23,10 +23,10 @@ if __name__ == '__main__':
         use_pop_art=True,
         kl_pull=0.1,
         vtrace_max_ratio=1.0,
-        vtrace_kl_limit=1.0,
+        vtrace_kl_limit=0.1,
         loss_type='impala',
         eval_model_blend=0.1,
-        kl_limit=0.01,
+        kl_limit=0.1,
         replay_ratio=7,
         upgo_scale=0.2,
         entropy_loss_scale=1e-3,

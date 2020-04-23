@@ -7,7 +7,7 @@ if __name__ == '__main__':
         'c:\\Users\\Alexander\\projects\\DungeonAI\\Build\\SimpleArenaContinuous\\DungeonAI'
     env_factory = partial(UnityVecEnv, exe_path, parallel='process')
 
-    alg_class = rl.algs.IMPALA
+    alg_class = rl.algs.PPO
     alg_params = rl.algs.create_ppo_kwargs(
         20e6,
 
@@ -18,28 +18,21 @@ if __name__ == '__main__':
         cuda_eval=True,
         cuda_train=True,
 
-        replay_buf_size=256 * 1024,
-        replay_end_sampling_factor=0.1,
-        grad_clip_norm=None,
-        use_pop_art=True,
-        kl_pull=0.1,
-        vtrace_max_ratio=1.0,
-        vtrace_kl_limit=0.2,
-        loss_type='impala',
-        eval_model_blend=0.1,
-        kl_limit=0.2,
-        replay_ratio=7,
-        upgo_scale=0.0,
-        entropy_loss_scale=1e-3,
+        use_pop_art=False,
+        reward_scale=0.2,
+        ppo_iters=9,
+        constraint='spu',
+        spu_dis_agg_lam=(0.03, 0.02, 1.0),
+        value_clip=0.5,
 
         model_factory=partial(rl.actors.create_ppo_fc_actor, hidden_sizes=(256, 256, 256),
                               activation=nn.ReLU),
-        optimizer_factory=partial(AdamW, lr=1e-4, eps=1e-5),
+        optimizer_factory=partial(AdamW, lr=1e-4, eps=1e-6),
     )
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[lr1]',
+        tag='[logitclamp_s3-2]',
         log_root_path=log_path,
         log_interval=20000,
     )
