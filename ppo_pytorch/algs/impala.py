@@ -61,7 +61,6 @@ class IMPALA(RLBase):
                  grad_clip_norm=None,
                  kl_pull=0.1,
                  kl_limit=0.2,
-                 kl_scale=0.1,
                  replay_end_sampling_factor=0.1,
                  train_horizon=None,
                  loss_type='impala',
@@ -82,7 +81,6 @@ class IMPALA(RLBase):
         self.model_factory = model_factory
         self.optimizer_factory = optimizer_factory
         self.reward_scale = reward_scale
-        self.kl_scale = self._init_kl_scale = kl_scale
         self.barron_alpha_c = barron_alpha_c
         self.use_pop_art = use_pop_art
         self.lr_scheduler_factory = lr_scheduler_factory
@@ -252,7 +250,6 @@ class IMPALA(RLBase):
                 self.logger.add_scalar('total_loss', loss, self.frame_train)
             self.logger.add_scalar('kl', kl_policy, self.frame_train)
             self.logger.add_scalar('kl_replay', kl_replay, self.frame_train)
-            self.logger.add_scalar('kl_scale', self.kl_scale, self.frame_train)
             self.logger.add_scalar('model_abs_diff', model_diff(old_model, self._train_model), self.frame_train)
             self.logger.add_scalar('model_max_diff', model_diff(old_model, self._train_model, True), self.frame_train)
 
