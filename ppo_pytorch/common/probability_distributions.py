@@ -505,11 +505,14 @@ class FixedStdGaussianPd(ProbabilityDistribution):
         return torch.zeros_like(mean) + (0.5 + 0.5 * math.log(2 * math.pi) + math.log(self.std))
 
     def sample(self, mean):
-        return mean + self.std * torch.randn_like(mean)
+        return self._clamp_logits(mean + self.std * torch.randn_like(mean))
 
     # @property
     # def init_column_norm(self):
     #     return 1.0
+
+    def _clamp_logits(self, logits):
+        return logits / logits.abs().mean(-1, keepdim=True).clamp_min(1.0)
 
 
 @torch.jit.script
