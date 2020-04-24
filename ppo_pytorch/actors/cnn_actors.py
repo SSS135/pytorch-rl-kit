@@ -158,17 +158,17 @@ class CNNFeatureExtractor(FeatureExtractorBase):
         out_shape = self._extract_features(torch.randn(shape)).shape
         return out_shape[1] * out_shape[2] * out_shape[3]
 
-    def _make_fc_layer(self, in_features, out_features, first_layer=False, activation_norm=True):
+    def _make_fc_layer(self, in_features, out_features, first_layer=False, activation_norm=False):
         bias = self.norm_factory is None or not self.norm_factory.disable_bias or not self.norm_factory.allow_fc
         return self._make_layer(Linear(in_features, out_features, bias=bias),
                                 first_layer=first_layer, activation_norm=activation_norm)
 
-    def _make_cnn_layer(self, *args, first_layer=False, activation_norm=True, **kwargs):
+    def _make_cnn_layer(self, *args, first_layer=False, activation_norm=False, **kwargs):
         bias = self.norm_factory is None or not self.norm_factory.disable_bias or not self.norm_factory.allow_cnn
         return self._make_layer(nn.Conv2d(*args, **kwargs, bias=bias),
                                 first_layer=first_layer, activation_norm=activation_norm)
 
-    def _make_layer(self, transf, first_layer=False, activation_norm=True):
+    def _make_layer(self, transf, first_layer=False, activation_norm=False):
         is_linear = isinstance(transf, nn.Linear) or isinstance(transf, Linear)
         features = transf.out_features if is_linear else transf.out_channels
 
