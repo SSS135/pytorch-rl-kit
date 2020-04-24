@@ -16,7 +16,7 @@ from .replay_buffer import ReplayBuffer
 from .utils import RunningNorm, scaled_impala_loss
 from .utils import v_mpo_loss
 from ..actors import create_ppo_fc_actor, Actor
-from ..actors.activation_norm import activation_norm_loss
+from ppo_pytorch.common.activation_norm import activation_norm_loss
 from ..actors.utils import model_diff
 from ..algs.utils import lerp_module_
 from ..common.attr_dict import AttrDict

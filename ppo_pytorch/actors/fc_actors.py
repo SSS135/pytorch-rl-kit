@@ -2,16 +2,15 @@ import math
 from typing import List, Callable
 
 import torch.nn as nn
-from .activation_norm import ActivationNorm
+from ppo_pytorch.common.activation_norm import ActivationNorm
 
 from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor
 from .heads import PolicyHead, StateValueHead
-from .norm_factory import NormFactory, BatchNormFactory
+from .norm_factory import NormFactory
 from ..common.probability_distributions import LinearTanhPd, ProbabilityDistribution
 import torch
 from ..config import Linear
 from optfn.skip_connections import ResidualBlock
-from .utils import fixup_init
 import torch.jit
 
 

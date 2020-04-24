@@ -2,4 +2,3 @@ from .parameters import create_fc_kwargs, create_atari_kwargs, create_td3_fc_kwa
 from .ppo import PPO
 from .impala import IMPALA
 from .td3 import TD3
-from .mu_zero import MuZero

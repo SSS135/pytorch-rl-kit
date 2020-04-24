@@ -12,8 +12,7 @@ from .norm_factory import NormFactory
 from .utils import make_conv_heatmap, image_to_float
 from ..common.make_grid import make_grid
 from ..config import Linear
-from .utils import fixup_init
-from .activation_norm import ActivationNorm, ActivationNormWrapper
+from ppo_pytorch.common.activation_norm import ActivationNorm
 
 
 class GroupTranspose(nn.Module):
