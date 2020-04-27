@@ -78,20 +78,20 @@ def log_training_data(do_log, logger, frame_train, train_model, data: AttrDict):
             logger.add_image('state', img, frame_train)
         targets = data.value_targets
         values = data.state_values
-        logger.add_histogram('rewards', data.rewards, frame_train)
-        logger.add_histogram('value_targets', targets, frame_train)
-        logger.add_histogram('advantages', data.advantages, frame_train)
-        logger.add_histogram('values', values, frame_train)
-        logger.add_scalar('value_rmse', (values - targets).pow(2).mean().sqrt(), frame_train)
-        logger.add_scalar('value_abs_err', (values - targets).abs().mean(), frame_train)
-        logger.add_scalar('value_max_err', (values - targets).abs().max(), frame_train)
+        logger.add_histogram('Rewards', data.rewards, frame_train)
+        logger.add_histogram('Value Targets', targets, frame_train)
+        logger.add_histogram('Advantages', data.advantages, frame_train)
+        logger.add_histogram('Values', values, frame_train)
+        logger.add_scalar('Value Errors/RMSE', (values - targets).pow(2).mean().sqrt(), frame_train)
+        logger.add_scalar('Value Errors/Abs', (values - targets).abs().mean(), frame_train)
+        logger.add_scalar('Value Errors/Max', (values - targets).abs().max(), frame_train)
         if isinstance(train_model.heads.logits.pd, DiagGaussianPd):
             mean, std = data.logits.chunk(2, dim=1)
-            logger.add_histogram('logits_mean', mean, frame_train)
-            logger.add_histogram('logits_std', std, frame_train)
+            logger.add_histogram('Logits Mean', mean, frame_train)
+            logger.add_histogram('Logits Std', std, frame_train)
         elif isinstance(train_model.heads.logits.pd, CategoricalPd):
-            logger.add_histogram('logits log_softmax', F.log_softmax(data.logits, dim=-1), frame_train)
-        logger.add_histogram('logits', data.logits, frame_train)
+            logger.add_histogram('Logits Log Softmax', F.log_softmax(data.logits, dim=-1), frame_train)
+        logger.add_histogram('Logits Logits', data.logits, frame_train)
         for name, param in train_model.named_parameters():
             logger.add_histogram(name, param, frame_train)
 

@@ -273,13 +273,13 @@ class IMPALA(RLBase):
         kl_replay = np.mean(kls_replay)
 
         if self._do_log:
-            self.logger.add_scalar('learning_rate', self._learning_rate, self.frame_train)
+            self.logger.add_scalar('Optimizer/Learning Rate', self._learning_rate, self.frame_train)
             if loss is not None:
-                self.logger.add_scalar('total_loss', loss, self.frame_train)
-            self.logger.add_scalar('kl', kl_policy, self.frame_train)
-            self.logger.add_scalar('kl_replay', kl_replay, self.frame_train)
-            self.logger.add_scalar('model_abs_diff', model_diff(old_model, self._train_model), self.frame_train)
-            self.logger.add_scalar('model_max_diff', model_diff(old_model, self._train_model, True), self.frame_train)
+                self.logger.add_scalar('Losses/Total Loss', loss, self.frame_train)
+            self.logger.add_scalar('Stability/KL Blend', kl_policy, self.frame_train)
+            self.logger.add_scalar('Stability/KL Replay', kl_replay, self.frame_train)
+            self.logger.add_scalar('Model Diff/Abs', model_diff(old_model, self._train_model), self.frame_train)
+            self.logger.add_scalar('Model Diff/Max', model_diff(old_model, self._train_model, True), self.frame_train)
 
         if self.use_pop_art:
             pa_mean, pa_std = self._pop_art.statistics
@@ -289,8 +289,8 @@ class IMPALA(RLBase):
             if len(value_target_list) != 0:
                 self._pop_art.update_statistics(value_targets)
             if self._do_log:
-                self.logger.add_scalar('pop_art_mean', pa_mean, self.frame_train)
-                self.logger.add_scalar('pop_art_std', pa_std, self.frame_train)
+                self.logger.add_scalar('PopArt/Mean', pa_mean, self.frame_train)
+                self.logger.add_scalar('PopArt/Std', pa_std, self.frame_train)
 
         copy_state_dict(self._train_model, eval_model)
         lerp_module_(self._target_model, self._train_model, self.eval_model_blend)
@@ -323,7 +323,7 @@ class IMPALA(RLBase):
             loss = loss.mean() + 0.003 * act_norm_loss
 
         if do_log:
-            self.logger.add_scalar('activation_norm_loss', act_norm_loss, self.frame_train)
+            self.logger.add_scalar('Losses/Activation Norm', act_norm_loss, self.frame_train)
 
         # optimize
         loss.backward()
@@ -405,7 +405,7 @@ class IMPALA(RLBase):
             loss_policy = loss_policy + loss_kl
 
             if do_log:
-                self.logger.add_scalar('loss_alpha' + tag, loss_kl, self.frame_train)
+                self.logger.add_scalar('Losses/Alpha' + tag, loss_kl, self.frame_train)
 
         entropy = pd.entropy(data.logits)
         loss_ent = self.entropy_loss_scale * -entropy.mean()
@@ -423,18 +423,24 @@ class IMPALA(RLBase):
 
         with torch.no_grad():
             if do_log:
+                if self.use_pop_art:
+                    pa_mean, pa_std = self._pop_art.statistics
+                    data = AttrDict(**data)
+                    data.state_values = data.state_values * pa_std + pa_mean
+                    data.value_targets = data.value_targets * pa_std + pa_mean
                 log_training_data(self._do_log, self.logger, self.frame_train, self._train_model, data)
                 ratio = (data.logp - data.logp_policy).exp() - 1
-                self.logger.add_scalar('ratio_mean' + tag, ratio.mean(), self.frame_train)
-                self.logger.add_scalar('ratio_abs_mean' + tag, ratio.abs().mean(), self.frame_train)
-                self.logger.add_scalar('ratio_abs_max' + tag, ratio.abs().max(), self.frame_train)
-                self.logger.add_scalar('success_updates', data.vtrace_p.mean(), self.frame_train)
-                self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame_train)
-                self.logger.add_scalar('loss_state_value' + tag, loss_value.mean(), self.frame_train)
+                self.logger.add_scalar('Prob Ratio/Mean' + tag, ratio.mean(), self.frame_train)
+                self.logger.add_scalar('Prob Ratio/Abs Mean' + tag, ratio.abs().mean(), self.frame_train)
+                self.logger.add_scalar('Prob Ratio/Abs Max' + tag, ratio.abs().max(), self.frame_train)
+                self.logger.add_scalar('VTrace P/Mean', data.vtrace_p.mean(), self.frame_train)
+                self.logger.add_scalar('VTrace P/Above 0.25 Fraction', (data.vtrace_p > 0.25).float().mean(), self.frame_train)
+                self.logger.add_scalar('Stability/Entropy' + tag, entropy.mean(), self.frame_train)
+                self.logger.add_scalar('Losses/State Value' + tag, loss_value.mean(), self.frame_train)
                 if LossType.v_mpo is self.loss_type:
-                    self.logger.add_scalar('loss_alpha' + tag, loss_kl, self.frame_train)
-                self.logger.add_histogram('loss_value_hist' + tag, loss_value, self.frame_train)
-                self.logger.add_histogram('ratio_hist' + tag, ratio, self.frame_train)
+                    self.logger.add_scalar('Losses/Alpha' + tag, loss_kl, self.frame_train)
+                self.logger.add_histogram('Losses/Value Hist' + tag, loss_value, self.frame_train)
+                self.logger.add_histogram('Losses/Ratio Hist' + tag, ratio, self.frame_train)
 
         return total_loss
 
