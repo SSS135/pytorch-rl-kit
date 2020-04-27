@@ -107,7 +107,7 @@ class TD3(RLBase):
             noise = self.expl_noise_scale * torch.randn(ac_out.logits.shape) if not self.disable_training else 0
             pd = self._eval_model.heads.logits.pd
             actions = (pd.sample(ac_out.logits).cpu() + noise).clamp(-pd.max_action, pd.max_action)
-            if self.frame < self.random_policy_frames:
+            if self.frame_eval < self.random_policy_frames:
                 actions.data.uniform_(-pd.max_action, pd.max_action)
 
             if not self.disable_training:
@@ -118,7 +118,7 @@ class TD3(RLBase):
                 self._prev_data = dict(logits=ac_out.logits, states=states, actions=actions)
 
                 min_replay_size = self.batch_size * (self.value_target_steps + 1)
-                if self.frame > 1024 and self._eval_steps >= self.train_interval and len(self._replay_buffer) >= min_replay_size:
+                if self.frame_eval > 1024 and self._eval_steps >= self.train_interval and len(self._replay_buffer) >= min_replay_size:
                     self._eval_steps = 0
                     self._pre_train()
                     self._train()
@@ -126,15 +126,17 @@ class TD3(RLBase):
             return actions
 
     def _pre_train(self):
+        self.step_train = self.step_eval
+
         self._check_log()
 
         # update clipping and learning rate decay schedulers
         if self._actor_lr_scheduler is not None:
-            self._actor_lr_scheduler.step(self.frame)
+            self._actor_lr_scheduler.step(self.frame_train)
         if self._critic_lr_scheduler is not None:
-            self._critic_lr_scheduler.step(self.frame)
+            self._critic_lr_scheduler.step(self.frame_train)
         if self._entropy_decay is not None:
-            self._entropy_decay.step(self.frame)
+            self._entropy_decay.step(self.frame_train)
 
     def _train(self):
         data = self._create_data()
@@ -147,7 +149,7 @@ class TD3(RLBase):
         with torch.no_grad():
             self._log_training_data(data)
             self._td3_update(data)
-            self._model_saver.check_save_model(self._train_model, self.frame)
+            self._model_saver.check_save_model(self._train_model, self.frame_train)
 
     def _create_data(self):
         # (steps, actors, *)
@@ -175,10 +177,10 @@ class TD3(RLBase):
                 self._update_iter += 1
 
         if self._do_log:
-            self.logger.add_scalar('learning rate', self._actor_optimizer.param_groups[0]['lr'], self.frame)
-            self.logger.add_scalar('total loss', loss, self.frame)
-            self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame)
-            self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame)
+            self.logger.add_scalar('learning rate', self._actor_optimizer.param_groups[0]['lr'], self.frame_train)
+            self.logger.add_scalar('total loss', loss, self.frame_train)
+            self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame_train)
+            self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame_train)
 
         self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
 
@@ -258,13 +260,13 @@ class TD3(RLBase):
                 if data.states.dtype == torch.uint8:
                     img = img.float() / 255
                 img = make_grid(img, nrow=nrow, normalize=False)
-                self.logger.add_image('state', img, self.frame)
+                self.logger.add_image('state', img, self.frame_train)
             # vsize = data.value_targets.shape[-2] ** 0.5
             # targets = data.value_targets.sum(-2) / vsize
             # values = data.state_values.sum(-2) / vsize
             # v_mean = values.mean(-1)
             # t_mean = targets.mean(-1)
-            self.logger.add_histogram('rewards', data.rewards, self.frame)
+            self.logger.add_histogram('rewards', data.rewards, self.frame_train)
             # self.logger.add_histogram('value_targets', targets, self.frame)
             # self.logger.add_histogram('advantages', data.advantages, self.frame)
             # self.logger.add_histogram('values', values, self.frame)
@@ -273,10 +275,10 @@ class TD3(RLBase):
             # self.logger.add_scalar('value max err', (v_mean - t_mean).abs().max(), self.frame)
             if isinstance(self._train_model.heads.logits.pd, DiagGaussianPd):
                 mean, std = data.logits.chunk(2, dim=1)
-                self.logger.add_histogram('logits mean', mean, self.frame)
-                self.logger.add_histogram('logits std', std, self.frame)
+                self.logger.add_histogram('logits mean', mean, self.frame_train)
+                self.logger.add_histogram('logits std', std, self.frame_train)
             elif isinstance(self._train_model.heads.logits.pd, CategoricalPd):
-                self.logger.add_histogram('logits log_softmax', F.log_softmax(data.logits, dim=-1), self.frame)
-            self.logger.add_histogram('logits', data.logits, self.frame)
+                self.logger.add_histogram('logits log_softmax', F.log_softmax(data.logits, dim=-1), self.frame_train)
+            self.logger.add_histogram('logits', data.logits, self.frame_train)
             for name, param in self._train_model.named_parameters():
-                self.logger.add_histogram(name, param, self.frame)
+                self.logger.add_histogram(name, param, self.frame_train)
