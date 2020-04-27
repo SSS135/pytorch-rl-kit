@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.autograd
 import torch.optim as optim
+from optfn.gradient_logger import log_gradients
 from ppo_pytorch.algs.ppo import SchedulerManager, copy_state_dict, log_training_data
 from torch.nn.utils import clip_grad_norm_
 
@@ -284,6 +285,10 @@ class IMPALA(RLBase):
 
             for k, v in list(batch.items()):
                 batch[k] = v if k == 'states' else v.cpu()
+
+            if do_log:
+                batch.state_values = log_gradients(batch.state_values, self.logger, 'Values', self.frame_train)
+                batch.logits = log_gradients(batch.logits, self.logger, 'Logits', self.frame_train)
 
             # get loss
             loss = self._get_impala_loss(batch, do_log)
