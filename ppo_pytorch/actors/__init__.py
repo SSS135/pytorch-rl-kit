@@ -10,3 +10,4 @@ from .cnn_actors import CNNFeatureExtractor, Sega_CNNFeatureExtractor, create_pp
 
 from .actors import Actor, ModularActor, FeatureExtractorBase
 from .fc_actors import create_ppo_fc_actor, FCFeatureExtractor, create_td3_fc_actor
+from .rnn_actors import create_ppo_rnn_actor

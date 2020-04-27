@@ -1,36 +1,44 @@
-import gym.spaces
-import numpy as np
+from ppo_pytorch.common.attr_dict import AttrDict
 
-from .actors import ModularActor
-from ..common.lstm import LSTM
-from ..common.qrnn import DenseQRNN
+from .actors import FeatureExtractorBase, create_ppo_actor
+import torch
+from torch import nn
 
 
-class RNNActor(ModularActor):
-    def __init__(self, observation_space: gym.Space, action_space: gym.Space, *args,
-                 hidden_code_size=128, num_layers=3, rnn_kind='qrnn', **kwargs):
-        """
-        Args:
-            observation_space: Env's observation space
-            action_space: Env's action space
-            head_factory: Function which accept (hidden vector size, `ProbabilityDistribution`) and return `HeadBase`
-            hidden_code_size: Hidden layer width
-            activation: Activation function
-        """
-        super().__init__(observation_space, action_space, *args, **kwargs)
+def create_ppo_rnn_actor(observation_space, action_space, hidden_size=128, num_layers=2,
+                            split_policy_value_network=False):
+    assert len(observation_space.shape) == 1
+
+    def fx_factory(): return RNNFeatureExtractor(
+        observation_space.shape[0], hidden_size, num_layers)
+    return create_ppo_actor(action_space, fx_factory, split_policy_value_network, is_recurrent=True)
+
+
+class RNNFeatureExtractor(FeatureExtractorBase):
+    def __init__(self, input_size: int, hidden_size=128, num_layers=2, **kwargs):
+        super().__init__(**kwargs)
+        self.input_size = input_size
+        self.hidden_size = hidden_size
         self.num_layers = num_layers
-        self.hidden_code_size = hidden_code_size
-        self.rnn_kind = rnn_kind
-        obs_len = int(np.product(observation_space.shape))
-        if rnn_kind == 'qrnn':
-            self.rnn = DenseQRNN(obs_len, hidden_code_size, num_layers, norm=self.norm)
-        elif rnn_kind == 'lstm':
-            self.rnn = LSTM(obs_len, self.hidden_code_size, self.num_layers)
-        self._init_heads(self.hidden_code_size)
-        self.reset_weights()
+        assert self.norm_factory is None
+        from ..common.qrnn import DenseQRNN, QRNN
+        import sru
+        self.model = QRNN(input_size, hidden_size, num_layers)
 
-    def forward(self, input, memory, done_flags):
-        x, next_memory = self.rnn(input, memory, done_flags)
-        head = self._run_heads(x)
-        head.hidden_code = x
-        return head, next_memory
+    @property
+    def output_size(self):
+        return self.hidden_size
+
+    # def reset_weights(self):
+    #     super().reset_weights()
+    #     self.model.reset_parameters()
+
+    def forward(self, input: torch.Tensor, memory: torch.Tensor, dones: torch.Tensor, logger=None, cur_step=None, **kwargs):
+        # memory: (B, L, *) -> (L, B, *)
+        x, memory = self.model(input, memory.transpose(0, 1) if memory is not None else None)
+        if logger is not None:
+            logger.add_histogram(f'layer_{self.num_layers - 1}_output', x, cur_step)
+            logger.add_histogram(f'memory', memory, cur_step)
+        # x: (H, B, *)
+        # memory: (B, L, *)
+        return x, memory.transpose(0, 1)

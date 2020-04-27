@@ -66,6 +66,7 @@ class IMPALA(RLBase):
                  train_horizon=None,
                  loss_type='impala',
                  eval_model_blend=0.1,
+                 memory_burn_in_steps=16,
 
                  **kwargs):
         super().__init__(observation_space, action_space, **kwargs)
@@ -96,6 +97,7 @@ class IMPALA(RLBase):
         self.kl_limit = kl_limit
         self.train_horizon = self.horizon if train_horizon is None else train_horizon
         self.eval_model_blend = eval_model_blend
+        self.memory_burn_in_steps = memory_burn_in_steps
 
         self._train_model: Actor = model_factory(observation_space, action_space)
         self._eval_model: Actor = model_factory(observation_space, action_space)
@@ -118,6 +120,7 @@ class IMPALA(RLBase):
         self.loss_type = [LossType[c] for c in self.loss_type]
         assert len(set(self.loss_type) - set(c for c in LossType)) == 0
 
+        assert self.memory_burn_in_steps < self.train_horizon
         # DataLoader limitation
         assert self.batch_size % self.train_horizon == 0 and self.horizon % self.train_horizon == 0, (self.batch_size, self.horizon)
 
@@ -140,8 +143,17 @@ class IMPALA(RLBase):
 
     def _step(self, rewards, dones, states) -> torch.Tensor:
         with torch.no_grad():
-            # run network
-            ac_out = self._eval_model(states.to(self.device_eval))
+            if self._eval_model.is_recurrent:
+                input_memory = self._prev_data.memory if self._prev_data is not None else None
+                dones_t = dones.unsqueeze(0).to(self.device_eval) if dones is not None else \
+                    torch.zeros((1, self.num_actors), device=self.device_eval)
+                ac_out = self._eval_model(states.unsqueeze(0).to(self.device_eval), memory=input_memory, dones=dones_t)
+                ac_out = AttrDict({k: v.squeeze(0) for k, v in ac_out.items()})
+                if input_memory is None:
+                    input_memory = ac_out.memory
+            else:
+                ac_out = self._eval_model(states.to(self.device_eval))
+
             ac_out.state_values = ac_out.state_values.squeeze(-1)
             actions = self._eval_model.heads.logits.pd.sample(ac_out.logits).cpu()
 
@@ -149,9 +161,14 @@ class IMPALA(RLBase):
 
             if not self.disable_training:
                 if self._prev_data is not None and rewards is not None:
+                    if self._eval_model.is_recurrent:
+                        self._prev_data.memory = self._prev_data.input_memory
+                        del self._prev_data['input_memory']
                     self._replay_buffer.push(rewards=rewards, dones=dones, **self._prev_data)
 
                 self._prev_data = AttrDict(**ac_out, states=states, actions=actions)
+                if self._eval_model.is_recurrent:
+                    self._prev_data.input_memory = input_memory
 
                 if self._eval_steps >= self.horizon + 2:
                     self._eval_steps = 0
@@ -222,7 +239,8 @@ class IMPALA(RLBase):
         num_rollouts = data.states.shape[1]
 
         data = AttrDict(states=data.states, logits_old=data.logits,
-                        actions=data.actions, rewards=data.rewards, dones=data.dones)
+                        actions=data.actions, rewards=data.rewards, dones=data.dones,
+                        **(dict(memory=data.memory) if self._train_model.is_recurrent else dict()))
 
         num_batches = max(1, num_samples // self.batch_size)
         rand_idx = torch.arange(num_rollouts, device=self.device_train).chunk(num_batches)
@@ -275,13 +293,11 @@ class IMPALA(RLBase):
                 actor_params.logger = self.logger
                 actor_params.cur_step = self.frame_train
 
-            actor_out = self._train_model(batch.states.reshape(-1, *batch.states.shape[2:]), **actor_params)
-            with torch.no_grad():
-                actor_out_policy = self._target_model(batch.states.reshape(-1, *batch.states.shape[2:]))
-
-            batch.logits = actor_out.logits.reshape(*batch.states.shape[:2], *actor_out.logits.shape[1:])
-            batch.logits_policy = actor_out_policy.logits.reshape(*batch.states.shape[:2], *actor_out.logits.shape[1:])
-            batch.state_values = actor_out.state_values.reshape(*batch.states.shape[:2])
+            if self._train_model.is_recurrent:
+                actor_out = self._run_train_model_rnn(batch.states, batch.memory, batch.dones, actor_params)
+            else:
+                actor_out = self._run_train_model_fc(batch.states, actor_params)
+            batch.update(actor_out)
 
             for k, v in list(batch.items()):
                 batch[k] = v if k == 'states' else v.cpu()
@@ -308,6 +324,32 @@ class IMPALA(RLBase):
         self._optimizer.zero_grad()
 
         return loss
+
+    def _run_train_model_fc(self, states, actor_params):
+        input_states = states.reshape(-1, *states.shape[2:])
+        actor_out = self._train_model(input_states, **actor_params)
+        with torch.no_grad():
+            actor_out_policy = self._target_model(input_states)
+
+        logits = actor_out.logits\
+            .reshape(*states.shape[:2], *actor_out.logits.shape[1:])
+        logits_policy = actor_out_policy.logits\
+            .reshape(*states.shape[:2], *actor_out.logits.shape[1:])
+        state_values = actor_out.state_values\
+            .reshape(*states.shape[:2])
+
+        return dict(logits=logits, logits_policy=logits_policy, state_values=state_values)
+
+    def _run_train_model_rnn(self, states, memory, dones, actor_params):
+        with torch.no_grad():
+            actor_out_burn_in = self._train_model(states[:self.memory_burn_in_steps], memory=memory[0], dones=dones[:self.memory_burn_in_steps])
+            actor_out_policy = self._target_model(states, memory=memory[0], dones=dones)
+        actor_out = self._train_model(states[self.memory_burn_in_steps:], memory=actor_out_burn_in.memory, dones=dones[self.memory_burn_in_steps:], **actor_params)
+
+        return dict(
+            logits=torch.cat([actor_out_burn_in.logits, actor_out.logits], 0),
+            state_values=torch.cat([actor_out_burn_in.state_values, actor_out.state_values], 0).squeeze(-1),
+            logits_policy=actor_out_policy.logits)
 
     def _get_impala_loss(self, data, do_log=False, pd=None, tag=''):
         """

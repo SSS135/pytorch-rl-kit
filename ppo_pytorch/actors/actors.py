@@ -18,7 +18,7 @@ import torch.nn.functional as F
 import threading
 
 
-def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, num_out=1):
+def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, num_out=1, is_recurrent=False):
     pd = make_pd(action_space)
 
     if split_policy_value_network:
@@ -32,7 +32,7 @@ def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, 
         models = {fx_policy: dict(logits=policy_head), fx_value: dict(state_values=value_head)}
     else:
         models = {fx_policy: dict(logits=policy_head, state_values=value_head)}
-    return ModularActor(models)
+    return ModularActor(models, is_recurrent)
 
 
 def orthogonal_(tensor, gain=math.sqrt(2), mode='fan_in'):
@@ -82,9 +82,10 @@ class Actor(nn.Module, metaclass=ABCMeta):
 
 
 class ModularActor(Actor):
-    def __init__(self, models: Dict[FeatureExtractorBase, Dict[str, HeadBase]]):
+    def __init__(self, models: Dict[FeatureExtractorBase, Dict[str, HeadBase]], is_recurrent=False):
         super().__init__()
         self.models = models
+        self.is_recurrent = is_recurrent
         self._heads = None
         self._fx_modules = None
         self._head_modules = None
@@ -100,15 +101,28 @@ class ModularActor(Actor):
         self._head_modules = nn.ModuleDict(self._heads)
         self._fx_modules = nn.ModuleList(self.models.keys())
 
-    def forward(self, input, evaluate_heads: Collection[str]=None, **kwargs) -> AttrDict:
+    def forward(self, input, memory=None, **kwargs) -> AttrDict:
         output = AttrDict()
-        for fx, heads in self.models.items():
-            if evaluate_heads is not None and len(set(evaluate_heads) & set(heads.keys())) == 0:
-                continue
-            hidden = fx(input, **kwargs)
+
+        if memory is not None:
+            memory_input = memory.chunk(len(self._fx_modules), dim=2)
+        else:
+            memory_input = [None] * len(self._fx_modules)
+
+        memory_output = []
+
+        for (fx, heads), memory_input in zip(self.models.items(), memory_input):
+            if self.is_recurrent:
+                features, memory = fx(input, memory=memory_input, **kwargs)
+                memory_output.append(memory)
+            else:
+                features = fx(input, **kwargs)
             for name, head in heads.items():
-                if evaluate_heads is None or name in evaluate_heads:
-                    output[name] = head(hidden, **kwargs)
+                output[name] = head(features, **kwargs)
+
+        if self.is_recurrent:
+            output.memory = torch.cat(memory_output, dim=2)
+
         return output
 
     def head_parameters(self, *param_heads: str):

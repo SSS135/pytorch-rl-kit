@@ -59,6 +59,8 @@ class QRNNLayer(nn.Module):
 
     def forward(self, X, hidden=None, reset_flags=None):
         seq_len, batch_size, _ = X.size()
+        assert hidden is None or hidden.shape == (batch_size, hidden.shape[1])
+        assert reset_flags is None or reset_flags.shape == (seq_len, batch_size)
 
         source = None
         if self.window == 1:
@@ -92,7 +94,7 @@ class QRNNLayer(nn.Module):
         # If an element of F is zero, that means the corresponding neuron keeps the old value
         if self.zoneout:
             if self.training:
-                mask = Variable(F.data.new(*F.size()).bernoulli_(1 - self.zoneout), requires_grad=False)
+                mask = F.data.new(*F.size()).bernoulli_(1 - self.zoneout)
                 F = F * mask
             else:
                 F *= 1 - self.zoneout
@@ -120,9 +122,12 @@ class QRNNLayer(nn.Module):
 
         # In an optimal world we may want to backprop to x_{t-1} but ...
         if self.window > 1 and self.save_prev_x:
-            self.prevX = Variable(X[-1:, :, :].data, requires_grad=False)
+            self.prevX = X[-1:, :, :].data
 
-        return H, C[-1:, :, :]
+        assert H.shape == (seq_len, batch_size, H.shape[2])
+        assert C.shape == H.shape == F.shape == Z.shape
+
+        return H, C[-1]
 
 
 class QRNN(torch.nn.Module):
@@ -181,7 +186,7 @@ class QRNN(torch.nn.Module):
             if self.dropout != 0 and i < len(self.layers) - 1:
                 input = torch.nn.functional.dropout(input, p=self.dropout, training=self.training, inplace=False)
 
-        next_hidden = torch.cat(next_hidden, 0).view(self.num_layers, *next_hidden[0].size()[-2:])
+        next_hidden = torch.stack(next_hidden, 0)
 
         return input, next_hidden
 
@@ -225,6 +230,6 @@ class DenseQRNN(torch.nn.Module):
             if self.dropout != 0 and i < len(self.layers) - 1:
                 input = torch.nn.functional.dropout(input, p=self.dropout, training=self.training, inplace=False)
 
-        next_hidden = torch.cat(next_hidden, 0).view(self.num_layers, *next_hidden[0].size()[-2:])
+        next_hidden = torch.stack(next_hidden, 0)
 
         return input if self.dense_output else new_input, next_hidden
