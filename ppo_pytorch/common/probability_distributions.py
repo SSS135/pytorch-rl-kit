@@ -11,7 +11,7 @@ import torch
 import torch.jit
 import torch.distributions
 import torch.nn.functional as F
-from torch.distributions import Beta, kl_divergence
+from torch.distributions import Beta, kl_divergence, Normal
 
 
 def make_pd(space: gym.Space):
@@ -21,9 +21,9 @@ def make_pd(space: gym.Space):
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
         # return LinearTanhPd(space.shape[0])
-        return FixedStdGaussianPd(space.shape[0], 0.3)
+        # return FixedStdGaussianPd(space.shape[0], 0.3)
         # return BetaPd(space.shape[0], 1)
-        # return DiagGaussianPd(space.shape[0])
+        return DiagGaussianPd(space.shape[0])
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
         # return PointCloudPd(space.shape[0])
         # return DiscretizedCategoricalPd(space.shape[0], 7)
@@ -235,7 +235,7 @@ class BernoulliPd(ProbabilityDistribution):
 
 
 class DiagGaussianPd(ProbabilityDistribution):
-    def __init__(self, d, eps=0.05):
+    def __init__(self, d, eps=1e-6):
         super().__init__(locals())
         self.d = d
         self.eps = eps
@@ -257,29 +257,35 @@ class DiagGaussianPd(ProbabilityDistribution):
         return torch.float
 
     def logp(self, x, prob):
-        mean, std = self.split_probs(prob)
-        nlp = 0.5 * (((x - mean) / std) ** 2).sum(-1, keepdim=True) \
-              + 0.5 * np.log(2.0 * np.pi) * mean.shape[-1] \
-              + std.log().sum(-1, keepdim=True)
-        return -nlp
+        mean, logstd = self.split_probs(prob)
+        std = logstd.exp()
+        return -0.5 * (
+            ((x - mean) / (std + 1e-6)) ** 2
+            + 2 * logstd
+            + np.log(2 * np.pi)
+        )
 
     def kl(self, prob1, prob2):
-        mean1, std1 = self.split_probs(prob1)
-        mean2, std2 = self.split_probs(prob2)
-        return (std2.log() - std1.log() + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5).sum(-1, keepdim=True)
+        mean1, logstd1 = self.split_probs(prob1)
+        mean2, logstd2 = self.split_probs(prob2)
+        std1, std2 = logstd1.exp(), logstd2.exp()
+        dist1 = Normal(mean1, std1)
+        dist2 = Normal(mean2, std2)
+        return kl_divergence(dist1, dist2)
 
     def entropy(self, prob):
         mean, logstd = self.split_probs(prob)
-        return (logstd + .5 * np.log(2.0 * np.pi * np.e)).sum(-1, keepdim=True)
+        return 0.5 * (
+            math.log(2 * np.pi * np.e) + 2 * logstd
+        )
 
     def sample(self, prob):
-        mean, std = self.split_probs(prob)
+        mean, logstd = self.split_probs(prob)
+        std = logstd.exp()
         return mean + std * torch.randn_like(mean)
 
     def split_probs(self, probs):
-        mean, logstd = probs.chunk(2, -1)
-        std = F.softplus(logstd)
-        return mean, std + self.eps
+        return probs.chunk(2, -1)
 
     @property
     def init_column_norm(self):

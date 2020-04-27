@@ -174,6 +174,14 @@ class IMPALA(RLBase):
                     self._eval_steps = 0
                     self._train()
 
+            return self.limit_actions(actions)
+
+    def limit_actions(self, actions):
+        if isinstance(self.action_space, gym.spaces.Box):
+            return actions.clamp(-3, 3) / 3
+        else:
+            assert isinstance(self.action_space, gym.spaces.Discrete) or \
+                   isinstance(self.action_space, gym.spaces.MultiDiscrete)
             return actions
 
     def _train(self):
