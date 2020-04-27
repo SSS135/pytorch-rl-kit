@@ -3,7 +3,7 @@ if __name__ == '__main__':
     from optfn.gadam import GAdam
     from torch.optim.adamw import AdamW
 
-    env_factory = partial(rl.common.AtariVecEnv, 'SeaquestNoFrameskip-v4', parallel='process')
+    env_factory = partial(rl.common.AtariVecEnv, 'BreakoutNoFrameskip-v4', parallel='process')
 
     alg_class = rl.algs.IMPALA
     alg_params = rl.algs.create_ppo_kwargs(
