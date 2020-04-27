@@ -7,6 +7,7 @@ import gym.spaces
 import numpy as np
 import torch.nn as nn
 import torch.nn.init as init
+from .kaiming_trunc_normal import kaiming_trunc_normal_
 
 from .heads import HeadBase, StateValueHead, PolicyHead
 from .norm_factory import NormFactory
@@ -46,7 +47,7 @@ def orthogonal_(tensor, gain=math.sqrt(2), mode='fan_in'):
 
 class FeatureExtractorBase(nn.Module, metaclass=ABCMeta):
     def __init__(self, norm_factory: NormFactory=None,
-                 weight_init_fn=orthogonal_):
+                 weight_init_fn=kaiming_trunc_normal_):
         super().__init__()
         self.norm_factory = norm_factory
         self.weight_init_fn = weight_init_fn
