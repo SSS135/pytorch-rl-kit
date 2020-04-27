@@ -180,6 +180,7 @@ class IMPALA(RLBase):
         self.step_train = self.step_eval
 
         data = self._create_data()
+        self._train_async(data)
 
         # self._train_async(data)
         # if self._data_future is not None:
@@ -188,10 +189,10 @@ class IMPALA(RLBase):
         #     data = self._create_data()
         # self._data_future = self._executor.submit(self._create_data)
 
-        if self._train_future is not None:
-            self._train_future.result()
-
-        self._train_future = self._executor.submit(self._train_async, data)
+        # if self._train_future is not None:
+        #     self._train_future.result()
+        #
+        # self._train_future = self._executor.submit(self._train_async, data)
 
     def _train_async(self, data):
         with torch.no_grad():
