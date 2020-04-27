@@ -1,10 +1,8 @@
 import math
-from abc import ABC, abstractmethod, ABCMeta
+from abc import abstractmethod, ABCMeta
 from functools import partial
-from typing import Optional, List, Callable, Dict, Tuple, Collection, MutableMapping
+from typing import Dict
 
-import gym.spaces
-import numpy as np
 import torch.nn as nn
 import torch.nn.init as init
 from .kaiming_trunc_normal import kaiming_trunc_normal_
@@ -12,11 +10,9 @@ from .kaiming_trunc_normal import kaiming_trunc_normal_
 from .heads import HeadBase, StateValueHead, PolicyHead
 from .norm_factory import NormFactory
 from .utils import weights_init
-from ..common.probability_distributions import make_pd, ProbabilityDistribution, DiscretizedCategoricalPd
+from ..common.probability_distributions import make_pd
 from ..common.attr_dict import AttrDict
 import torch
-import torch.nn.functional as F
-import threading
 
 
 def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, num_out=1, is_recurrent=False):
