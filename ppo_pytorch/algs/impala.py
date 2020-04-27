@@ -5,6 +5,7 @@ from enum import Enum
 from functools import partial
 from typing import Optional
 
+import gym
 import numpy as np
 import torch
 import torch.autograd
@@ -36,9 +37,8 @@ class LossType(Enum):
 class IMPALA(RLBase):
     def __init__(self, observation_space, action_space,
 
-                 use_pop_art=True,
+                 use_pop_art=False,
                  reward_discount=0.99,
-                 advantage_discount=0.95,
                  horizon=64,
                  batch_size=64,
                  model_factory=create_ppo_fc_actor,
@@ -72,7 +72,6 @@ class IMPALA(RLBase):
         super().__init__(observation_space, action_space, **kwargs)
         self._init_args = locals()
         self.reward_discount = reward_discount
-        self.advantage_discount = advantage_discount
         self.entropy_loss_scale = entropy_loss_scale
         self.horizon = horizon
         self.batch_size = batch_size
@@ -128,7 +127,7 @@ class IMPALA(RLBase):
         self._prev_data = None
         self._eval_steps = 0
         self._eval_no_copy_updates = 0
-        self._adv_norm = RunningNorm(mean_norm=False)
+        self._adv_norm = RunningNorm(momentum=0.9, mean_norm=True)
         self._train_future: Optional[Future] = None
         self._data_future: Optional[Future] = None
         self._executor = ThreadPoolExecutor(max_workers=1)
@@ -156,6 +155,7 @@ class IMPALA(RLBase):
 
             ac_out.state_values = ac_out.state_values.squeeze(-1)
             actions = self._eval_model.heads.logits.pd.sample(ac_out.logits).cpu()
+            assert not torch.isnan(actions.sum())
 
             self._eval_steps += 1
 
@@ -374,11 +374,11 @@ class IMPALA(RLBase):
         data.state_values = state_values
 
         # action probability ratio
-        data.logp_old = pd.logp(data.actions, data.logits_old).sum(-1)
-        data.logp_policy = pd.logp(data.actions, data.logits_policy).sum(-1)
-        data.logp = pd.logp(data.actions, data.logits).sum(-1)
+        data.logp_old = pd.logp(data.actions, data.logits_old)
+        data.logp_policy = pd.logp(data.actions, data.logits_policy)
+        data.logp = pd.logp(data.actions, data.logits)
         data.probs_ratio = (data.logp.detach() - data.logp_old).exp()
-        data.kl_replay = pd.kl(data.logits, data.logits_old).sum(-1)
+        data.kl_replay = pd.kl(data.logits, data.logits_old)
 
         with torch.no_grad():
             self._process_rewards(data)
@@ -387,7 +387,7 @@ class IMPALA(RLBase):
         for k, v in data.items():
             data[k] = v.flatten(end_dim=1)
 
-        data.kl_policy = kl_policy = pd.kl(data.logits, data.logits_policy).sum(-1)
+        data.kl_policy = kl_policy = pd.kl(data.logits, data.logits_policy)
         if LossType.v_mpo in self.loss_type:
             losses = v_mpo_loss(
                 kl_policy, data.logp, data.advantages, data.advantages_upgo, data.vtrace_p, self.kl_pull)
@@ -407,8 +407,8 @@ class IMPALA(RLBase):
             if do_log:
                 self.logger.add_scalar('loss_alpha' + tag, loss_kl, self.frame_train)
 
-        entropy = pd.entropy(data.logits).sum(-1)
-        loss_ent = self.entropy_loss_scale * -entropy
+        entropy = pd.entropy(data.logits)
+        loss_ent = self.entropy_loss_scale * -entropy.mean()
         loss_value = self.value_loss_scale * barron_loss(data.state_values, data.value_targets, *self.barron_alpha_c, reduce=False)
 
         assert loss_value.shape == data.state_values.shape, (loss_value.shape, data.state_values.shape)
@@ -448,7 +448,7 @@ class IMPALA(RLBase):
         # calculate value targets and advantages
         value_targets, advantages, advantages_upgo, p = calc_vtrace(
             norm_rewards, state_values,
-            data.dones, data.probs_ratio.detach(), data.kl_replay.detach(),
+            data.dones, data.probs_ratio.detach().mean(-1), data.kl_replay.detach().mean(-1),
             self.reward_discount, self.vtrace_max_ratio, self.vtrace_kl_limit)
 
         advantages_upgo *= self.upgo_scale
@@ -459,8 +459,8 @@ class IMPALA(RLBase):
                 advantages_upgo /= pa_std
 
         # if LossType.impala is self.loss_type:
-        # advantages = self._adv_norm(advantages)
-        # advantages_upgo = self._adv_norm(advantages_upgo, update_stats=False)
+        advantages = self._adv_norm(advantages)
+        advantages_upgo = self._adv_norm(advantages_upgo, update_stats=False)
 
         data.vtrace_p, data.advantages_upgo = p, advantages_upgo
         data.value_targets, data.advantages, data.rewards = value_targets, advantages, norm_rewards
