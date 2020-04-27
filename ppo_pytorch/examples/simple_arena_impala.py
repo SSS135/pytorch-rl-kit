@@ -1,10 +1,9 @@
 if __name__ == '__main__':
     from .init_vars import *
     from torch.optim.adamw import AdamW
-    from rl_exp.unity_env import UnityVecEnv
+    from rl_exp.simple_unity_env import UnityVecEnv
 
-    exe_path = '/home/alexander/DungeonAI/SimpleArenaDiscreteLinux/DungeonAI.x86_64' if is_linux else \
-        'c:\\Users\\Alexander\\projects\\DungeonAI\\Build\\SimpleArenaContinuous\\DungeonAI'
+    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuous\DungeonAI'
     env_factory = partial(UnityVecEnv, exe_path, parallel='process')
 
     alg_class = rl.algs.IMPALA
