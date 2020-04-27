@@ -25,7 +25,7 @@ class HeadBase(nn.Module):
         self.in_features = in_features
 
     def reset_weights(self):
-        raise NotImplementedError()
+        pass
 
 
 class ActionValuesHead(HeadBase):
@@ -77,9 +77,9 @@ class PolicyHead(HeadBase):
         self.linear = Linear(in_features, self.pd.prob_vector_len)
         self.reset_weights()
 
-    def reset_weights(self):
-        normalized_columns_initializer_(self.linear.weight.data, self.pd.init_column_norm)
-        self.linear.bias.data.fill_(0)
+    # def reset_weights(self):
+    #     normalized_columns_initializer_(self.linear.weight.data, self.pd.init_column_norm)
+    #     self.linear.bias.data.fill_(0)
 
     def forward(self, x, **kwargs):
         return self.linear(x)
@@ -102,9 +102,9 @@ class StateValueHead(HeadBase):
         self.linear = Linear(in_features, num_out)
         self.reset_weights()
 
-    def reset_weights(self):
-        normalized_columns_initializer_(self.linear.weight.data, 1.0)
-        self.linear.bias.data.fill_(0)
+    # def reset_weights(self):
+    #     normalized_columns_initializer_(self.linear.weight.data, 1.0)
+    #     self.linear.bias.data.fill_(0)
 
     def forward(self, x, **kwargs):
         # (*xd, bins, 1)
