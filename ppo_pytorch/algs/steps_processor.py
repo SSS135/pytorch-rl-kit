@@ -80,6 +80,7 @@ class StepsProcessor:
         return norm_rewards, value_targets, advantages
 
     def _normalize_advantages(self, advantages, barron_scale):
+        return (advantages - advantages.mean()) / max(advantages.std(), 1e-4)
         # mean, square, iter = self._advantage_stats
         # mean = self._advantage_momentum * mean + (1 - self._advantage_momentum) * advantages.mean().item()
         # square = self._advantage_momentum * square + (1 - self._advantage_momentum) * advantages.pow(2).mean().item()
@@ -97,17 +98,17 @@ class StepsProcessor:
         #     rms = square ** 0.5
         #     advantages = advantages / max(rms, 1e-3)
 
-        def adv_norm(advantages):
-            if self.mean_norm:
-                return (advantages - advantages.mean()) / max(advantages.std(), 1e-4)
-            else:
-                return advantages / max(advantages.pow(2).mean().sqrt(), 1e-4)
-
-        advantages = adv_norm(advantages)
-        if barron_scale:
-            advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
-            advantages = adv_norm(advantages)
-        advantages.clamp_(-10, 10)
+        # def adv_norm(advantages):
+        #     if self.mean_norm:
+        #         return (advantages - advantages.mean()) / max(advantages.std(), 1e-4)
+        #     else:
+        #         return advantages / max(advantages.pow(2).mean().sqrt(), 1e-4)
+        #
+        # advantages = adv_norm(advantages)
+        # if barron_scale:
+        #     advantages = barron_loss_derivative(advantages, *self.barron_alpha_c)
+        #     advantages = adv_norm(advantages)
+        # advantages.clamp_(-10, 10)
 
         # adv_shape = advantages.shape
         # advantages = advantages.view(-1)
@@ -115,4 +116,4 @@ class StepsProcessor:
         #     -1.7062, 1.7062, advantages.shape[0], dtype=advantages.dtype, device=advantages.device)
         # advantages = advantages.view(adv_shape)
 
-        return advantages
+        # return advantages

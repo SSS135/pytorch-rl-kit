@@ -252,6 +252,7 @@ class PPO(RLBase):
             # run network
             ac_out = self._eval_model(states.to(self.device_eval))
             actions = self._eval_model.heads.logits.pd.sample(ac_out.logits).cpu()
+            assert not torch.isnan(actions.sum())
 
             if not self.disable_training:
                 ac_out.state_values = ac_out.state_values.squeeze(-1)
@@ -260,6 +261,14 @@ class PPO(RLBase):
                 if len(self._steps_processor.data.states) > self.horizon:
                     self._train()
 
+            return self.limit_actions(actions)
+
+    def limit_actions(self, actions):
+        if isinstance(self.action_space, gym.spaces.Box):
+            return actions.clamp(-3, 3) / 3
+        else:
+            assert isinstance(self.action_space, gym.spaces.Discrete) or \
+                   isinstance(self.action_space, gym.spaces.MultiDiscrete)
             return actions
 
     def _train(self):
@@ -290,13 +299,13 @@ class PPO(RLBase):
         data = AttrDict(states=data.states, logits_old=data.logits, state_values_old=data.state_values,
                         actions=data.actions, advantages=data.advantages, value_targets=data.value_targets)
 
-        if self._has_constraint(Constraint.target):
-            data.logits_target = self._calc_target_logits(
-                data.actions, data.logits_old, data.advantages, self._train_model.heads.logits.pd)
+        # if self._has_constraint(Constraint.target):
+        #     data.logits_target = self._calc_target_logits(
+        #         data.actions, data.logits_old, data.advantages, self._train_model.heads.logits.pd)
 
         batches = max(1, math.ceil(self.num_actors * self.horizon / self.batch_size))
 
-        initial_lr = [g['lr'] for g in self._optimizer.param_groups]
+        # initial_lr = [g['lr'] for g in self._optimizer.param_groups]
 
         rand_idx = [torch.randperm(len(data.state_values_old), device=self.device_train) for _ in range(self.ppo_iters)]
         rand_idx = torch.cat(rand_idx, 0).chunk(batches * self.ppo_iters)
@@ -312,11 +321,11 @@ class PPO(RLBase):
                     loss, kl = self._ppo_step(batch, self._do_log and ppo_iter == self.ppo_iters - 1 and loader_iter == 0)
                     kl_list.append(kl)
 
-                for g in self._optimizer.param_groups:
-                    g['lr'] *= self.lr_iter_mult
-
-        for g, lr in zip(self._optimizer.param_groups, initial_lr):
-            g['lr'] = lr
+        #         for g in self._optimizer.param_groups:
+        #             g['lr'] *= self.lr_iter_mult
+        #
+        # for g, lr in zip(self._optimizer.param_groups, initial_lr):
+        #     g['lr'] = lr
 
         kl = np.mean(kl_list)
 
@@ -330,8 +339,8 @@ class PPO(RLBase):
             self.logger.add_scalar('model_max_diff', model_diff(old_model, self._train_model, True), self.frame_train)
 
         self._unapply_pop_art()
-        self._adjust_kl_scale(kl)
-        NoisyLinear.randomize_network(self._train_model)
+        # self._adjust_kl_scale(kl)
+        # NoisyLinear.randomize_network(self._train_model)
 
         copy_state_dict(self._train_model, self._eval_model)
         # self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
@@ -405,53 +414,55 @@ class PPO(RLBase):
 
         # action probability ratio
         # log probabilities used for better numerical stability
-        logp_old = pd.logp(actions, logits_old).sum(-1)
-        logp = pd.logp(actions, logits).sum(-1)
-        ratio = logp - logp_old
-        kl = pd.kl(logits_old, logits).sum(-1)
+        logp_old = pd.logp(actions, logits_old)
+        logp = pd.logp(actions, logits)
+        ratio = (logp - logp_old).exp()
+        kl = pd.kl(logits_old, logits)
+        entropy = pd.entropy(logits)
 
-        assert kl.shape == ratio.shape == advantages.shape, (kl.shape, ratio.shape, advantages.shape)
+        assert kl.shape == ratio.shape == logp.shape, (kl.shape, ratio.shape, logp.shape)
+        assert kl.shape[:-1] == advantages.shape, (kl.shape, advantages.shape)
 
-        # entropy bonus for better exploration
-        entropy = pd.entropy(logits).sum(-1)
-        loss_ent = -self.entropy_loss_scale * entropy
+        loss_ent = -self.entropy_loss_scale * entropy.mean(-1)
 
         if self._has_constraint(Constraint.clip):
-            unclipped_policy_loss = ratio * advantages
+            adv_u = advantages.unsqueeze(-1)
+            unclipped_policy_loss = ratio * adv_u
             if self.advantage_scaled_clip:
-                pclip = advantages.abs() * policy_clip
-                clipped_ratio = torch.min(torch.max(ratio, -pclip), pclip)
+                pclip = adv_u.abs() * policy_clip
+                clipped_ratio = torch.min(torch.max(ratio, 1 - pclip), 1 + pclip)
             else:
-                clipped_ratio = ratio.clamp(-policy_clip, policy_clip)
-            clipped_policy_loss = clipped_ratio * advantages
+                clipped_ratio = ratio.clamp(1 - policy_clip, 1 + policy_clip)
+            clipped_policy_loss = clipped_ratio * adv_u
             loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
-        elif self._has_constraint(Constraint.target):
-            # # loss_clip = 0.5 * (logits - batch.logits_target).pow(2)
-            tar_min_old = batch.logits_target - batch.logits_old
-            diff = tar_min_old.abs() / (tar_min_old.pow(2).mean(-1, keepdim=True).sqrt() + 1e-7)
-            tar_min_cur = batch.logits_target - batch.logits
-            loss_target = tar_min_cur * tar_min_cur.detach().sign() * diff
-            loss_target = loss_target * (tar_min_cur.detach().sign() == tar_min_old.sign()).float()
-            # loss_kl = pd.kl(batch.logits_target, logits).sum(-1)
-            # loss_clip = loss_target.sum(-1).mean() + loss_kl.mean()
-            loss_clip = loss_target.sum(-1) #+ 5 * loss_kl
-            loss_ent = torch.zeros_like(loss_ent)
-        elif self._has_constraint(Constraint.spu):
-            kl_dis, _, lam = self.spu_dis_agg_lam
-            loss_clip = kl - lam * ratio * advantages
-            good_kl_mask = kl.detach() <= kl_dis * self._clip_mult
-            loss_clip = loss_clip * good_kl_mask.float()
-            loss_clip = loss_clip.unsqueeze(-1)
-            # agg_kl_check = (kl_mean.detach().mean() < self.kl_agg * self._clip_mult * advantages.abs().mean()).float()
-            # loss_clip = loss_clip * agg_kl_check
-            # loss_ent = loss_ent * agg_kl_check
-        # elif self._has_constraint(Constraint.v_mpo):
-        #     loss_policy, loss_nu, loss_alpha = v_mpo_loss(
-        #         kl, logp, advantages, self.nu, self.alpha, self.eps_nu, self.eps_alpha)
-        #     loss_clip = loss_policy + loss_nu + loss_alpha
-        else:
-            # unclipped loss
-            loss_clip = -ratio * advantages
+            assert loss_clip.shape == logp.shape
+        # elif self._has_constraint(Constraint.target):
+        #     # # loss_clip = 0.5 * (logits - batch.logits_target).pow(2)
+        #     tar_min_old = batch.logits_target - batch.logits_old
+        #     diff = tar_min_old.abs() / (tar_min_old.pow(2).mean(-1, keepdim=True).sqrt() + 1e-7)
+        #     tar_min_cur = batch.logits_target - batch.logits
+        #     loss_target = tar_min_cur * tar_min_cur.detach().sign() * diff
+        #     loss_target = loss_target * (tar_min_cur.detach().sign() == tar_min_old.sign()).float()
+        #     # loss_kl = pd.kl(batch.logits_target, logits).sum(-1)
+        #     # loss_clip = loss_target.sum(-1).mean() + loss_kl.mean()
+        #     loss_clip = loss_target.sum(-1) #+ 5 * loss_kl
+        #     loss_ent = torch.zeros_like(loss_ent)
+        # elif self._has_constraint(Constraint.spu):
+        #     kl_dis, _, lam = self.spu_dis_agg_lam
+        #     loss_clip = kl - lam * ratio * advantages
+        #     good_kl_mask = kl.detach() <= kl_dis * self._clip_mult
+        #     loss_clip = loss_clip * good_kl_mask.float()
+        #     loss_clip = loss_clip.unsqueeze(-1)
+        #     # agg_kl_check = (kl_mean.detach().mean() < self.kl_agg * self._clip_mult * advantages.abs().mean()).float()
+        #     # loss_clip = loss_clip * agg_kl_check
+        #     # loss_ent = loss_ent * agg_kl_check
+        # # elif self._has_constraint(Constraint.v_mpo):
+        # #     loss_policy, loss_nu, loss_alpha = v_mpo_loss(
+        # #         kl, logp, advantages, self.nu, self.alpha, self.eps_nu, self.eps_alpha)
+        # #     loss_clip = loss_policy + loss_nu + loss_alpha
+        # else:
+        #     # unclipped loss
+        #     loss_clip = -ratio * advantages
 
         # if self._has_constraint(Constraint.kl):
         #     kl_targets = self.kl_target * advantages.abs()
@@ -465,23 +476,24 @@ class PPO(RLBase):
         #     loss_kl = kl.new(1).zero_()
 
         # value loss
-        if self._has_constraint(Constraint.target):
-            v_targ_clipped = values_old + (value_targets - values_old).clamp(-value_clip, value_clip)
-            loss_value = self.value_loss_scale * barron_loss(values, v_targ_clipped, *self.barron_alpha_c, reduce=False)
-        elif self._has_constraint(Constraint.clip) or self._has_constraint(Constraint.kl) or self._has_constraint(Constraint.spu):
+        if self._has_constraint(Constraint.clip) or self._has_constraint(Constraint.kl) or self._has_constraint(Constraint.spu):
             if self.advantage_scaled_clip:
                 vclip = advantages.abs() * value_clip
                 v_pred_clipped = values_old + torch.min(torch.max(values - values_old, -vclip), vclip)
             else:
                 v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
-            vf_clip_loss = barron_loss(v_pred_clipped, value_targets, *self.barron_alpha_c, reduce=False)
-            vf_nonclip_loss = barron_loss(values, value_targets, *self.barron_alpha_c, reduce=False)
+            vf_clip_loss = (v_pred_clipped - value_targets) ** 2
+            vf_nonclip_loss = (values - value_targets) ** 2
             loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)
-        else:
-            loss_value = self.value_loss_scale * barron_loss(values, value_targets, *self.barron_alpha_c, reduce=False)
+            assert loss_value.shape == values.shape
+        # elif self._has_constraint(Constraint.target):
+        #     v_targ_clipped = values_old + (value_targets - values_old).clamp(-value_clip, value_clip)
+        #     loss_value = self.value_loss_scale * barron_loss(values, v_targ_clipped, *self.barron_alpha_c, reduce=False)
+        # else:
+        #     loss_value = self.value_loss_scale * barron_loss(values, value_targets, *self.barron_alpha_c, reduce=False)
 
         # assert loss_clip.shape == loss_value.shape, (loss_clip.shape, loss_value.shape)
-        assert loss_value.shape == loss_ent.shape, (loss_value.shape, loss_ent.shape)
+        # assert loss_value.shape == loss_ent.shape, (loss_value.shape, loss_ent.shape)
         # assert loss_ent.shape == loss_kl.shape or not self._has_constraint(Constraint.kl), (loss_ent.shape, loss_kl.shape)
 
         loss_clip = loss_clip.mean()
@@ -510,61 +522,61 @@ class PPO(RLBase):
         assert isinstance(cons, Constraint)
         return cons in self.constraint
 
-    def _calc_target_logits(self, actions: torch.Tensor, logits_old: torch.Tensor,
-                            advantages: torch.Tensor, pd: ProbabilityDistribution):
-        lr = 0.2 * self._clip_mult
-        iters = 40
-        kl_max = 0.01
-        # rms_max = 0.3
-        # prob_diff_max = 0.2
-        # kl_agg = kl_dis / 1.2
-
-        logits_target = logits_old.detach().clone()
-        logits_target.requires_grad = True
-        logits_opt = optim.SGD([logits_target], lr=lr)
-        sched = optim.lr_scheduler.ExponentialLR(logits_opt, 0.9)
-        # logp_old = pd.logp(actions, logits_old).sum(-1)
-        # advantages = advantages.abs().sqrt() * advantages.sign()
-        # advantages = advantages / advantages.abs().max()
-        advantages = advantages.mul(2).clamp(-1, 1)
-        # advantages = advantages.sign()
-        kl_dis = kl_max * advantages.abs()
-        entropy_old = pd.entropy(logits_old)
-
-        # advantages[advantages.argsort()] = torch.linspace(-1, 1, advantages.shape[0], dtype=advantages.dtype, device=advantages.device)
-
-        for iter in range(iters):
-            with torch.enable_grad():
-                kl = pd.kl(logits_old, logits_target).sum(-1)
-                logp = pd.logp(actions, logits_target).sum(-1)
-                entropy = pd.entropy(logits_target).sum(-1)
-                loss = -logp * advantages - self.entropy_loss_scale * entropy + 3 * kl
-                train_mask = kl.detach() <= kl_dis
-                if train_mask.float().sum() == 0:
-                    break
-                loss = 0.5 * kl + loss * train_mask.float()
-                loss = loss.sum()
-
-            loss.backward()
-            if train_mask.sum().item() > 0:
-                logits_target.grad[train_mask] /= logits_target.grad[train_mask].pow(2).mean(-1, keepdim=True).sqrt().clamp(min=1e-6)
-            logits_opt.step()
-            sched.step()
-            logits_opt.zero_grad()
-
-        if self._do_log:
-            self.logger.add_scalar('target_kl', pd.kl(logits_old, logits_target).sum(-1).mean(), self.frame_train)
-            self.logger.add_scalar('target_end_iter', iter, self.frame_train)
-
-        logits_target.requires_grad = False
-        return logits_target
-
-    def _adjust_kl_scale(self, kl):
-        threshold, change, limit = 1.3, 1.2, 1000.0
-        if kl > threshold * self.kl_target:
-            self.kl_scale = min(limit, self.kl_scale * change)
-        if kl < (1 / threshold) * self.kl_target:
-            self.kl_scale = max(1 / limit, self.kl_scale / change)
+    # def _calc_target_logits(self, actions: torch.Tensor, logits_old: torch.Tensor,
+    #                         advantages: torch.Tensor, pd: ProbabilityDistribution):
+    #     lr = 0.2 * self._clip_mult
+    #     iters = 40
+    #     kl_max = 0.01
+    #     # rms_max = 0.3
+    #     # prob_diff_max = 0.2
+    #     # kl_agg = kl_dis / 1.2
+    #
+    #     logits_target = logits_old.detach().clone()
+    #     logits_target.requires_grad = True
+    #     logits_opt = optim.SGD([logits_target], lr=lr)
+    #     sched = optim.lr_scheduler.ExponentialLR(logits_opt, 0.9)
+    #     # logp_old = pd.logp(actions, logits_old).sum(-1)
+    #     # advantages = advantages.abs().sqrt() * advantages.sign()
+    #     # advantages = advantages / advantages.abs().max()
+    #     advantages = advantages.mul(2).clamp(-1, 1)
+    #     # advantages = advantages.sign()
+    #     kl_dis = kl_max * advantages.abs()
+    #     entropy_old = pd.entropy(logits_old)
+    #
+    #     # advantages[advantages.argsort()] = torch.linspace(-1, 1, advantages.shape[0], dtype=advantages.dtype, device=advantages.device)
+    #
+    #     for iter in range(iters):
+    #         with torch.enable_grad():
+    #             kl = pd.kl(logits_old, logits_target).sum(-1)
+    #             logp = pd.logp(actions, logits_target).sum(-1)
+    #             entropy = pd.entropy(logits_target).sum(-1)
+    #             loss = -logp * advantages - self.entropy_loss_scale * entropy + 3 * kl
+    #             train_mask = kl.detach() <= kl_dis
+    #             if train_mask.float().sum() == 0:
+    #                 break
+    #             loss = 0.5 * kl + loss * train_mask.float()
+    #             loss = loss.sum()
+    #
+    #         loss.backward()
+    #         if train_mask.sum().item() > 0:
+    #             logits_target.grad[train_mask] /= logits_target.grad[train_mask].pow(2).mean(-1, keepdim=True).sqrt().clamp(min=1e-6)
+    #         logits_opt.step()
+    #         sched.step()
+    #         logits_opt.zero_grad()
+    #
+    #     if self._do_log:
+    #         self.logger.add_scalar('target_kl', pd.kl(logits_old, logits_target).sum(-1).mean(), self.frame_train)
+    #         self.logger.add_scalar('target_end_iter', iter, self.frame_train)
+    #
+    #     logits_target.requires_grad = False
+    #     return logits_target
+    #
+    # def _adjust_kl_scale(self, kl):
+    #     threshold, change, limit = 1.3, 1.2, 1000.0
+    #     if kl > threshold * self.kl_target:
+    #         self.kl_scale = min(limit, self.kl_scale * change)
+    #     if kl < (1 / threshold) * self.kl_target:
+    #         self.kl_scale = max(1 / limit, self.kl_scale / change)
 
     @property
     def _learning_rate(self):
