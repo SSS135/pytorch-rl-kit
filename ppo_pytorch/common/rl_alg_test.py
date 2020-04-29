@@ -1,5 +1,6 @@
 import copy
 import itertools
+import os
 import pprint
 import random
 import subprocess
@@ -70,19 +71,22 @@ def rl_alg_test(hyper_params: Dict[str, list] or list, wrap_params: dict, alg_cl
     return outputs
 
 
+def is_running_on_windows():
+    import sys
+    try:
+        sys.getwindowsversion()
+    except AttributeError:
+        return False
+    else:
+        return True
+
+
 def lowpriority():
     """
     Set the priority of the process to below-normal.
     https://stackoverflow.com/questions/1023038/change-process-priority-in-python-cross-platform
     """
-
-    import sys
-    try:
-        sys.getwindowsversion()
-    except AttributeError:
-        is_windows = False
-    else:
-        is_windows = True
+    is_windows = is_running_on_windows()
 
     if is_windows:
         # Based on:
@@ -104,6 +108,8 @@ SimInput = namedtuple('SimInput', 'hyper_params, wrap_params, alg_class, alg_par
 
 
 def simulate(input: SimInput):
+    if 'tag' in input.wrap_params and is_running_on_windows():
+        os.system(f'title {input.wrap_params["tag"]}')
     input = copy.deepcopy(input)
     input.alg_params.update(input.hyper_params)
     env_factory = partial(input.env_factory, worker_id=input.worker_id) if input.use_worker_id else input.env_factory
