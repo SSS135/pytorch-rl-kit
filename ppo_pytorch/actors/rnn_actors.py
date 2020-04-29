@@ -3,6 +3,8 @@ from ppo_pytorch.common.attr_dict import AttrDict
 from .actors import FeatureExtractorBase, create_ppo_actor
 import torch
 from torch import nn
+from ..common.qrnn import DenseQRNN, QRNN
+import sru
 
 
 def create_ppo_rnn_actor(observation_space, action_space, hidden_size=128, num_layers=2,
@@ -21,8 +23,6 @@ class RNNFeatureExtractor(FeatureExtractorBase):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         assert self.norm_factory is None
-        from ..common.qrnn import DenseQRNN, QRNN
-        import sru
         # self.model = sru.SRU(input_size, hidden_size, num_layers, rescale=True, use_tanh=True)
         self.model = QRNN(input_size, hidden_size, num_layers)
 
@@ -37,7 +37,8 @@ class RNNFeatureExtractor(FeatureExtractorBase):
 
     def forward(self, input: torch.Tensor, memory: torch.Tensor, dones: torch.Tensor, logger=None, cur_step=None, **kwargs):
         # memory: (B, L, *) -> (L, B, *)
-        x, memory = self.model(input, memory.transpose(0, 1) if memory is not None else None)
+        rnn_kwargs = dict(reset_flags=dones) if isinstance(self.model, QRNN) or isinstance(self.model, DenseQRNN) else dict()
+        x, memory = self.model(input, memory.transpose(0, 1) if memory is not None else None, **rnn_kwargs)
         if logger is not None:
             logger.add_histogram(f'layer_{self.num_layers - 1}_output', x, cur_step)
             logger.add_histogram(f'memory', memory, cur_step)
