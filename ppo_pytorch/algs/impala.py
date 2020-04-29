@@ -130,7 +130,7 @@ class IMPALA(RLBase):
         self._adv_norm = RunningNorm(momentum=0.9, mean_norm=True)
         self._train_future: Optional[Future] = None
         self._data_future: Optional[Future] = None
-        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._executor = ThreadPoolExecutor(max_workers=1, initializer=lambda: torch.set_num_threads(1))
 
         self._target_model = self.model_factory(self.observation_space, self.action_space).to(self.device_train).train()
         self._target_model.load_state_dict(self._train_model.state_dict())
@@ -187,8 +187,8 @@ class IMPALA(RLBase):
     def _train(self):
         self.step_train = self.step_eval
 
-        data = self._create_data()
-        self._train_async(data)
+        # data = self._create_data()
+        # self._train_async(data)
 
         # self._train_async(data)
         # if self._data_future is not None:
@@ -197,10 +197,10 @@ class IMPALA(RLBase):
         #     data = self._create_data()
         # self._data_future = self._executor.submit(self._create_data)
 
-        # if self._train_future is not None:
-        #     self._train_future.result()
-        #
-        # self._train_future = self._executor.submit(self._train_async, data)
+        data = self._create_data()
+        if self._train_future is not None:
+            self._train_future.result()
+        self._train_future = self._executor.submit(self._train_async, data)
 
     def _train_async(self, data):
         with torch.no_grad():
@@ -260,7 +260,7 @@ class IMPALA(RLBase):
         kls_replay = []
         value_target_list = []
 
-        with DataLoader(data, rand_idx, self.device_train, 4, dim=1) as data_loader:
+        with DataLoader(data, rand_idx, self.device_train, num_threads=2, dim=1) as data_loader:
             for batch_index in range(num_batches):
                 # prepare batch data
                 batch = AttrDict(data_loader.get_next_batch())
