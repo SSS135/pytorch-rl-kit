@@ -67,6 +67,7 @@ class IMPALA(RLBase):
                  loss_type='impala',
                  eval_model_blend=0.1,
                  memory_burn_in_steps=16,
+                 activation_norm_scale=0.01,
 
                  **kwargs):
         super().__init__(observation_space, action_space, **kwargs)
@@ -97,6 +98,7 @@ class IMPALA(RLBase):
         self.train_horizon = self.horizon if train_horizon is None else train_horizon
         self.eval_model_blend = eval_model_blend
         self.memory_burn_in_steps = memory_burn_in_steps
+        self.activation_norm_scale = activation_norm_scale
 
         self._train_model: Actor = model_factory(observation_space, action_space)
         self._eval_model: Actor = model_factory(observation_space, action_space)
@@ -320,7 +322,7 @@ class IMPALA(RLBase):
             if loss is None:
                 return None
             act_norm_loss = activation_norm_loss(self._train_model).cpu()
-            loss = loss.mean() + 0.01 * act_norm_loss
+            loss = loss.mean() + self.activation_norm_scale * act_norm_loss
 
         if do_log:
             self.logger.add_scalar('Losses/Activation Norm', act_norm_loss, self.frame_train)
