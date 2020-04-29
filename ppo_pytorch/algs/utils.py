@@ -19,25 +19,27 @@ def lerp_module_(start, end, factor):
 
 
 @torch.jit.script
-def v_mpo_loss(kl: torch.Tensor, logp: torch.Tensor, advantages: torch.Tensor, advantages_upgo: torch.Tensor,
-                       vtrace_p: torch.Tensor, kl_pull: float) \
+def v_mpo_loss(kl_target: torch.Tensor, logp: torch.Tensor, advantages: torch.Tensor, advantages_upgo: torch.Tensor,
+               vtrace_p: torch.Tensor, kl_pull: float) \
         -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
-    assert kl.dim() == logp.dim() == advantages.dim() == 1
+    assert advantages.shape == vtrace_p.shape == advantages_upgo.shape and advantages.dim() == 1
+    assert kl_target.shape == logp.shape and kl_target.dim() == 2
 
-    advantages = advantages * vtrace_p + advantages_upgo
+    advantages = advantages.mul(vtrace_p).add_(advantages_upgo)
 
     mask = vtrace_p > 0.1
-    if mask.float().mean().item() < 0.1:
+    if mask.float().mean().item() < 0.2:
         return None
 
-    adv_masked = advantages[mask]
-    softmax = adv_masked.softmax(0)
+    softmax = advantages[mask].softmax(0)
+    softmax = softmax.sub(softmax.median()).mul_(softmax.numel())
+    logp_masked = logp[mask.unsqueeze(-1).expand_as(logp)].view(-1, logp.shape[1])
+    loss_policy = softmax.mul_(vtrace_p[mask]).clamp_(-5, 5).unsqueeze_(-1).detach_().mul(-logp_masked)
+    loss_kl = kl_pull * kl_target
 
-    loss_policy = softmax.sub(softmax.median()).mul_(softmax.numel()).mul_(vtrace_p[mask]).clamp_(-5, 5).detach_().mul_(-logp[mask])
-    loss_kl = kl_pull * kl
-
-    assert loss_policy.shape == adv_masked.shape, (loss_policy.shape, adv_masked.shape)
-    assert loss_kl.shape == kl.shape, (loss_kl.shape, kl.shape)
+    # assert loss_policy.shape[:-1] == advantages.shape, (loss_policy.shape, advantages.shape)
+    assert loss_kl.shape == kl_target.shape, (loss_kl.shape, kl_target.shape)
+    assert loss_policy.ndim == 2, loss_policy.shape
 
     return loss_policy.mean(), loss_kl.mean()
 

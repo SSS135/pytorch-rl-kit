@@ -127,7 +127,7 @@ class IMPALA(RLBase):
         self._prev_data = None
         self._eval_steps = 0
         self._eval_no_copy_updates = 0
-        self._adv_norm = RunningNorm(momentum=0.9, mean_norm=True)
+        self._adv_norm = RunningNorm(momentum=0.95, mean_norm=False)
         self._train_future: Optional[Future] = None
         self._data_future: Optional[Future] = None
         self._executor = ThreadPoolExecutor(max_workers=1, initializer=lambda: torch.set_num_threads(1))
@@ -320,7 +320,7 @@ class IMPALA(RLBase):
             if loss is None:
                 return None
             act_norm_loss = activation_norm_loss(self._train_model).cpu()
-            loss = loss.mean() + 0.003 * act_norm_loss
+            loss = loss.mean() + 0.01 * act_norm_loss
 
         if do_log:
             self.logger.add_scalar('Losses/Activation Norm', act_norm_loss, self.frame_train)
@@ -381,7 +381,7 @@ class IMPALA(RLBase):
         data.kl_replay = pd.kl(data.logits, data.logits_old)
 
         with torch.no_grad():
-            self._process_rewards(data)
+            self._process_rewards(data, do_log)
         data.state_values = data.state_values[:-1]
 
         for k, v in data.items():
@@ -444,7 +444,7 @@ class IMPALA(RLBase):
 
         return total_loss
 
-    def _process_rewards(self, data, mean_norm=True):
+    def _process_rewards(self, data, do_log, mean_norm=True):
         norm_rewards = self.reward_scale * data.rewards
 
         if self.use_pop_art:
@@ -456,6 +456,11 @@ class IMPALA(RLBase):
             norm_rewards, state_values,
             data.dones, data.probs_ratio.detach().mean(-1), data.kl_replay.detach().mean(-1),
             self.reward_discount, self.vtrace_max_ratio, self.vtrace_kl_limit)
+
+        if do_log:
+            self.logger.add_scalar('Advantages/Mean', advantages.mean(), self.frame_train)
+            self.logger.add_scalar('Advantages/RMS', advantages.pow(2).mean().sqrt(), self.frame_train)
+            self.logger.add_scalar('Advantages/Std', advantages.std(), self.frame_train)
 
         advantages_upgo *= self.upgo_scale
         if self.use_pop_art:
