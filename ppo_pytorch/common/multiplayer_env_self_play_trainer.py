@@ -55,8 +55,8 @@ class MultiplayerEnvSelfPlayTrainer:
         self.rl_alg: RLBase = rl_alg_factory(self.env.observation_space, self.env.action_space, log_interval=log_interval)
         env_name = self.env.env_name
         alg_name = type(self.rl_alg).__name__
-        self.env.set_num_envs(self.rl_alg.num_actors)
-        self.logger = TensorboardEnvLogger(alg_name, env_name, log_path, self.env.num_envs, log_interval, tag=tag)
+        self.env.set_num_actors(self.rl_alg.num_actors)
+        self.logger = TensorboardEnvLogger(alg_name, env_name, log_path, self.env.num_actors, log_interval, tag=tag)
         self.logger.add_text('MPEnvSelPl', pprint.pformat(self._init_args))
         self.rl_alg.logger = self.logger
 
@@ -86,12 +86,12 @@ class MultiplayerEnvSelfPlayTrainer:
             if alg == self.rl_alg:
                 self.logger.step(infos, always_log)
 
-        self.frame += self.env.num_envs
+        self.frame += self.env.num_actors
 
     def train(self, max_frames):
         """Train for specified number of frames and return episode info"""
         for _ in count():
-            stop = self.frame + self.env.num_envs >= max_frames
+            stop = self.frame + self.env.num_actors >= max_frames
             self.step(stop)
             if stop:
                 break

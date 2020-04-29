@@ -38,14 +38,14 @@ class EnvTrainer:
         env_name = env.env_name
         log_dir = get_log_dir(log_root_path, alg_name, env_name, tag)
         print('Log dir:', log_dir)
-        env.set_num_envs(self.rl_alg_factory.keywords['num_actors'])
+        env.set_num_actors(self.rl_alg_factory.keywords['num_actors'])
         self.states = env.reset()
         self.env = env
 
         self.rl_alg = rl_alg_factory(self.env.observation_space, self.env.action_space,
                                      log_interval=log_interval, model_save_folder=log_dir)
 
-        self.logger = TensorboardEnvLogger(alg_name, env_name, log_dir, self.env.num_envs, log_interval, tag=tag)
+        self.logger = TensorboardEnvLogger(alg_name, env_name, log_dir, self.env.num_actors, log_interval, tag=tag)
         self.logger.add_text('EnvTrainer', pprint.pformat(self._init_args))
         self.rl_alg.logger = self.logger
 
@@ -70,7 +70,7 @@ class EnvTrainer:
         self.rl_alg.reward(rewards)
         self.rl_alg.finish_episodes(dones)
 
-        self.frame += self.env.num_envs
+        self.frame += self.env.num_actors
         # logger step
         if self.logger is not None:
             self.logger.step(infos, always_log)

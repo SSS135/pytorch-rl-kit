@@ -21,18 +21,18 @@ class NamedVecEnv:
         self.env_name = env_name
         self.parallel = parallel
         self.envs = None
-        self.num_envs = None
+        self.num_actors = None
 
         env = self.get_env_factory()()
         self.observation_space = env.observation_space
         self.action_space = env.action_space
         env.close()
 
-    def set_num_envs(self, num_envs):
+    def set_num_actors(self, num_actors):
         if self.envs is not None:
             self.envs.close()
-        self.num_envs = num_envs
-        self.envs = self.vec_env_types[self.parallel]([self.get_env_factory()] * num_envs)
+        self.num_actors = num_actors
+        self.envs = self.vec_env_types[self.parallel]([self.get_env_factory()] * num_actors)
 
     def step(self, actions):
         return self.envs.step(actions)

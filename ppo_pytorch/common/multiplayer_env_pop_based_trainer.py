@@ -56,8 +56,8 @@ class MultiplayerEnvPopBasedTrainer:
             env_name = self.env.env_name
             alg_name = type(alg).__name__
             if pop_i == 0:
-                self.env.set_num_envs(alg.num_actors)
-            logger = TensorboardEnvLogger(alg_name, env_name, log_path, self.env.num_envs,
+                self.env.set_num_actors(alg.num_actors)
+            logger = TensorboardEnvLogger(alg_name, env_name, log_path, self.env.num_actors,
                                           log_interval, tag=f'{tag}_{pop_i}')
             logger.add_text('MultiplayerEnvTrainer', pprint.pformat(self._init_args))
             alg.logger = logger
@@ -88,12 +88,12 @@ class MultiplayerEnvPopBasedTrainer:
             alg.finish_episodes(dones)
             logger.step(infos, always_log)
 
-        self.frame += self.env.num_envs
+        self.frame += self.env.num_actors
 
     def train(self, max_frames):
         """Train for specified number of frames and return episode info"""
         for _ in count():
-            stop = self.frame + self.env.num_envs >= max_frames
+            stop = self.frame + self.env.num_actors >= max_frames
             self.step(stop)
             if stop:
                 break
