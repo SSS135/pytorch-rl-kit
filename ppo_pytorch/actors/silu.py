@@ -1,10 +1,10 @@
 from torch import nn
 
 
-def swish(x):
+def silu(x):
     return x * x.sigmoid()
 
 
-class Swish(nn.Module):
+class SiLU(nn.Module):
     def forward(self, x):
-        return swish(x)
+        return silu(x)

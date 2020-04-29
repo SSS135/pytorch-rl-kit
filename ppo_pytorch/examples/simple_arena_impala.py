@@ -43,7 +43,7 @@ if __name__ == '__main__':
         # model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='normal'),
         model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
         # model_factory=partial(rl.actors.create_ppo_fc_actor, hidden_sizes=(256, 256, 256),
-        #                       activation=ppo_pytorch.actors.swish.Swish),
+        #                       activation=rl.actors.SiLU),
 
         # model_init_path=r'c:\Users\Alexander\sync-pc\Jupyter\tensorboard\IMPALA_SimpleArenaContinuous_2020-04-27_15-08-03_[vls1.0_advnorm0.99]_dlwu5k0o\model_0.pth',
         # disable_training=True,

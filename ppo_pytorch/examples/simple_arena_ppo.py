@@ -1,5 +1,3 @@
-import ppo_pytorch.actors.swish
-
 if __name__ == '__main__':
     from .init_vars import *
     from unity.simple_unity_env import UnityVecEnv
@@ -32,7 +30,7 @@ if __name__ == '__main__':
         optimizer_factory=partial(optim.Adam, lr=3e-4),
         # model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
         model_factory=partial(rl.actors.create_ppo_fc_actor, hidden_sizes=(128, 128),
-                              activation=ppo_pytorch.actors.swish.Swish),
+                              activation=rl.actors.SiLU),
     )
     hparams = dict(
     )

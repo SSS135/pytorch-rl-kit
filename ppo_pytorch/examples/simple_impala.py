@@ -1,5 +1,3 @@
-import ppo_pytorch.actors.swish
-
 if __name__ == '__main__':
     from .init_vars import *
     from optfn.gadam import GAdam
@@ -38,7 +36,7 @@ if __name__ == '__main__':
         barron_alpha_c=(2.0, 1.0),
 
         model_factory=partial(rl.actors.create_ppo_fc_actor, hidden_sizes=(128, 128),
-                              activation=ppo_pytorch.actors.swish.Swish),
+                              activation=rl.actors.SiLU),
         optimizer_factory=partial(optim.Adam, lr=3e-4),
     )
     hparams = dict(
