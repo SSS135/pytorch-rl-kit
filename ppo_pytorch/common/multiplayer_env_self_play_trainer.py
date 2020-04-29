@@ -81,7 +81,7 @@ class MultiplayerEnvSelfPlayTrainer:
 
         # send all_rewards and done flags to rl alg
         for alg, rewards, infos in zip(self.selected_algs, all_rewards, all_infos):
-            alg.reward(rewards)
+            alg._reward(rewards)
             alg.finish_episodes(dones)
             if alg == self.rl_alg:
                 self.logger.step(infos, always_log)

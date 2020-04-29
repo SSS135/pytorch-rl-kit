@@ -30,6 +30,7 @@ class EnvTrainer:
         self._init_args = locals()
         self.rl_alg_factory = rl_alg_factory
         self.frame = 0
+        self._rewards = self._terminal = None
         self.all_rewards = []
 
         assert log_root_path is not None
@@ -39,7 +40,7 @@ class EnvTrainer:
         log_dir = get_log_dir(log_root_path, alg_name, env_name, tag)
         print('Log dir:', log_dir)
         env.set_num_actors(self.rl_alg_factory.keywords['num_actors'])
-        self.states = env.reset()
+        self._obs = env.reset()
         self.env = env
 
         self.rl_alg = rl_alg_factory(self.env.observation_space, self.env.action_space,
@@ -52,23 +53,21 @@ class EnvTrainer:
     def step(self, always_log=False):
         """Do single step of RL alg"""
 
-        self.states = torch.as_tensor(np.asarray(self.states, dtype=self.env.observation_space.dtype))
+        self._obs = torch.as_tensor(np.asarray(self._obs, dtype=self.env.observation_space.dtype))
+        if self._rewards is None and self._terminal is None:
+            self._rewards = self._terminal = torch.zeros(self._obs.shape[0])
 
-        # evaluate RL alg
-        actions = self.rl_alg.eval(self.states)
-        self.states, rewards, dones, infos = self.env.step(actions.numpy())
+        action = self.rl_alg.step(self._obs, self._rewards, self._terminal, None, None)
+        self._obs, self._rewards, self._terminal, infos = self.env.step(action.numpy())
 
-        rewards, dones = [torch.as_tensor(np.asarray(x, dtype=np.float32)) for x in (rewards, dones)]
+        self._rewards, self._terminal = [torch.as_tensor(x, dtype=torch.float32)
+                                         for x in (self._rewards, self._terminal)]
 
         # process step results
         for info in infos:
             ep_info = info.get('episode')
             if ep_info is not None:
                 self.all_rewards.append(ep_info)
-
-        # send rewards and done flags to rl alg
-        self.rl_alg.reward(rewards)
-        self.rl_alg.finish_episodes(dones)
 
         self.frame += self.env.num_actors
         # logger step

@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Optional
+from typing import Optional, NamedTuple
 
 import gym
 import torch
@@ -7,11 +7,12 @@ from gym.spaces import Discrete
 from .model_saver import ModelSaver
 
 
-class RLStep(Enum):
-    """Internal state of `RLBase`"""
-    EVAL = 0
-    REWARD = 1
-    FINISH = 2
+class RLStepData(NamedTuple):
+    rewards: torch.Tensor
+    true_reward: torch.Tensor
+    terminal: torch.Tensor
+    obs: torch.Tensor
+    actor_id: torch.Tensor
 
 
 class RLBase:
@@ -46,26 +47,14 @@ class RLBase:
         self.model_save_tag = model_save_tag
         self.model_init_path = model_init_path
 
-        self.step_type = RLStep.EVAL
-        self.cur_states, self.prev_states, self.rewards, self.dones = [None] * 4
         self._logger = None
         self._last_log_frame = -log_interval
         self._do_log = False
-        self.step_eval = 0
-        self.step_train = 0
+        self.frame_eval = 0
+        self.frame_train = 0
 
         self._model_saver = ModelSaver(model_save_folder, model_save_tag, model_save_interval,
                                        save_intermediate_models, self.actor_index)
-
-    @property
-    def frame_eval(self):
-        """Processed frames across all actors"""
-        return self.step_eval * self.num_actors
-
-    @property
-    def frame_train(self):
-        """Processed frames across all actors"""
-        return self.step_train * self.num_actors
 
     @property
     def logger(self):
@@ -80,54 +69,47 @@ class RLBase:
         self._logger = log
         self._log_set()
 
-    def _step(self, rewards: torch.Tensor, dones: torch.Tensor, states: torch.Tensor) -> torch.Tensor:
-        """
-        Internal RL algorithm step.
-        Args:
-            rewards: Rewards received after actig on `prev_states`
-            dones: Episode end flags.
-            states: Current observations.
+    @property
+    def has_variable_actor_count_support(self):
+        return False
 
-        Returns: Actions for `current_states`
-        """
+    def _step(self, data: RLStepData) -> torch.Tensor:
         raise NotImplementedError
 
-    def eval(self, obs: torch.Tensor) -> Optional[torch.Tensor]:
-        """
-        Process new observations and return actions.
-        Args:
-            obs: List of observations across all `envs`
-            envs: List of parallely running envs.
-
-        Returns: Taken actions.
-        """
-        self.prev_states = self.cur_states
-        self.cur_states = self._check_states(obs)
-        actions = self._step(self.rewards, self.dones, self.cur_states)
-        self.step_eval += 1
-        if actions is None:
-            return None
+    def step(self, obs: torch.Tensor, rewards: torch.Tensor, terminal: torch.Tensor,
+             true_reward: Optional[torch.Tensor], actor_id: Optional[torch.Tensor]) -> torch.Tensor:
+        data = self._check_data(obs=obs, rewards=rewards, true_reward=true_reward, terminal=terminal, actor_id=actor_id)
+        actions = self._step(data)
+        self.frame_eval += data.obs.shape[0]
         if isinstance(self.action_space, Discrete):
-            actions = actions.reshape(self.num_actors)
+            return actions.reshape(actions.shape[0])
         else:
-            actions = actions.reshape(self.num_actors, -1)
-        return actions
+            return actions.reshape(actions.shape[0], -1)
 
-    def reward(self, reward: torch.Tensor):
-        """
-        Reward for taken actions at `self.eval` call.
-        Args:
-            reward: Rewards
-        """
-        self.rewards = self._check_rewards(reward)
+    def _check_data(self, obs: torch.Tensor, rewards: torch.Tensor, terminal: torch.Tensor,
+                    true_reward: Optional[torch.Tensor], actor_id: Optional[torch.Tensor]) -> RLStepData:
+        num_actors = obs.shape[0]
 
-    def finish_episodes(self, done: torch.Tensor):
-        """
-        Notify for ended episodes after taking actions from `self.eval`.
-        Args:
-            done: Episode end flags
-        """
-        self.dones = self._check_dones(done)
+        if rewards.ndim == 1:
+            rewards = rewards.unsqueeze(-1)
+        if true_reward is None:
+            true_reward = rewards[:, 0]
+        if actor_id is None:
+            actor_id = torch.arange(num_actors, dtype=torch.long)
+        if not self.has_variable_actor_count_support:
+            assert torch.allclose(actor_id, torch.arange(self.num_actors, dtype=torch.long))
+
+        assert obs.shape == (num_actors, *self.observation_space.shape), f'{obs.shape} {self.observation_space.shape}'
+        assert obs.dtype == torch.float32 or obs.dtype == torch.uint8
+        assert rewards.shape == (num_actors, rewards.shape[1]), f'wrong reward {rewards} shape {rewards.shape}'
+        assert rewards.dtype == torch.float32
+        assert true_reward.shape == (num_actors,)
+        assert terminal.shape == (num_actors,)
+        assert terminal.dtype == torch.float32
+        assert actor_id.shape == (num_actors,)
+        assert actor_id.dtype == torch.long
+
+        return RLStepData(obs=obs, rewards=rewards, true_reward=true_reward, terminal=terminal, actor_id=actor_id)
 
     def drop_collected_steps(self):
         pass
@@ -135,49 +117,6 @@ class RLBase:
     def _log_set(self):
         """Called when logger is set or changed"""
         pass
-
-    def _check_states(self, obs: torch.Tensor) -> torch.Tensor:
-        """
-        Check if observations have correct shape and type and convert them to numpy array.
-            Also check if it's allowed to call that function in current `self.step_type`
-        Args:
-            obs: Observations
-
-        Returns: Observations converted to numpy array
-        """
-        assert self.step_type == RLStep.EVAL or self.disable_training
-        assert obs.shape[1:] == self.observation_space.shape, f'{obs.shape} {self.observation_space.shape}'
-        assert obs.dtype == torch.float32 or obs.dtype == torch.uint8
-        self.step_type = RLStep.REWARD
-        return obs
-
-    def _check_rewards(self, rewards: torch.Tensor) -> torch.Tensor:
-        """
-        Check if rewards have correct shape and type and convert them to numpy array.
-            Also check if it's allowed to call that function in current `self.step_type`
-        Args:
-            rewards: Rewards
-
-        Returns: Rewards converted to numpy array
-        """
-        assert self.step_type == RLStep.REWARD
-        assert rewards.shape == (self.num_actors,), f'wrong reward {rewards} shape {rewards.shape}'
-        self.step_type = RLStep.FINISH
-        return rewards
-
-    def _check_dones(self, done: torch.Tensor) -> torch.Tensor:
-        """
-        Check if done flags have correct shape and type and convert them to numpy array.
-            Also check if it's allowed to call that function in current `self.step_type`
-        Args:
-            done: Episode end flags
-
-        Returns: Episode end flags converted to numpy array
-        """
-        assert self.step_type == RLStep.FINISH
-        assert done.shape == (self.num_actors,)
-        self.step_type = RLStep.EVAL
-        return done
 
     def _check_log(self):
         """Check if logging should be enabled for current step."""

@@ -23,7 +23,7 @@ from ..common.barron_loss import barron_loss
 from ..common.data_loader import DataLoader
 from ..common.pop_art import PopArt
 from ..common.probability_distributions import DiagGaussianPd, CategoricalPd, ProbabilityDistribution
-from ..common.rl_base import RLBase
+from ..common.rl_base import RLBase, RLStepData
 
 
 class Constraint(Enum):
@@ -247,16 +247,17 @@ class PPO(RLBase):
         # self.alpha = torch.scalar_tensor(5.0, requires_grad=True)
         # self._optimizer.add_param_group(dict(params=[self.nu, self.alpha]))
 
-    def _step(self, rewards, dones, states) -> torch.Tensor:
+    def _step(self, data: RLStepData) -> torch.Tensor:
         with torch.no_grad():
             # run network
-            ac_out = self._eval_model(states.to(self.device_eval))
+            ac_out = self._eval_model(data.obs.to(self.device_eval))
             actions = self._eval_model.heads.logits.pd.sample(ac_out.logits).cpu()
             assert not torch.isnan(actions.sum())
 
             if not self.disable_training:
                 ac_out.state_values = ac_out.state_values.squeeze(-1)
-                self._steps_processor.append_values(states=states, rewards=rewards, dones=dones, actions=actions, **ac_out)
+                self._steps_processor.append_values(states=data.obs, rewards=data.rewards.sum(-1),
+                                                    dones=data.terminal, actions=actions, **ac_out)
 
                 if len(self._steps_processor.data.states) > self.horizon:
                     self._train()
@@ -272,7 +273,7 @@ class PPO(RLBase):
             return actions
 
     def _train(self):
-        self.step_train = self.step_eval
+        self.frame_train = self.frame_eval
         self._check_log()
         data = self._create_data()
         self._train_async(data)

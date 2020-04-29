@@ -26,7 +26,7 @@ from ..common.barron_loss import barron_loss
 from ..common.data_loader import DataLoader
 from ..common.gae import calc_vtrace
 from ..common.pop_art import PopArt
-from ..common.rl_base import RLBase
+from ..common.rl_base import RLBase, RLStepData
 
 
 class LossType(Enum):
@@ -142,18 +142,17 @@ class IMPALA(RLBase):
     def _learning_rate(self):
         return self._optimizer.param_groups[0]['lr']
 
-    def _step(self, rewards, dones, states) -> torch.Tensor:
+    def _step(self, data: RLStepData) -> torch.Tensor:
         with torch.no_grad():
             if self._eval_model.is_recurrent:
                 input_memory = self._prev_data.memory if self._prev_data is not None else None
-                dones_t = dones.unsqueeze(0).to(self.device_eval) if dones is not None else \
-                    torch.zeros((1, self.num_actors), device=self.device_eval)
-                ac_out = self._eval_model(states.unsqueeze(0).to(self.device_eval), memory=input_memory, dones=dones_t)
+                dones_t = data.terminal.unsqueeze(0).to(self.device_eval)
+                ac_out = self._eval_model(data.obs.unsqueeze(0).to(self.device_eval), memory=input_memory, dones=dones_t)
                 ac_out = AttrDict({k: v.squeeze(0) for k, v in ac_out.items()})
                 if input_memory is None:
                     input_memory = ac_out.memory
             else:
-                ac_out = self._eval_model(states.to(self.device_eval))
+                ac_out = self._eval_model(data.obs.to(self.device_eval))
 
             ac_out.state_values = ac_out.state_values.squeeze(-1)
             actions = self._eval_model.heads.logits.pd.sample(ac_out.logits).cpu()
@@ -162,13 +161,13 @@ class IMPALA(RLBase):
             self._eval_steps += 1
 
             if not self.disable_training:
-                if self._prev_data is not None and rewards is not None:
+                if self._prev_data is not None:
                     if self._eval_model.is_recurrent:
                         self._prev_data.memory = self._prev_data.input_memory
                         del self._prev_data['input_memory']
-                    self._replay_buffer.push(rewards=rewards, dones=dones, **self._prev_data)
+                    self._replay_buffer.push(rewards=data.rewards.sum(-1), dones=data.terminal, **self._prev_data)
 
-                self._prev_data = AttrDict(**ac_out, states=states, actions=actions)
+                self._prev_data = AttrDict(**ac_out, states=data.obs, actions=actions)
                 if self._eval_model.is_recurrent:
                     self._prev_data.input_memory = input_memory
 
@@ -187,7 +186,7 @@ class IMPALA(RLBase):
             return actions
 
     def _train(self):
-        self.step_train = self.step_eval
+        self.frame_train = self.frame_eval
 
         # data = self._create_data()
         # self._train_async(data)

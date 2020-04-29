@@ -84,7 +84,7 @@ class MultiplayerEnvPopBasedTrainer:
 
         # send all_rewards and done flags to rl alg
         for alg, rewards, infos, logger in zip(self.selected_algs, all_rewards, all_infos, self.selected_loggers):
-            alg.reward(rewards)
+            alg._reward(rewards)
             alg.finish_episodes(dones)
             logger.step(infos, always_log)
 
