@@ -23,15 +23,17 @@ class RNNFeatureExtractor(FeatureExtractorBase):
         assert self.norm_factory is None
         from ..common.qrnn import DenseQRNN, QRNN
         import sru
+        # self.model = sru.SRU(input_size, hidden_size, num_layers, rescale=True, use_tanh=True)
         self.model = QRNN(input_size, hidden_size, num_layers)
 
     @property
     def output_size(self):
         return self.hidden_size
 
-    # def reset_weights(self):
-    #     super().reset_weights()
-    #     self.model.reset_parameters()
+    def reset_weights(self):
+        super().reset_weights()
+        if hasattr(self.model, 'reset_parameters'):
+            self.model.reset_parameters()
 
     def forward(self, input: torch.Tensor, memory: torch.Tensor, dones: torch.Tensor, logger=None, cur_step=None, **kwargs):
         # memory: (B, L, *) -> (L, B, *)
