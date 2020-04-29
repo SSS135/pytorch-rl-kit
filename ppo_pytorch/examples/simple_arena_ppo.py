@@ -2,8 +2,7 @@ import ppo_pytorch.actors.swish
 
 if __name__ == '__main__':
     from .init_vars import *
-    from torch.optim.adamw import AdamW
-    from rl_exp.simple_unity_env import UnityVecEnv
+    from unity.simple_unity_env import UnityVecEnv
 
     exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuous\DungeonAI'
     env_factory = partial(UnityVecEnv, exe_path, parallel='process')
@@ -30,14 +29,15 @@ if __name__ == '__main__':
         barron_alpha_c=(2.0, 1),
         advantage_scaled_clip=False,
 
+        optimizer_factory=partial(optim.Adam, lr=3e-4),
+        # model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
         model_factory=partial(rl.actors.create_ppo_fc_actor, hidden_sizes=(128, 128),
                               activation=ppo_pytorch.actors.swish.Swish),
-        optimizer_factory=partial(optim.Adam, lr=3e-4),
     )
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[openai-hp]',
+        tag='[]',
         log_root_path=log_path,
         log_interval=20000,
     )

@@ -10,33 +10,39 @@ if __name__ == '__main__':
         10e6,
 
         num_actors=8,
-        horizon=128,
-        batch_size=256,
+        horizon=1024,
+        batch_size=1024,
         value_loss_scale=1.0,
         cuda_eval=True,
         cuda_train=True,
 
+        # reward_discount=0.997,
+        # reward_scale=1.0,
+
         replay_buf_size=256 * 1024,
         replay_end_sampling_factor=0.1,
         grad_clip_norm=None,
-        use_pop_art=True,
+        use_pop_art=False,
+        reward_scale=1.0,
         kl_pull=0.1,
-        vtrace_max_ratio=2.0,
-        vtrace_kl_limit=0.1,
+        vtrace_max_ratio=1.0,
+        vtrace_kl_limit=0.2,
+        kl_limit=0.2,
         loss_type='impala',
         eval_model_blend=0.1,
-        kl_limit=0.1,
         replay_ratio=7,
-        upgo_scale=0.2,
-        entropy_loss_scale=1e-3,
+        upgo_scale=0.0,
+        entropy_loss_scale=0.005,
+        barron_alpha_c=(2.0, 1.0),
+
+        optimizer_factory=partial(optim.Adam, lr=3e-4),
 
         model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
-        optimizer_factory=partial(AdamW, lr=5e-4, eps=1e-5, weight_decay=1e-5),
     )
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[repl7_vklim0.1]',
+        tag='[newhp_advmeannorm0.95]',
         log_root_path=log_path,
         log_interval=20000,
     )
