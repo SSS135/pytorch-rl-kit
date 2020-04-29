@@ -115,6 +115,7 @@ class IMPALA(RLBase):
         self._pop_art = PopArt()
         self._first_pop_art_update = True
         self._target_step = 0
+        self._no_blend_batches = 0
 
         assert isinstance(loss_type, str) or isinstance(loss_type, list) or isinstance(loss_type, tuple)
         self.loss_type = (loss_type,) if isinstance(loss_type, str) else loss_type
@@ -187,16 +188,6 @@ class IMPALA(RLBase):
 
     def _train(self):
         self.frame_train = self.frame_eval
-
-        # data = self._create_data()
-        # self._train_async(data)
-
-        # self._train_async(data)
-        # if self._data_future is not None:
-        #     data = self._data_future.result()
-        # else:
-        #     data = self._create_data()
-        # self._data_future = self._executor.submit(self._create_data)
 
         data = self._create_data()
         if self._train_future is not None:
@@ -294,7 +285,6 @@ class IMPALA(RLBase):
                 self.logger.add_scalar('PopArt/Std', pa_std, self.frame_train)
 
         copy_state_dict(self._train_model, eval_model)
-        lerp_module_(self._target_model, self._train_model, self.eval_model_blend)
 
     def _impala_step(self, batch, do_log):
         with torch.enable_grad():
@@ -332,6 +322,11 @@ class IMPALA(RLBase):
             clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
         self._optimizer.step()
         self._optimizer.zero_grad()
+
+        self._no_blend_batches += 1
+        if self._no_blend_batches >= 10:
+            self._no_blend_batches = 0
+            lerp_module_(self._target_model, self._train_model, self.eval_model_blend)
 
         return loss
 
