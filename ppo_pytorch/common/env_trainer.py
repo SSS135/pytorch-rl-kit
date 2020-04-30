@@ -1,5 +1,4 @@
 import pprint
-from itertools import count
 from typing import Callable
 
 import numpy as np
@@ -30,7 +29,7 @@ class EnvTrainer:
         self._init_args = locals()
         self.rl_alg_factory = rl_alg_factory
         self.frame = 0
-        self._rewards = self._terminal = None
+        self._rewards = self._done = None
         self.all_rewards = []
 
         assert log_root_path is not None
@@ -46,7 +45,7 @@ class EnvTrainer:
         self.rl_alg = rl_alg_factory(self.env.observation_space, self.env.action_space,
                                      log_interval=log_interval, model_save_folder=log_dir)
 
-        self.logger = TensorboardEnvLogger(alg_name, env_name, log_dir, self.env.num_actors, log_interval, tag=tag)
+        self.logger = TensorboardEnvLogger(alg_name, env_name, log_dir, log_interval, tag=tag)
         self.logger.add_text('EnvTrainer', pprint.pformat(self._init_args))
         self.rl_alg.logger = self.logger
 
@@ -54,14 +53,14 @@ class EnvTrainer:
         """Do single step of RL alg"""
 
         self._obs = torch.as_tensor(np.asarray(self._obs, dtype=self.env.observation_space.dtype))
-        if self._rewards is None and self._terminal is None:
-            self._rewards = self._terminal = torch.zeros(self._obs.shape[0])
+        if self._rewards is None and self._done is None:
+            self._rewards = self._done = torch.zeros(self._obs.shape[0])
 
-        action = self.rl_alg.step(self._obs, self._rewards, self._terminal, None, None)
-        self._obs, self._rewards, self._terminal, infos = self.env.step(action.numpy())
+        action = self.rl_alg.step(self._obs, self._rewards, self._done, None, None)
+        self._obs, self._rewards, self._done, infos = self.env.step(action.numpy())
 
-        self._rewards, self._terminal = [torch.as_tensor(x, dtype=torch.float32)
-                                         for x in (self._rewards, self._terminal)]
+        self._rewards, self._done = [torch.as_tensor(x, dtype=torch.float32)
+                                     for x in (self._rewards, self._done)]
 
         # process step results
         for info in infos:
@@ -80,3 +79,5 @@ class EnvTrainer:
         while self.frame < max_frames:
             self.step()
         return self.all_rewards
+
+

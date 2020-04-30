@@ -3,7 +3,7 @@ from asyncio import Future
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from functools import partial
-from typing import Optional
+from typing import Optional, List
 
 import gym
 import numpy as np
@@ -12,6 +12,7 @@ import torch.autograd
 import torch.optim as optim
 from optfn.gradient_logger import log_gradients
 from ppo_pytorch.algs.ppo import SchedulerManager, copy_state_dict, log_training_data
+from ppo_pytorch.algs.variable_episode_collector import EpisodeData, VariableEpisodeCollector
 from torch.nn.utils import clip_grad_norm_
 
 from .replay_buffer import ReplayBuffer
@@ -100,14 +101,19 @@ class IMPALA(RLBase):
         self.memory_burn_in_steps = memory_burn_in_steps
         self.activation_norm_scale = activation_norm_scale
 
+        assert self.num_actors == 1
+
         self._train_model: Actor = model_factory(observation_space, action_space)
         self._eval_model: Actor = model_factory(observation_space, action_space)
+        self._target_model: Actor = model_factory(observation_space, action_space)
         if self.model_init_path is not None:
             self._train_model.load_state_dict(torch.load(self.model_init_path), True)
             print(f'loaded model {self.model_init_path}')
         copy_state_dict(self._train_model, self._eval_model)
+        copy_state_dict(self._train_model, self._target_model)
         self._train_model = self._train_model.train().to(self.device_train, non_blocking=True)
         self._eval_model = self._eval_model.eval().to(self.device_eval, non_blocking=True)
+        self._target_model = self._target_model.train().to(self.device_train, non_blocking=True)
 
         self._optimizer = optimizer_factory(self._train_model.parameters())
         self._scheduler = SchedulerManager(self._optimizer, lr_scheduler_factory, clip_decay_factory, entropy_decay_factory)
@@ -128,55 +134,47 @@ class IMPALA(RLBase):
 
         self._replay_buffer = ReplayBuffer(replay_buf_size)
         self._prev_data = None
-        self._eval_steps = 0
+        self._new_frames = 0
         self._eval_no_copy_updates = 0
         self._adv_norm = RunningNorm(momentum=0.95, mean_norm=False)
         self._train_future: Optional[Future] = None
         self._data_future: Optional[Future] = None
         self._executor = ThreadPoolExecutor(max_workers=1, initializer=lambda: torch.set_num_threads(1))
-
-        self._target_model = self.model_factory(self.observation_space, self.action_space).to(self.device_train).train()
-        self._target_model.load_state_dict(self._train_model.state_dict())
-        self._eval_model = self._eval_model.eval()
+        self._episode_collector = VariableEpisodeCollector(self._eval_model, self.device_eval)
 
     @property
     def _learning_rate(self):
         return self._optimizer.param_groups[0]['lr']
 
+    @property
+    def has_variable_actor_count_support(self):
+        return True
+
     def _step(self, data: RLStepData) -> torch.Tensor:
-        with torch.no_grad():
-            if self._eval_model.is_recurrent:
-                input_memory = self._prev_data.memory if self._prev_data is not None else None
-                dones_t = data.terminal.unsqueeze(0).to(self.device_eval)
-                ac_out = self._eval_model(data.obs.unsqueeze(0).to(self.device_eval), memory=input_memory, dones=dones_t)
-                ac_out = AttrDict({k: v.squeeze(0) for k, v in ac_out.items()})
-                if input_memory is None:
-                    input_memory = ac_out.memory
-            else:
-                ac_out = self._eval_model(data.obs.to(self.device_eval))
+        res = self._episode_collector.step(data)
+        if not self.disable_training and len(res.episodes) > 0:
+            self._add_to_replay(res.episodes)
+            self._new_frames += sum(len(e.obs) for e in res.episodes)
+            if self._new_frames >= self.horizon:
+                self._train()
+                self._new_frames = 0
+        return self.limit_actions(res.actions)
 
-            ac_out.state_values = ac_out.state_values.squeeze(-1)
-            actions = self._eval_model.heads.logits.pd.sample(ac_out.logits).cpu()
-            assert not torch.isnan(actions.sum())
-
-            self._eval_steps += 1
-
-            if not self.disable_training:
-                if self._prev_data is not None:
-                    if self._eval_model.is_recurrent:
-                        self._prev_data.memory = self._prev_data.input_memory
-                        del self._prev_data['input_memory']
-                    self._replay_buffer.push(rewards=data.rewards.sum(-1), dones=data.terminal, **self._prev_data)
-
-                self._prev_data = AttrDict(**ac_out, states=data.obs, actions=actions)
-                if self._eval_model.is_recurrent:
-                    self._prev_data.input_memory = input_memory
-
-                if self._eval_steps >= self.horizon + 2:
-                    self._eval_steps = 0
-                    self._train()
-
-            return self.limit_actions(actions)
+    def _add_to_replay(self, episodes: List[EpisodeData]):
+        for episode in episodes:
+            ep_len = len(episode.obs)
+            for i in range(ep_len):
+                def iu(x):
+                    return x[i].unsqueeze(0)
+                self._replay_buffer.push(
+                    states=iu(episode.obs),
+                    rewards=iu(episode.rewards).sum(-1),
+                    state_values=iu(episode.value),
+                    logits=iu(episode.logits),
+                    actions=iu(episode.actions),
+                    dones=torch.full((1,), i + 1 == ep_len, dtype=torch.float32),
+                    **(dict(memory=iu(episode.memory)) if episode.memory is not None else {}),
+                )
 
     def limit_actions(self, actions):
         if isinstance(self.action_space, gym.spaces.Box):
@@ -473,7 +471,7 @@ class IMPALA(RLBase):
         data.value_targets, data.advantages, data.rewards = value_targets, advantages, norm_rewards
 
     def drop_collected_steps(self):
-        self._prev_data = None
+        self._episode_collector.drop_collected_steps()
 
     def _log_set(self):
         self.logger.add_text(self.__class__.__name__, pprint.pformat(self._init_args))

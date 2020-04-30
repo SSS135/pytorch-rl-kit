@@ -1,6 +1,7 @@
 # %load_ext snakeviz
 
 import platform
+
 is_linux = platform.system() == 'Linux'
 
 import torch
@@ -15,7 +16,8 @@ import torch.optim as optim
 import torch.nn.functional as F
 from functools import partial
 from torch.optim.rmsprop import RMSprop
-from ppo_pytorch.common.rl_alg_test import rl_alg_test, save_git_diff
+from ppo_pytorch.common.rl_alg_test import rl_alg_test
+from ppo_pytorch.common.utils import save_git_diff
 import time
 
 

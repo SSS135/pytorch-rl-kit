@@ -257,7 +257,7 @@ class PPO(RLBase):
             if not self.disable_training:
                 ac_out.state_values = ac_out.state_values.squeeze(-1)
                 self._steps_processor.append_values(states=data.obs, rewards=data.rewards.sum(-1),
-                                                    dones=data.terminal, actions=actions, **ac_out)
+                                                    dones=data.done, actions=actions, **ac_out)
 
                 if len(self._steps_processor.data.states) > self.horizon:
                     self._train()

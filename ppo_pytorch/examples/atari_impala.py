@@ -10,9 +10,9 @@ if __name__ == '__main__':
         10e6,
 
         num_actors=8,
-        horizon=1024,
-        batch_size=1024,
-        value_loss_scale=1.0,
+        horizon=128,
+        batch_size=256,
+        value_loss_scale=0.5,
         cuda_eval=True,
         cuda_train=True,
 
@@ -22,14 +22,14 @@ if __name__ == '__main__':
         replay_buf_size=256 * 1024,
         replay_end_sampling_factor=0.1,
         grad_clip_norm=None,
-        use_pop_art=False,
+        use_pop_art=True,
         reward_scale=1.0,
         kl_pull=0.1,
+        eval_model_blend=0.03,
         vtrace_max_ratio=1.0,
         vtrace_kl_limit=0.2,
         kl_limit=0.2,
         loss_type='impala',
-        eval_model_blend=0.1,
         replay_ratio=7,
         upgo_scale=0.0,
         entropy_loss_scale=0.005,
@@ -42,7 +42,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[newhp_advmeannorm0.95]',
+        tag='[popart_vls0.5_rscale]',
         log_root_path=log_path,
         log_interval=20000,
     )

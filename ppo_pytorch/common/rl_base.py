@@ -10,7 +10,7 @@ from .model_saver import ModelSaver
 class RLStepData(NamedTuple):
     rewards: torch.Tensor
     true_reward: torch.Tensor
-    terminal: torch.Tensor
+    done: torch.Tensor
     obs: torch.Tensor
     actor_id: torch.Tensor
 
@@ -47,6 +47,8 @@ class RLBase:
         self.model_save_tag = model_save_tag
         self.model_init_path = model_init_path
 
+        assert not self.has_variable_actor_count_support or num_actors == 1
+
         self._logger = None
         self._last_log_frame = -log_interval
         self._do_log = False
@@ -76,9 +78,9 @@ class RLBase:
     def _step(self, data: RLStepData) -> torch.Tensor:
         raise NotImplementedError
 
-    def step(self, obs: torch.Tensor, rewards: torch.Tensor, terminal: torch.Tensor,
-             true_reward: Optional[torch.Tensor], actor_id: Optional[torch.Tensor]) -> torch.Tensor:
-        data = self._check_data(obs=obs, rewards=rewards, true_reward=true_reward, terminal=terminal, actor_id=actor_id)
+    def step(self, obs: torch.Tensor, rewards: torch.Tensor, done: torch.Tensor,
+             true_reward: torch.Tensor, actor_id: torch.Tensor) -> torch.Tensor:
+        data = self._check_data(obs=obs, rewards=rewards, true_reward=true_reward, done=done, actor_id=actor_id)
         actions = self._step(data)
         self.frame_eval += data.obs.shape[0]
         if isinstance(self.action_space, Discrete):
@@ -86,30 +88,29 @@ class RLBase:
         else:
             return actions.reshape(actions.shape[0], -1)
 
-    def _check_data(self, obs: torch.Tensor, rewards: torch.Tensor, terminal: torch.Tensor,
-                    true_reward: Optional[torch.Tensor], actor_id: Optional[torch.Tensor]) -> RLStepData:
+    def _check_data(self, obs: torch.Tensor, rewards: torch.Tensor, done: torch.Tensor,
+                    true_reward: torch.Tensor, actor_id: torch.Tensor) -> RLStepData:
         num_actors = obs.shape[0]
 
         if rewards.ndim == 1:
             rewards = rewards.unsqueeze(-1)
-        if true_reward is None:
-            true_reward = rewards[:, 0]
-        if actor_id is None:
-            actor_id = torch.arange(num_actors, dtype=torch.long)
         if not self.has_variable_actor_count_support:
             assert torch.allclose(actor_id, torch.arange(self.num_actors, dtype=torch.long))
 
         assert obs.shape == (num_actors, *self.observation_space.shape), f'{obs.shape} {self.observation_space.shape}'
         assert obs.dtype == torch.float32 or obs.dtype == torch.uint8
         assert rewards.shape == (num_actors, rewards.shape[1]), f'wrong reward {rewards} shape {rewards.shape}'
-        assert rewards.dtype == torch.float32
+        assert rewards.dtype == torch.float32, rewards.dtype
         assert true_reward.shape == (num_actors,)
-        assert terminal.shape == (num_actors,)
-        assert terminal.dtype == torch.float32
+        assert done.shape == (num_actors,)
+        assert done.dtype == torch.bool, done.dtype
         assert actor_id.shape == (num_actors,)
-        assert actor_id.dtype == torch.long
+        assert actor_id.dtype == torch.long or actor_id.dtype == torch.int, actor_id.dtype
 
-        return RLStepData(obs=obs, rewards=rewards, true_reward=true_reward, terminal=terminal, actor_id=actor_id)
+        done = done.float()
+        actor_id = actor_id.long()
+
+        return RLStepData(obs=obs, rewards=rewards, true_reward=true_reward, done=done, actor_id=actor_id)
 
     def drop_collected_steps(self):
         pass

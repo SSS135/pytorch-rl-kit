@@ -6,12 +6,18 @@ import gym
 from .multiplayer_env import MultiplayerEnv
 
 
-class DefaultDictEx(defaultdict):
+class DefaultAttrDict(defaultdict):
     def __getattr__(self, key):
         return self[key]
 
     def __setattr__(self, key, value):
         self[key] = value
+
+
+TRUE_REWARD = 'true_reward'
+EP_LEN = 'len'
+EPISODE = 'episode'
+EPISODE_ORIG = 'episode_orig'
 
 
 class Monitor(gym.Wrapper):
@@ -21,7 +27,7 @@ class Monitor(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         pnum = self.env.num_players if isinstance(self.env, MultiplayerEnv) else 1
-        self._data = [DefaultDictEx(int) for _ in range(pnum)]
+        self._data = [DefaultAttrDict(int) for _ in range(pnum)]
 
     def reset(self, **kwargs):
         return self.env.reset(**kwargs)
@@ -34,28 +40,21 @@ class Monitor(gym.Wrapper):
                 self._add_step_info(self._data[i], info[i], reward[i])
                 if done[i] if isinstance(done, Iterable) else done:
                     self._add_episode_info(info[i], self._data[i])
-                    self._data[i] = DefaultDictEx(int)
+                    self._data[i] = DefaultAttrDict(int)
         else:
             self._add_step_info(self._data[0], info, reward)
             if done:
                 self._add_episode_info(info, self._data[0])
-                self._data[0] = DefaultDictEx(int)
+                self._data[0] = DefaultAttrDict(int)
 
         return state, reward, done, info
 
     def _add_episode_info(self, info, data):
-        ep_orig = info.get('episode')
+        ep_orig = info.get(EPISODE)
         if ep_orig is not None:
-            info['episode_orig'] = ep_orig
-        info['episode'] = data
+            info[EPISODE_ORIG] = ep_orig
+        info[EPISODE] = data
 
     def _add_step_info(self, data: dict, info: dict, reward: float):
-        data['reward'] += reward
-        data['len'] += 1
-        reward_info = info.get('reward_info')
-        if reward_info is not None:
-            for k, v in reward_info.items():
-                data[k] += v
-
-    def _warn_double_wrap(self):
-        pass
+        data[TRUE_REWARD] += info[TRUE_REWARD] if TRUE_REWARD in info else reward
+        data[EP_LEN] += 1
