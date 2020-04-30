@@ -21,7 +21,7 @@ def make_pd(space: gym.Space):
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
         # return LinearTanhPd(space.shape[0])
-        # return FixedStdGaussianPd(space.shape[0], 0.3)
+        # return FixedStdGaussianPd(space.shape[0], 1.0)
         # return BetaPd(space.shape[0], 1)
         return DiagGaussianPd(space.shape[0])
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
@@ -293,7 +293,7 @@ class DiagGaussianPd(ProbabilityDistribution):
 
 
 class PointCloudPd(ProbabilityDistribution):
-    def __init__(self, d, num_points=16):
+    def __init__(self, d, num_points=32):
         super().__init__(locals())
         self.d = d
         self.num_points = num_points
@@ -317,23 +317,38 @@ class PointCloudPd(ProbabilityDistribution):
     def logp(self, x, prob):
         mean, std = self._get_mean_std(prob)
         logstd = std.log()
-        return -0.5 * ((x - mean) / std).pow(2) - logstd - math.log(math.sqrt(2 * math.pi))
+        return -0.5 * (
+            ((x - mean) / (std + 1e-6)) ** 2
+            + 2 * logstd
+            + np.log(2 * np.pi)
+        )
+        # return -0.5 * ((x - mean) / std).pow(2) - logstd - math.log(math.sqrt(2 * math.pi))
 
     def kl(self, prob1, prob2):
         mean1, std1 = self._get_mean_std(prob1)
         mean2, std2 = self._get_mean_std(prob2)
-        logstd1, logstd2 = std1.log(), std2.log()
-        kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
-        return kl
+        dist1 = Normal(mean1, std1)
+        dist2 = Normal(mean2, std2)
+        return kl_divergence(dist1, dist2)
+        # logstd1, logstd2 = std1.log(), std2.log()
+        # kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
+        # return kl
 
     def entropy(self, prob):
         prob = self._split_prob(prob)
         std = prob.std(-1)
-        return 0.5 + 0.5 * math.log(2 * math.pi) + torch.log(std)
+        return 0.5 * (
+            math.log(2 * np.pi * np.e) + 2 * std.log()
+        )
+        # return 0.5 + 0.5 * math.log(2 * math.pi) + torch.log(std)
 
     def sample(self, prob):
-        mean, std = self._get_mean_std(prob)
-        return mean + std * torch.randn_like(std)
+        prob = self._split_prob(prob)
+        idx = torch.randint(0, self.num_points, (prob.shape[0],), device=prob.device)
+        p = prob.gather(-1, torch.zeros((*prob.shape[:-1], 1), dtype=idx.dtype, device=prob.device) + idx.unsqueeze(-1).unsqueeze(-1)).squeeze(-1)
+        return p
+        # mean, std = self._get_mean_std(prob)
+        # return mean + std * torch.randn_like(std)
 
     def _split_prob(self, prob):
         return prob.reshape(*prob.shape[:-1], self.d, self.num_points)
