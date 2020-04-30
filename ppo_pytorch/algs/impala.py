@@ -68,7 +68,7 @@ class IMPALA(RLBase):
                  loss_type='impala',
                  eval_model_blend=0.1,
                  memory_burn_in_steps=16,
-                 activation_norm_scale=0.01,
+                 activation_norm_scale=0.003,
 
                  **kwargs):
         super().__init__(observation_space, action_space, **kwargs)
