@@ -8,7 +8,7 @@ from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 
 from .atari_wrappers import NoopResetEnv, MaxAndSkipEnv, EpisodicLifeEnv, FireResetEnv, ScaledFloatFrame, ClipRewardEnv, \
-    FrameStack
+    FrameStack, RescaleRewardEnv
 from .monitor import Monitor
 from .online_normalizer import OnlineNormalizer
 from .threading_vec_env import ThreadingVecEnv
@@ -45,17 +45,18 @@ class NamedVecEnv:
 
 
 class AtariVecEnv(NamedVecEnv):
-    def __init__(self, env_name, episode_life=True, scale=False, clip_rewards=True,
+    def __init__(self, env_name, episode_life=True, scale_float_obs=False, clip_rewards=False, rescale_rewards=True,
                  frame_stack=True, grayscale=True, parallel='process'):
-        self.scale = scale
+        self.scale_float_obs = scale_float_obs
         self.clip_rewards = clip_rewards
+        self.rescale_rewards = rescale_rewards
         self.episode_life = episode_life
         self.frame_stack = frame_stack
         self.grayscale = grayscale
         super().__init__(env_name, parallel)
 
     def get_env_factory(self):
-        def make(env_name, episode_life, scale, clip_rewards, frame_stack, grayscale):
+        def make(env_name, episode_life, scale_float_obs, clip_rewards, frame_stack, grayscale, rescale_rewards):
             env = gym.make(env_name)
             assert 'NoFrameskip' in env.spec.id
             env = NoopResetEnv(env, noop_max=30)
@@ -67,16 +68,18 @@ class AtariVecEnv(NamedVecEnv):
                 env = FireResetEnv(env)
             env = SimplifyFrame(env, 84, grayscale)
             env = ChannelTranspose(env)
-            if scale:
+            if scale_float_obs:
                 env = ScaledFloatFrame(env)
             if clip_rewards:
                 env = ClipRewardEnv(env)
+            if rescale_rewards:
+                env = RescaleRewardEnv(env)
             if frame_stack:
                 env = FrameStack(env, 4)
             return env
 
-        return partial(make, self.env_name, self.episode_life, self.scale, self.clip_rewards, self.frame_stack,
-                       self.grayscale)
+        return partial(make, self.env_name, self.episode_life, self.scale_float_obs, self.clip_rewards,
+                       self.rescale_rewards, self.frame_stack, self.grayscale)
 
 
 class SimpleVecEnv(NamedVecEnv):

@@ -6,6 +6,7 @@ import cv2
 import gym
 import numpy as np
 from gym import spaces
+from .monitor import TRUE_REWARD
 
 
 class NoopResetEnv(gym.Wrapper):
@@ -125,10 +126,22 @@ class MaxAndSkipEnv(gym.Wrapper):
         return self.env.reset(**kwargs)
 
 
-class ClipRewardEnv(gym.RewardWrapper):
-    def reward(self, reward):
+class ClipRewardEnv(gym.Wrapper):
+    def step(self, action):
         """Bin reward to {+1, 0, -1} by its sign."""
-        return np.sign(reward)
+        observation, reward, done, info = self.env.step(action)
+        info[TRUE_REWARD] = reward
+        return observation, np.sign(reward), done, info
+
+
+class RescaleRewardEnv(gym.Wrapper):
+    eps = 1e-3
+
+    def step(self, action):
+        observation, reward, done, info = self.env.step(action)
+        info[TRUE_REWARD] = reward
+        scaled_reward = np.sign(reward) * (np.sqrt(np.abs(reward) + 1) - 1) + self.eps * reward
+        return observation, scaled_reward, done, info
 
 
 class WarpFrame(gym.ObservationWrapper):
