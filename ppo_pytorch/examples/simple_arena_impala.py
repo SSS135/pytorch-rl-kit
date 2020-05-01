@@ -2,16 +2,16 @@ if __name__ == '__main__':
     from .init_vars import *
     from rl_exp.unity.variable_unity_env import VariableUnityVecEnv
 
+    num_envs = 8
     exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuous\DungeonAI'
-    env_factory = partial(VariableUnityVecEnv, exe_path, num_envs=8)
+    env_factory = partial(VariableUnityVecEnv, exe_path, num_envs=num_envs)
     # env_factory = partial(UnityVecEnv, exe_path, visual_observations=True, stacked_frames=4)
 
     alg_class = rl.algs.IMPALA
     alg_params = rl.algs.create_ppo_kwargs(
         20e6,
 
-        num_actors=1,
-        horizon=128 * 8,
+        train_interval_frames=512 * num_envs,
         train_horizon=128,
         batch_size=256,
         value_loss_scale=1.0,
@@ -51,7 +51,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[]',
+        tag='[rand_sru_fwkl_varenv]',
         log_root_path=log_path,
         log_interval=20000,
     )

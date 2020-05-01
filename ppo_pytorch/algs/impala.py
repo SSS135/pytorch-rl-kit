@@ -3,7 +3,8 @@ from asyncio import Future
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from functools import partial
-from typing import Optional, List
+from typing import Optional
+import math
 
 import gym
 import numpy as np
@@ -12,10 +13,10 @@ import torch.autograd
 import torch.optim as optim
 from optfn.gradient_logger import log_gradients
 from ppo_pytorch.algs.ppo import SchedulerManager, copy_state_dict, log_training_data
-from ppo_pytorch.algs.variable_episode_collector import EpisodeData, VariableEpisodeCollector
 from torch.nn.utils import clip_grad_norm_
 
-from .replay_buffer import ReplayBuffer
+from .variable_step_collector import VariableStepCollector
+from .variable_replay_buffer import VariableReplayBuffer
 from .utils import RunningNorm, scaled_impala_loss
 from .utils import v_mpo_loss
 from ..actors import create_ppo_fc_actor, Actor
@@ -40,7 +41,8 @@ class IMPALA(RLBase):
 
                  use_pop_art=False,
                  reward_discount=0.99,
-                 horizon=64,
+                 train_interval_frames=64 * 8,
+                 train_horizon=64,
                  batch_size=64,
                  model_factory=create_ppo_fc_actor,
                  optimizer_factory=partial(optim.Adam, lr=3e-4),
@@ -64,7 +66,6 @@ class IMPALA(RLBase):
                  kl_pull=0.1,
                  kl_limit=0.2,
                  replay_end_sampling_factor=0.1,
-                 train_horizon=None,
                  loss_type='impala',
                  eval_model_blend=0.1,
                  memory_burn_in_steps=16,
@@ -75,7 +76,7 @@ class IMPALA(RLBase):
         self._init_args = locals()
         self.reward_discount = reward_discount
         self.entropy_loss_scale = entropy_loss_scale
-        self.horizon = horizon
+        self.train_interval_frames = train_interval_frames
         self.batch_size = batch_size
         self.device_eval = torch.device('cuda' if cuda_eval else 'cpu')
         self.device_train = torch.device('cuda' if cuda_train else 'cpu')
@@ -96,12 +97,10 @@ class IMPALA(RLBase):
         self.replay_end_sampling_factor = replay_end_sampling_factor
         self.kl_pull = kl_pull
         self.kl_limit = kl_limit
-        self.train_horizon = self.horizon if train_horizon is None else train_horizon
+        self.train_horizon = train_horizon
         self.eval_model_blend = eval_model_blend
         self.memory_burn_in_steps = memory_burn_in_steps
         self.activation_norm_scale = activation_norm_scale
-
-        assert self.num_actors == 1
 
         self._train_model: Actor = model_factory(observation_space, action_space)
         self._eval_model: Actor = model_factory(observation_space, action_space)
@@ -130,17 +129,16 @@ class IMPALA(RLBase):
 
         assert self.memory_burn_in_steps < self.train_horizon
         # DataLoader limitation
-        assert self.batch_size % self.train_horizon == 0 and self.horizon % self.train_horizon == 0, (self.batch_size, self.horizon)
+        assert self.batch_size % self.train_horizon == 0, (self.batch_size, self.train_horizon)
 
-        self._replay_buffer = ReplayBuffer(replay_buf_size)
-        self._prev_data = None
+        self._replay_buffer = VariableReplayBuffer(replay_buf_size, self.train_horizon, self.replay_end_sampling_factor)
+        self._step_collector = VariableStepCollector(self._eval_model, self._replay_buffer, self.device_eval)
         self._new_frames = 0
         self._eval_no_copy_updates = 0
         self._adv_norm = RunningNorm(momentum=0.95, mean_norm=False)
         self._train_future: Optional[Future] = None
         self._data_future: Optional[Future] = None
         self._executor = ThreadPoolExecutor(max_workers=1, initializer=lambda: torch.set_num_threads(1))
-        self._episode_collector = VariableEpisodeCollector(self._eval_model, self.device_eval)
 
     @property
     def _learning_rate(self):
@@ -151,30 +149,15 @@ class IMPALA(RLBase):
         return True
 
     def _step(self, data: RLStepData) -> torch.Tensor:
-        res = self._episode_collector.step(data)
-        if not self.disable_training and len(res.episodes) > 0:
-            self._add_to_replay(res.episodes)
-            self._new_frames += sum(len(e.obs) for e in res.episodes)
-            if self._new_frames >= self.horizon:
+        actions = self._step_collector.step(data)
+
+        if not self.disable_training:
+            self._new_frames += len(data.actor_id)
+            if self._new_frames > self.train_interval_frames and self._replay_buffer.ready_for_sampling:
                 self._train()
                 self._new_frames = 0
-        return self.limit_actions(res.actions)
 
-    def _add_to_replay(self, episodes: List[EpisodeData]):
-        for episode in episodes:
-            ep_len = len(episode.obs)
-            for i in range(ep_len):
-                def iu(x):
-                    return x[i].unsqueeze(0)
-                self._replay_buffer.push(
-                    states=iu(episode.obs),
-                    rewards=iu(episode.rewards).sum(-1),
-                    state_values=iu(episode.value),
-                    logits=iu(episode.logits),
-                    actions=iu(episode.actions),
-                    dones=torch.full((1,), i + 1 == ep_len, dtype=torch.float32),
-                    **(dict(memory=iu(episode.memory)) if episode.memory is not None else {}),
-                )
+        return self.limit_actions(actions)
 
     def limit_actions(self, actions):
         if isinstance(self.action_space, gym.spaces.Box):
@@ -201,36 +184,35 @@ class IMPALA(RLBase):
 
     def _create_data(self):
         def cat_replay(last, rand):
-            # (H, B, *) + (H, B * replay, *) = (H, B, 1, *) + (H, B, replay, *) =
-            # = (H, B, replay + 1, *) = (H, B * (replay + 1), *)
-            H, B, *_ = last.shape
-            all = torch.cat([
-                last.unsqueeze(2),
-                rand.reshape(H, B, self.replay_ratio, *last.shape[2:])], 2)
-            return all.reshape(H, B * (self.replay_ratio + 1), *last.shape[2:])
+            # uniformly cat last and rand
+            num_chunks = max(1, min(rand.shape[1], last.shape[1]))
+            rand_chunks = rand.chunk(num_chunks, dim=1)
+            last_chunks = last.chunk(num_chunks, dim=1)
+            assert len(rand_chunks) == len(last_chunks)
+            all = []
+            for l, r in zip(last_chunks, rand_chunks):
+                all.append(l)
+                all.append(r)
+            return torch.cat(all, 1)
 
-        h_reduce = self.horizon // self.train_horizon
-
-        def fix_on_policy_horizon(v):
-            return v.reshape(h_reduce, self.train_horizon, *v.shape[1:])\
-                .transpose(0, 1)\
-                .reshape(self.train_horizon, h_reduce * v.shape[1], *v.shape[2:])
+        enough_samples = self.replay_ratio != 0 and len(self._replay_buffer) >= \
+                         max(2 * self.train_horizon * self.replay_ratio, self.min_replay_size)
+        replay_ratio = self.replay_ratio if enough_samples else 0
 
         # (H, B, *)
-        last_samples = self._replay_buffer.get_last_samples(self.horizon)
-        last_samples = {k: fix_on_policy_horizon(v) for k, v in last_samples.items()}
-        if self.replay_ratio != 0 and len(self._replay_buffer) >= \
-                max(self.horizon * self.num_actors * max(1, self.replay_ratio), self.min_replay_size):
-            num_rollouts = self.num_actors * self.replay_ratio * h_reduce
-            rand_samples = self._replay_buffer.sample(num_rollouts, self.train_horizon, self.replay_end_sampling_factor)
+        last_samples = self._replay_buffer.get_new_samples()
+        n_new_rollouts = last_samples['dones'].shape[1]
+        roll_per_batch = self.batch_size // self.train_horizon
+        n_rand_rollouts = n_new_rollouts * replay_ratio
+        n_rand_rollouts = math.ceil((n_rand_rollouts + n_new_rollouts) / roll_per_batch) * roll_per_batch - n_new_rollouts
+        if n_rand_rollouts > 0:
+            rand_samples = self._replay_buffer.sample(n_rand_rollouts)
             return AttrDict({k: cat_replay(last, rand)
                              for (k, rand), last in zip(rand_samples.items(), last_samples.values())})
         else:
             return AttrDict(last_samples)
 
     def _impala_update(self, data: AttrDict):
-        eval_model = self._eval_model
-
         if self.use_pop_art:
             self._train_model.heads.state_values.normalize(*self._pop_art.statistics)
 
@@ -238,12 +220,12 @@ class IMPALA(RLBase):
         num_rollouts = data.states.shape[1]
 
         data = AttrDict(states=data.states, logits_old=data.logits,
-                        actions=data.actions, rewards=data.rewards, dones=data.dones,
+                        actions=data.actions, rewards=data.rewards.sum(-1), dones=data.dones,
                         **(dict(memory=data.memory) if self._train_model.is_recurrent else dict()))
 
         num_batches = max(1, num_samples // self.batch_size)
-        rand_idx = torch.arange(num_rollouts, device=self.device_train).chunk(num_batches)
-        assert len(rand_idx) == num_batches
+        rand_idx = torch.randperm(num_rollouts, device=self.device_train).chunk(num_batches)
+        assert len(rand_idx) == num_batches, (len(rand_idx), num_batches, data.states.shape)
 
         old_model = {k: v.clone() for k, v in self._train_model.state_dict().items()}
         kls_policy = []
@@ -282,7 +264,7 @@ class IMPALA(RLBase):
                 self.logger.add_scalar('PopArt/Mean', pa_mean, self.frame_train)
                 self.logger.add_scalar('PopArt/Std', pa_std, self.frame_train)
 
-        copy_state_dict(self._train_model, eval_model)
+        copy_state_dict(self._train_model, self._eval_model)
 
     def _impala_step(self, batch, do_log):
         with torch.enable_grad():
@@ -471,7 +453,7 @@ class IMPALA(RLBase):
         data.value_targets, data.advantages, data.rewards = value_targets, advantages, norm_rewards
 
     def drop_collected_steps(self):
-        self._episode_collector.drop_collected_steps()
+        self._step_collector.drop_collected_steps()
 
     def _log_set(self):
         self.logger.add_text(self.__class__.__name__, pprint.pformat(self._init_args))

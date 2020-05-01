@@ -37,7 +37,7 @@ class RLBase:
         """
         self.observation_space = observation_space
         self.action_space = action_space
-        self.num_actors = num_actors
+        self.num_actors = None if self.has_variable_actor_count_support else num_actors
         self.log_interval = log_interval
         self.disable_training = disable_training
         self.actor_index = actor_index
@@ -46,8 +46,6 @@ class RLBase:
         self.save_intermediate_models = save_intermediate_models
         self.model_save_tag = model_save_tag
         self.model_init_path = model_init_path
-
-        assert not self.has_variable_actor_count_support or num_actors == 1
 
         self._logger = None
         self._last_log_frame = -log_interval
