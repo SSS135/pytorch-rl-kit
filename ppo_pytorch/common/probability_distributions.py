@@ -235,6 +235,9 @@ class BernoulliPd(ProbabilityDistribution):
 
 
 class DiagGaussianPd(ProbabilityDistribution):
+    LOG_STD_MAX = 2
+    LOG_STD_MIN = -20
+
     def __init__(self, d, eps=1e-6):
         super().__init__(locals())
         self.d = d
@@ -271,7 +274,7 @@ class DiagGaussianPd(ProbabilityDistribution):
         std1, std2 = logstd1.exp(), logstd2.exp()
         dist1 = Normal(mean1, std1)
         dist2 = Normal(mean2, std2)
-        return kl_divergence(dist1, dist2)
+        return kl_divergence(dist2, dist1)
 
     def entropy(self, prob):
         mean, logstd = self.split_probs(prob)
@@ -285,7 +288,8 @@ class DiagGaussianPd(ProbabilityDistribution):
         return mean + std * torch.randn_like(mean)
 
     def split_probs(self, probs):
-        return probs.chunk(2, -1)
+        mean, logstd = probs.chunk(2, -1)
+        return mean, logstd.clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)
 
     @property
     def init_column_norm(self):
