@@ -23,8 +23,8 @@ class RNNFeatureExtractor(FeatureExtractorBase):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         assert self.norm_factory is None
-        # self.model = sru.SRU(input_size, hidden_size, num_layers, rescale=True, use_tanh=True)
-        self.model = QRNN(input_size, hidden_size, num_layers)
+        self.model = sru.SRU(input_size, hidden_size, num_layers, rescale=True, use_tanh=True)
+        # self.model = QRNN(input_size, hidden_size, num_layers)
 
     @property
     def output_size(self):
