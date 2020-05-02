@@ -3,16 +3,17 @@ if __name__ == '__main__':
     from optfn.gadam import GAdam
     from torch.optim.adamw import AdamW
 
-    env_factory = partial(rl.common.SimpleVecEnv, 'CartPoleContinuous-v1', parallel='dummy')
+    env_factory = partial(rl.common.SimpleVecEnv, 'BipedalWalkerHardcore-v2', parallel='dummy')
 
     alg_class = rl.algs.IMPALA
     alg_params = rl.algs.create_ppo_kwargs(
-        5e5,
+        3e6,
 
         num_actors=8,
-        horizon=256,
-        batch_size=512,
-        value_loss_scale=0.5,
+        train_interval_frames=256 * 8,
+        train_horizon=128,
+        batch_size=256,
+        value_loss_scale=1.0,
         cuda_eval=False,
         cuda_train=True,
 
@@ -20,31 +21,33 @@ if __name__ == '__main__':
         # reward_scale=1.0,
 
         replay_buf_size=256 * 1024,
-        replay_end_sampling_factor=1.0,
+        replay_end_sampling_factor=0.1,
         grad_clip_norm=None,
-        use_pop_art=False,
-        reward_scale=0.05,
+        use_pop_art=True,
+        reward_scale=1.0,
         kl_pull=0.1,
-        vtrace_max_ratio=1.0,
-        vtrace_kl_limit=0.5,
-        kl_limit=0.5,
+        vtrace_max_ratio=2.0,
+        vtrace_kl_limit=0.3,
+        kl_limit=0.3,
         loss_type='impala',
-        eval_model_blend=0.1,
+        eval_model_blend=0.03,
         replay_ratio=7,
-        upgo_scale=0.0,
-        entropy_loss_scale=0.005,
+        upgo_scale=0.2,
+        entropy_loss_scale=0.002,
         barron_alpha_c=(2.0, 1.0),
+        memory_burn_in_steps=32,
+        activation_norm_scale=0.0,
 
-        model_factory=partial(rl.actors.create_ppo_fc_actor, hidden_sizes=(128, 128),
+        model_factory=partial(rl.actors.create_ppo_fc_actor, hidden_sizes=(256, 256, 256),
                               activation=rl.actors.SiLU),
-        optimizer_factory=partial(optim.Adam, lr=3e-4),
+        optimizer_factory=partial(optim.Adam, lr=5e-4, eps=1e-5),
     )
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[kl0.5_s1.0_advnorm-m0.9_h256_b512_rs0.05]',
+        tag='[r7_popart]',
         log_root_path=log_path,
         log_interval=10000,
     )
 
-    rl_alg_test(hparams, wrap_params, alg_class, alg_params, env_factory, num_processes=1, iters=1, frames=5e5)
+    rl_alg_test(hparams, wrap_params, alg_class, alg_params, env_factory, num_processes=1, iters=1, frames=3e6)

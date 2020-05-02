@@ -92,6 +92,10 @@ class RLBase:
 
         if rewards.ndim == 1:
             rewards = rewards.unsqueeze(-1)
+        if true_reward is None:
+            true_reward = rewards[:, 0]
+        if actor_id is None:
+            actor_id = torch.arange(num_actors, dtype=torch.long)
         if not self.has_variable_actor_count_support:
             assert torch.allclose(actor_id, torch.arange(self.num_actors, dtype=torch.long))
 
@@ -101,7 +105,6 @@ class RLBase:
         assert rewards.dtype == torch.float32, rewards.dtype
         assert true_reward.shape == (num_actors,)
         assert done.shape == (num_actors,)
-        assert done.dtype == torch.bool, done.dtype
         assert actor_id.shape == (num_actors,)
         assert actor_id.dtype == torch.long or actor_id.dtype == torch.int, actor_id.dtype
 

@@ -1,22 +1,22 @@
 if __name__ == '__main__':
     from .init_vars import *
 
-    env_factory = partial(rl.common.SimpleVecEnv, 'CartPoleContinuous-v1', parallel='dummy')
+    env_factory = partial(rl.common.SimpleVecEnv, 'CartPole-v1', parallel='dummy')
 
     alg_class = rl.algs.PPO
     alg_params = rl.algs.create_fc_kwargs(
         5e5,
 
         num_actors=8,
-        horizon=1024 * 10 // 8,
-        batch_size=1024,
+        horizon=128,
+        batch_size=256,
         value_loss_scale=0.5,
         cuda_eval=False,
         cuda_train=True,
 
         use_pop_art=False,
-        reward_scale=1.0,
-        ppo_iters=3,
+        reward_scale=0.1,
+        ppo_iters=6,
         constraint='clip',
         value_clip=0.2,
         policy_clip=0.2,
