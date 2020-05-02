@@ -104,6 +104,7 @@ class RLBase:
         assert rewards.shape == (num_actors, rewards.shape[1]), f'wrong reward {rewards} shape {rewards.shape}'
         assert rewards.dtype == torch.float32, rewards.dtype
         assert true_reward.shape == (num_actors,)
+        assert true_reward.dtype == torch.float32, true_reward.dtype
         assert done.shape == (num_actors,)
         assert actor_id.shape == (num_actors,)
         assert actor_id.dtype == torch.long or actor_id.dtype == torch.int, actor_id.dtype
