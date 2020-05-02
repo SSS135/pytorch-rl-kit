@@ -274,7 +274,7 @@ class DiagGaussianPd(ProbabilityDistribution):
         std1, std2 = logstd1.exp(), logstd2.exp()
         dist1 = Normal(mean1, std1)
         dist2 = Normal(mean2, std2)
-        return kl_divergence(dist2, dist1)
+        return kl_divergence(dist1, dist2)
 
     def entropy(self, prob):
         mean, logstd = self.split_probs(prob)

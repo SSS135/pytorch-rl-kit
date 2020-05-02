@@ -354,7 +354,7 @@ class IMPALA(RLBase):
         data.logp_policy = pd.logp(data.actions, data.logits_policy)
         data.logp = pd.logp(data.actions, data.logits)
         data.probs_ratio = (data.logp.detach() - data.logp_old).exp()
-        data.kl_replay = pd.kl(data.logits, data.logits_old)
+        data.kl_replay = pd.kl(data.logits_old, data.logits)
 
         with torch.no_grad():
             self._process_rewards(data, do_log)
@@ -363,7 +363,7 @@ class IMPALA(RLBase):
         for k, v in data.items():
             data[k] = v.flatten(end_dim=1)
 
-        data.kl_policy = kl_policy = pd.kl(data.logits, data.logits_policy)
+        data.kl_policy = kl_policy = pd.kl(data.logits_policy, data.logits)
         if LossType.v_mpo in self.loss_type:
             losses = v_mpo_loss(
                 kl_policy, data.logp, data.advantages, data.advantages_upgo, data.vtrace_p, self.kl_pull)
