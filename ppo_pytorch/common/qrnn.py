@@ -7,7 +7,6 @@ from torch.autograd import Variable
 from torchqrnn.forget_mult import ForgetMult
 
 from ..actors.norm_factory import NormFactory
-from .activation_norm import ActivationNorm
 
 
 class QRNNLayer(nn.Module):
@@ -43,7 +42,6 @@ class QRNNLayer(nn.Module):
         self.prevX = None
         self.output_gate = output_gate
         self.use_cuda = use_cuda
-        self.act_norm = ActivationNorm()
 
         nf_mult = 3 if self.output_gate else 2
         # One large matmul with concat is faster than N small matmuls and no concat
@@ -80,7 +78,6 @@ class QRNNLayer(nn.Module):
 
         # Matrix multiplication for the three outputs: Z, F, O
         Y = self.linear(source)
-        Y = self.act_norm(Y.view(-1, Y.shape[2])).view_as(Y)
         if self.norm is not None:
             Y = self.norm(Y.view(-1, Y.shape[2])).view_as(Y)
         # Convert the tensor back to (batch, seq_len, len([Z, F, O]) * hidden_size)
@@ -90,7 +87,7 @@ class QRNNLayer(nn.Module):
         else:
             Z, F = Y.chunk(2, dim=2)
         ###
-        Z = Z.tanh() + 0.1 * Z
+        Z = Z.tanh()
         F = F.sigmoid()
 
         # If zoneout is specified, we perform dropout on the forget gates in F
