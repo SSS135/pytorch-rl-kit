@@ -108,6 +108,8 @@ class RLBase:
         assert done.shape == (num_actors,)
         assert actor_id.shape == (num_actors,)
         assert actor_id.dtype == torch.long or actor_id.dtype == torch.int, actor_id.dtype
+        aid_list = actor_id.tolist()
+        assert len(aid_list) == len(set(aid_list)), aid_list
 
         done = done.float()
         actor_id = actor_id.long()

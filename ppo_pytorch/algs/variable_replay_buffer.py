@@ -113,6 +113,7 @@ class VariableReplayBuffer:
             assert actor_ids.shape == sample[DONE].shape and actor_ids.dtype == torch.long, actor_ids
 
             sample_aids = actor_ids.tolist()
+            assert len(sample_aids) == len(set(sample_aids)), sample_aids
 
             # resize buffers
             buf_aid_set = set(self._actor_id_to_index.keys())
