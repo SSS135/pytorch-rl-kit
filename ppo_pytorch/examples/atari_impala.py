@@ -9,8 +9,9 @@ if __name__ == '__main__':
     alg_params = rl.algs.create_ppo_kwargs(
         10e6,
 
-        num_actors=8,
-        horizon=128,
+        num_actors=1,
+        train_interval_frames=256 * 8,
+        train_horizon=128,
         batch_size=256,
         value_loss_scale=0.5,
         cuda_eval=True,

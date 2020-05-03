@@ -138,7 +138,7 @@ class IMPALA(RLBase):
         self._adv_norm = RunningNorm(momentum=0.95, mean_norm=False)
         self._train_future: Optional[Future] = None
         self._data_future: Optional[Future] = None
-        self._executor = ThreadPoolExecutor(max_workers=1, initializer=lambda: torch.set_num_threads(1))
+        self._executor = ThreadPoolExecutor(max_workers=1, initializer=lambda: torch.set_num_threads(4))
 
     @property
     def _learning_rate(self):
@@ -182,7 +182,7 @@ class IMPALA(RLBase):
             self._model_saver.check_save_model(self._train_model, self.frame_train)
             self._scheduler.step(self.frame_train)
 
-    def _create_data(self):
+    def _create_data(self) -> AttrDict:
         def cat_replay(last, rand):
             # uniformly cat last and rand
             num_chunks = max(1, min(rand.shape[1], last.shape[1]))
@@ -220,7 +220,7 @@ class IMPALA(RLBase):
         num_rollouts = data.states.shape[1]
 
         data = AttrDict(states=data.states, logits_old=data.logits,
-                        actions=data.actions, rewards=data.rewards.sum(-1), dones=data.dones,
+                        actions=data.actions, rewards=data.rewards[..., 0], dones=data.dones,
                         **(dict(memory=data.memory) if self._train_model.is_recurrent else dict()))
 
         num_batches = max(1, num_samples // self.batch_size)

@@ -3,7 +3,7 @@ import random
 from collections import defaultdict
 from dataclasses import dataclass
 from itertools import count
-from typing import NamedTuple, List, Optional, Dict, Tuple
+from typing import NamedTuple, List, Optional, Dict, Tuple, Callable
 from unittest.mock import Mock
 
 from torch import Tensor
@@ -55,7 +55,7 @@ class VariableStepCollector:
             if self._memory_shape is None:
                 self._memory_shape = self.actor(obs.unsqueeze(0), memory=None, dones=dones_t).memory.shape[1:]
             input_memory = self._get_memory(data.actor_id, data.done)
-            ac_out = self.actor(obs.unsqueeze(0), memory=input_memory, dones=dones_t)
+            ac_out = self.actor(obs.unsqueeze(0), memory=input_memory.to(self.device), dones=dones_t)
             ac_out.logits, ac_out.state_values = [x.squeeze(0) for x in (ac_out.logits, ac_out.state_values)]
         else:
             ac_out = self.actor(obs)
@@ -118,7 +118,7 @@ class VariableStepCollector:
         mem = []
         for aid, done in zip(actor_id.tolist(), done.tolist()):
             if done or aid not in self._step_datas:
-                mem.append(torch.zeros(self._memory_shape, device=self.device))
+                mem.append(torch.zeros(self._memory_shape))
                 continue
             step_data = self._step_datas[aid]
             mem.append(step_data.output_memory)
@@ -139,7 +139,7 @@ def test_variable_step_collector_normal():
     actor = Mock()
     actor.is_recurrent = False
     actor.return_value = AttrDict(logits=torch.zeros(num_actors, 2), state_values=torch.zeros(num_actors, 1))
-    actor.heads.logits.pd.sample = Mock(return_value=torch.zeros(num_actors, 2))
+    actor.heads.logits.pd.sample.return_value = torch.zeros(num_actors, 2)
     buffer = VariableReplayBuffer(capacity, horizon, 0.1)
     collector = VariableStepCollector(actor, buffer, torch.device('cpu'))
 

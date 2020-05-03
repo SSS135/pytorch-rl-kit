@@ -3,8 +3,8 @@ if __name__ == '__main__':
     from rl_exp.unity.variable_unity_env import VariableUnityVecEnv
 
     num_envs = 8
-    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuous\DungeonAI'
-    env_factory = partial(VariableUnityVecEnv, exe_path, num_envs=num_envs)
+    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuousR\DungeonAI'
+    env_factory = partial(VariableUnityVecEnv, exe_path, num_envs=num_envs, visual_observations=True, stacked_frames=4)
     # env_factory = partial(UnityVecEnv, exe_path, visual_observations=True, stacked_frames=4)
 
     alg_class = rl.algs.IMPALA
@@ -37,11 +37,11 @@ if __name__ == '__main__':
         entropy_loss_scale=0.002,
         barron_alpha_c=(2.0, 1.0),
         memory_burn_in_steps=32,
-        activation_norm_scale=0.003,
+        activation_norm_scale=0.0,
 
         optimizer_factory=partial(optim.Adam, lr=3e-4),
-        # model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='normal'),
-        model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
+        model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
+        # model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
         # model_factory=partial(rl.actors.create_ppo_fc_actor, hidden_sizes=(256, 256, 256),
         #                       activation=rl.actors.SiLU),
 
@@ -51,7 +51,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[rand_sru_fwkl_varenv]',
+        tag='[matfix_cnn_noan]',
         log_root_path=log_path,
         log_interval=20000,
     )

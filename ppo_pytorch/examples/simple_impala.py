@@ -26,26 +26,26 @@ if __name__ == '__main__':
         use_pop_art=True,
         reward_scale=1.0,
         kl_pull=0.1,
-        vtrace_max_ratio=2.0,
+        vtrace_max_ratio=1.0,
         vtrace_kl_limit=0.3,
         kl_limit=0.3,
         loss_type='impala',
         eval_model_blend=0.03,
         replay_ratio=7,
-        upgo_scale=0.2,
+        upgo_scale=0.0,
         entropy_loss_scale=0.002,
         barron_alpha_c=(2.0, 1.0),
         memory_burn_in_steps=32,
-        activation_norm_scale=0.0,
+        activation_norm_scale=0.003,
 
         model_factory=partial(rl.actors.create_ppo_fc_actor, hidden_sizes=(256, 256, 256),
                               activation=rl.actors.SiLU),
-        optimizer_factory=partial(optim.Adam, lr=5e-4, eps=1e-5),
+        optimizer_factory=partial(optim.Adam, lr=3e-4),
     )
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[r7_popart]',
+        tag='[r31_pskip1]',
         log_root_path=log_path,
         log_interval=10000,
     )
