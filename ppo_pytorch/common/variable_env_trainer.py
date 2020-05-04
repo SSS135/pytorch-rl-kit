@@ -3,7 +3,7 @@ from typing import Callable
 
 import torch
 from ppo_pytorch.common import RLBase
-from ppo_pytorch.common.tensorboard_env_logger import get_log_dir, TensorboardEnvLogger
+from ppo_pytorch.common.tensorboard_env_logger import TensorboardEnvLogger
 from rl_exp.unity.variable_env import VariableVecEnv
 
 
@@ -30,7 +30,7 @@ class VariableEnvTrainer:
         assert log_root_path is not None
 
         self.env = env_factory()
-        log_dir = get_log_dir(log_root_path, alg_name, self.env.env_name, tag)
+        log_dir = TensorboardEnvLogger.get_log_dir(log_root_path, alg_name, self.env.env_name, tag)
         print('Log dir:', log_dir)
         self._data = self.env.reset()
 

@@ -6,7 +6,7 @@ import torch
 
 from .env_factory import NamedVecEnv
 from .rl_base import RLBase
-from .tensorboard_env_logger import TensorboardEnvLogger, get_log_dir
+from .tensorboard_env_logger import TensorboardEnvLogger
 
 
 class EnvTrainer:
@@ -36,7 +36,7 @@ class EnvTrainer:
 
         env = env_factory()
         env_name = env.env_name
-        log_dir = get_log_dir(log_root_path, alg_name, env_name, tag)
+        log_dir = TensorboardEnvLogger.get_log_dir(log_root_path, alg_name, env_name, tag)
         print('Log dir:', log_dir)
         env.set_num_actors(self.rl_alg_factory.keywords['num_actors'])
         self._obs = env.reset()
