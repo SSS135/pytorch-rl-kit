@@ -88,10 +88,6 @@ class ProbabilityDistribution:
         """Convert actions to neural network input vector. For example, class number to one-hot vector."""
         return action
 
-    @property
-    def init_column_norm(self):
-        return 0.1
-
     def __repr__(self):
         str_args = str.join(', ', [f'{k}={v}' for k, v in self._init_args.items()])
         return f'{self.__class__.__name__}({str_args})'
@@ -291,10 +287,6 @@ class DiagGaussianPd(ProbabilityDistribution):
         mean, logstd = probs.chunk(2, -1)
         return mean, logstd.clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)
 
-    @property
-    def init_column_norm(self):
-        return 0.01
-
 
 class PointCloudPd(ProbabilityDistribution):
     def __init__(self, d, num_points=32):
@@ -362,10 +354,6 @@ class PointCloudPd(ProbabilityDistribution):
         mean = prob.mean(-1)
         std = prob.std(-1)
         return mean, std
-
-    @property
-    def init_column_norm(self):
-        return 2.0
 
 
 class BetaPd(ProbabilityDistribution):
@@ -485,10 +473,6 @@ class MixturePd(ProbabilityDistribution):
     #     w = F.softmax(logw, -1).unsqueeze(-1)
     #     return (mean * w).sum(-2)
 
-    # @property
-    # def init_column_norm(self):
-    #     return 0.01
-
     def _split_prob(self, prob):
         logw, mix_prob = prob.split([self.num_mixtures, self.d * 2 * self.num_mixtures], dim=-1)
         mix_prob = mix_prob.reshape(*mix_prob.shape[:-1], self.num_mixtures, self.d * 2)
@@ -531,10 +515,6 @@ class FixedStdGaussianPd(ProbabilityDistribution):
 
     def sample(self, mean):
         return self._clamp_logits(mean + self.std * torch.randn_like(mean))
-
-    # @property
-    # def init_column_norm(self):
-    #     return 1.0
 
     def _clamp_logits(self, logits):
         return logits / logits.abs().mean(-1, keepdim=True).clamp_min(1.0)
@@ -580,10 +560,6 @@ class LinearTanhPd(ProbabilityDistribution):
     def sample(self, mean):
         return self.max_action * limit_action_length(mean, 1.0).tanh()
 
-    # @property
-    # def init_column_norm(self):
-    #     return 1.0
-
 
 class LinearPd(ProbabilityDistribution):
     def __init__(self, d, max_action):
@@ -618,10 +594,6 @@ class LinearPd(ProbabilityDistribution):
 
     def sample(self, mean):
         return self.max_action * mean
-
-    # @property
-    # def init_column_norm(self):
-    #     return 1.0
 
 
 class TransactionPd(ProbabilityDistribution):
@@ -659,10 +631,6 @@ class TransactionPd(ProbabilityDistribution):
 
     def sample(self, mean):
         return mean
-
-    # @property
-    # def init_column_norm(self):
-    #     return math.sqrt(self.d)
 
     def atanh(self, x):
         return 0.5 * torch.log((1 + x) / (1 - x))
