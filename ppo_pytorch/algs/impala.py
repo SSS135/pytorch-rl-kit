@@ -279,7 +279,7 @@ class IMPALA(RLBase):
                 actor_out = self._run_train_model_fc(batch.states, actor_params)
             batch.update(actor_out)
 
-            for k, v in list(batch.items()):
+            for k, v in batch.items():
                 batch[k] = v if k == 'states' else v.cpu()
 
             if do_log:
