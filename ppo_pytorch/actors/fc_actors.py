@@ -7,7 +7,7 @@ from ppo_pytorch.common.activation_norm import ActivationNorm
 from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor
 from .heads import PolicyHead, StateValueHead
 from .norm_factory import NormFactory
-from ..common.probability_distributions import LinearTanhPd, ProbabilityDistribution
+from ..common.probability_distributions import LinearTanhPd, ProbabilityDistribution, make_pd
 import torch
 from ..config import Linear
 from optfn.skip_connections import ResidualBlock
@@ -100,7 +100,7 @@ class FCFeatureExtractor(FeatureExtractorBase):
 
 
 class FCActionFeatureExtractor(FeatureExtractorBase):
-    def __init__(self, input_size: int, pd: ProbabilityDistribution, hidden_sizes=(128, 128), activation=nn.Tanh, **kwargs):
+    def __init__(self, input_size: int, pd: ProbabilityDistribution, hidden_sizes=(256, 256), activation=nn.ReLU, **kwargs):
         super().__init__(**kwargs)
         self.input_size = input_size
         self.pd = pd
@@ -120,15 +120,7 @@ class FCActionFeatureExtractor(FeatureExtractorBase):
             x = layer(torch.cat([x, ac_inputs], -1))
             if logger is not None:
                 logger.add_histogram(f'layer_{i}_output', x, cur_step)
-        return x.view(*input.shape[:-1], -1)
-
-    def reset_weights(self):
-        super().reset_weights()
-        ac_size = self.pd.input_vector_len
-        for layer in self.model:
-            w = layer[0].weight.data
-            in_size = w.shape[1] - ac_size
-            w[:, -ac_size:] *= math.sqrt(in_size / ac_size)
+        return x.view(*input.shape[:-1], x.shape[-1])
 
     def _create_fc(self):
         norm = self.norm_factory
@@ -154,27 +146,25 @@ def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128)
     return create_ppo_actor(action_space, fx_factory, split_policy_value_network, num_out=num_values)
 
 
-def create_td3_fc_actor(observation_space, action_space, hidden_sizes=(400, 300), activation=nn.ReLU,
+def create_sac_fc_actor(observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU,
                         norm_factory: NormFactory = None):
     assert len(observation_space.shape) == 1
-    num_q = 1
-
-    pd = LinearTanhPd(action_space.shape[0], action_space.high[0])
+    pd = make_pd(action_space)
 
     def fx_policy_factory(): return FCFeatureExtractor(
         observation_space.shape[0], hidden_sizes, activation, norm_factory=norm_factory)
 
-    def fx_value_factory(): return FCActionFeatureExtractor(
+    def fx_q_factory(): return FCActionFeatureExtractor(
         observation_space.shape[0], pd, hidden_sizes, activation, norm_factory=norm_factory)
 
-    fx_policy, fx_value_1, fx_value_2 = fx_policy_factory(), fx_value_factory(), fx_value_factory()
+    fx_policy, fx_q1, fx_q2 = fx_policy_factory(), fx_q_factory(), fx_q_factory()
 
-    value_head_1 = StateValueHead(fx_value_1.output_size, pd=pd, num_out=num_q)
-    value_head_2 = StateValueHead(fx_value_2.output_size, pd=pd, num_out=num_q)
     policy_head = PolicyHead(fx_policy.output_size, pd=pd)
+    head_q1 = StateValueHead(fx_q1.output_size, pd=pd)
+    head_q2 = StateValueHead(fx_q2.output_size, pd=pd)
     models = {
         fx_policy: dict(logits=policy_head),
-        fx_value_1: dict(state_values_1=value_head_1),
-        fx_value_2: dict(state_values_2=value_head_2)
+        fx_q1: dict(q1=head_q1),
+        fx_q2: dict(q2=head_q2)
     }
     return ModularActor(models)

@@ -1,7 +1,7 @@
 import math
 from abc import abstractmethod, ABCMeta
 from functools import partial
-from typing import Dict
+from typing import Dict, List
 
 import torch.nn as nn
 import torch.nn.init as init
@@ -29,6 +29,16 @@ def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, 
         models = {fx_policy: dict(logits=policy_head), fx_value: dict(state_values=value_head)}
     else:
         models = {fx_policy: dict(logits=policy_head, state_values=value_head)}
+    return ModularActor(models, is_recurrent)
+
+
+def create_sac_actor(pd, policy_fx_factory, q_fx_factory, is_recurrent=False):
+    fx_policy, fx_q1, fx_q2 = policy_fx_factory(), q_fx_factory(), q_fx_factory()
+
+    q1_head = StateValueHead(fx_q1.output_size, pd=pd)
+    q2_head = StateValueHead(fx_q2.output_size, pd=pd)
+    policy_head = PolicyHead(fx_policy.output_size, pd=pd)
+    models = {fx_policy: dict(logits=policy_head), fx_q1: dict(q1=q1_head), fx_q2: dict(q2=q2_head)}
     return ModularActor(models, is_recurrent)
 
 
@@ -98,7 +108,7 @@ class ModularActor(Actor):
         self._head_modules = nn.ModuleDict(self._heads)
         self._fx_modules = nn.ModuleList(self.models.keys())
 
-    def forward(self, input, memory=None, **kwargs) -> AttrDict:
+    def forward(self, input, memory=None, evaluate_heads: List[str] = None, **kwargs) -> AttrDict:
         output = AttrDict()
 
         if memory is not None:
@@ -109,6 +119,9 @@ class ModularActor(Actor):
         memory_output = []
 
         for (fx, heads), memory_input in zip(self.models.items(), memory_input):
+            if evaluate_heads is not None and len(set(evaluate_heads) - set(heads.keys())) == len(evaluate_heads):
+                assert not self.is_recurrent
+                continue
             if self.is_recurrent:
                 features, memory = fx(input, memory=memory_input, **kwargs)
                 memory_output.append(memory)

@@ -10,21 +10,24 @@ import torch.autograd
 import torch.autograd
 import torch.nn.functional as F
 import torch.optim as optim
+from ppo_pytorch.actors import Actor
+from ppo_pytorch.actors.fc_actors import create_sac_fc_actor
+from ppo_pytorch.algs.ppo import copy_state_dict
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 
 from .replay_buffer import ReplayBuffer
 from .utils import lerp_module_
-from ..actors import ModularActor, create_td3_fc_actor
+from ..actors import ModularActor
 from ..actors.utils import model_diff
 from ..common.attr_dict import AttrDict
 from ..common.barron_loss import barron_loss
 from ..common.data_loader import DataLoader
 from ..common.probability_distributions import DiagGaussianPd, CategoricalPd
-from ..common.rl_base import RLBase
+from ..common.rl_base import RLBase, RLStepData
 
 
-class TD3(RLBase):
+class SAC(RLBase):
     def __init__(self, observation_space, action_space,
                  reward_discount=0.99,
                  train_interval=16,
@@ -33,16 +36,15 @@ class TD3(RLBase):
                  value_target_steps=1,
                  replay_buffer_size=128*1024,
                  target_model_blend=0.005,
-                 train_noise_scale=0.2,
-                 expl_noise_scale=0.1,
-                 train_noise_clip=0.5,
-                 critic_iters=2,
-                 random_policy_frames=1000,
-                 model_factory=create_td3_fc_actor,
-                 actor_optimizer_factory=partial(optim.Adam, lr=3e-4),
-                 critic_optimizer_factory=partial(optim.Adam, lr=3e-4),
-                 cuda_eval=True,
-                 cuda_train=True,
+                 actor_update_interval=2,
+                 random_policy_frames=10000,
+                 entropy_scale=0.2,
+                 kl_pull=0.05,
+                 model_factory=create_sac_fc_actor,
+                 actor_optimizer_factory=partial(optim.Adam, lr=5e-4),
+                 critic_optimizer_factory=partial(optim.Adam, lr=5e-4),
+                 cuda_eval=False,
+                 cuda_train=False,
                  grad_clip_norm=None,
                  reward_scale=1.0,
                  # barron_alpha_c=(1.5, 1),
@@ -59,11 +61,10 @@ class TD3(RLBase):
         self.value_target_steps = value_target_steps
         self.replay_buffer_size = replay_buffer_size
         self.target_model_blend = target_model_blend
-        self.train_noise_scale = train_noise_scale
-        self.expl_noise_scale = expl_noise_scale
-        self.train_noise_clip = train_noise_clip
-        self.critic_iters = critic_iters
+        self.actor_update_interval = actor_update_interval
         self.random_policy_frames = random_policy_frames
+        self.entropy_scale = entropy_scale
+        self.kl_pull = kl_pull
         self.model_factory = model_factory
         self.device_eval = torch.device('cuda' if cuda_eval else 'cpu')
         self.device_train = torch.device('cuda' if cuda_train else 'cpu')
@@ -74,20 +75,24 @@ class TD3(RLBase):
 
         assert isinstance(action_space, gym.spaces.Box), action_space
 
-        if self.model_init_path is None:
-            self._train_model: ModularActor = model_factory(observation_space, action_space)
-        else:
-            self._train_model: ModularActor = torch.load(self.model_init_path)
+        self._train_model: ModularActor = model_factory(observation_space, action_space)
+        self._eval_model: ModularActor = model_factory(observation_space, action_space)
+        self._target_model: ModularActor = model_factory(observation_space, action_space)
+        if self.model_init_path is not None:
+            self._train_model.load_state_dict(torch.load(self.model_init_path), True)
             print(f'loaded model {self.model_init_path}')
+        copy_state_dict(self._train_model, self._eval_model)
+        copy_state_dict(self._train_model, self._target_model)
+        self._train_model = self._train_model.train().to(self.device_train, non_blocking=True)
+        self._eval_model = self._eval_model.eval().to(self.device_eval, non_blocking=True)
+        self._target_model = self._target_model.train().to(self.device_train, non_blocking=True)
 
-        self._train_model = self._train_model.to(self.device_train).train()
-        self._target_model = deepcopy(self._train_model)
-        self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
+        assert isinstance(self._eval_model.heads.logits.pd, DiagGaussianPd)
 
         self._actor_optimizer: torch.optim.Optimizer = \
             actor_optimizer_factory(self._train_model.head_parameters('logits'))
         self._critic_optimizer: torch.optim.Optimizer = \
-            critic_optimizer_factory(self._train_model.head_parameters('state_values_1', 'state_values_2'))
+            critic_optimizer_factory(self._train_model.head_parameters('q1', 'q2'))
         self._actor_lr_scheduler = lr_scheduler_factory(self._actor_optimizer) if lr_scheduler_factory is not None else None
         self._critic_lr_scheduler = lr_scheduler_factory(self._critic_optimizer) if lr_scheduler_factory is not None else None
         self._entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
@@ -100,33 +105,41 @@ class TD3(RLBase):
         self._train_future: Optional[Future] = None
         self._update_iter = 0
 
-    def _step(self, rewards, dones, states) -> torch.Tensor:
+    def _step(self, data: RLStepData) -> torch.Tensor:
         with torch.no_grad():
-            # run network
-            ac_out = self._eval_model(states.to(self.device_eval), evaluate_heads=['logits'])
-            noise = self.expl_noise_scale * torch.randn(ac_out.logits.shape) if not self.disable_training else 0
+            ac_out = self._eval_model(data.obs.to(self.device_eval), evaluate_heads=['logits'])
             pd = self._eval_model.heads.logits.pd
-            actions = (pd.sample(ac_out.logits).cpu() + noise).clamp(-pd.max_action, pd.max_action)
+            actions = pd.sample(ac_out.logits).cpu()
             if self.frame_eval < self.random_policy_frames:
-                actions.data.uniform_(-pd.max_action, pd.max_action)
+                actions.data.uniform_(-3, 3)
 
             if not self.disable_training:
-                if self._prev_data is not None and rewards is not None:
-                    self._replay_buffer.push(rewards=rewards, dones=dones, **self._prev_data)
+                if self._prev_data is not None and data.rewards is not None:
+                    self._replay_buffer.push(rewards=data.rewards, dones=data.done, **self._prev_data)
 
                 self._eval_steps += 1
-                self._prev_data = dict(logits=ac_out.logits, states=states, actions=actions)
+                self._prev_data = dict(logits=ac_out.logits, states=data.obs, actions=actions)
 
                 min_replay_size = self.batch_size * (self.value_target_steps + 1)
-                if self.frame_eval > 1024 and self._eval_steps >= self.train_interval and len(self._replay_buffer) >= min_replay_size:
+                if self.frame_eval > self.random_policy_frames \
+                        and self._eval_steps >= self.train_interval \
+                        and len(self._replay_buffer) >= min_replay_size:
                     self._eval_steps = 0
                     self._pre_train()
                     self._train()
 
+            return self.limit_actions(actions)
+
+    def limit_actions(self, actions):
+        if isinstance(self.action_space, gym.spaces.Box):
+            return actions.clamp(-3, 3) / 3
+        else:
+            assert isinstance(self.action_space, gym.spaces.Discrete) or \
+                   isinstance(self.action_space, gym.spaces.MultiDiscrete)
             return actions
 
     def _pre_train(self):
-        self.step_train = self.step_eval
+        self.frame_train = self.frame_eval
 
         self._check_log()
 
@@ -147,8 +160,7 @@ class TD3(RLBase):
 
     def _do_train(self, data):
         with torch.no_grad():
-            self._log_training_data(data)
-            self._td3_update(data)
+            self._sac_update(data)
             self._model_saver.check_save_model(self._train_model, self.frame_train)
 
     def _create_data(self):
@@ -158,16 +170,16 @@ class TD3(RLBase):
         data.rewards = self.reward_scale * data.rewards
         return data
 
-    def _td3_update(self, data: AttrDict):
+    def _sac_update(self, data: AttrDict):
         num_rollouts = data.states.shape[1]
 
-        data = AttrDict(states=data.states, actions=data.actions, rewards=data.rewards, dones=data.dones)
+        data = AttrDict(states=data.states, actions=data.actions, rewards=data.rewards[..., 0], dones=data.dones)
 
         rand_idx = torch.randperm(num_rollouts, device=self.device_train).chunk(self.num_batches)
 
-        old_model = deepcopy(self._train_model)
+        old_model = {k: v.clone() for k, v in self._train_model.state_dict().items()}
 
-        with DataLoader(data, rand_idx, self.device_train, 4, dim=1) as data_loader:
+        with DataLoader(data, rand_idx, self.device_train, 2, dim=1) as data_loader:
             for batch_index in range(self.num_batches):
                 # prepare batch data
                 batch = AttrDict(data_loader.get_next_batch())
@@ -177,72 +189,89 @@ class TD3(RLBase):
                 self._update_iter += 1
 
         if self._do_log:
-            self.logger.add_scalar('learning rate', self._actor_optimizer.param_groups[0]['lr'], self.frame_train)
-            self.logger.add_scalar('total loss', loss, self.frame_train)
-            self.logger.add_scalar('model abs diff', model_diff(old_model, self._train_model), self.frame_train)
-            self.logger.add_scalar('model max diff', model_diff(old_model, self._train_model, True), self.frame_train)
+            self.logger.add_scalar('Optimizer/Learning Rate', self._actor_optimizer.param_groups[0]['lr'], self.frame_train)
+            if loss is not None:
+                self.logger.add_scalar('Losses/Total Loss', loss, self.frame_train)
+            # self.logger.add_scalar('Stability/KL Blend', kl_policy, self.frame_train)
+            # self.logger.add_scalar('Stability/KL Replay', kl_replay, self.frame_train)
+            self.logger.add_scalar('Model Diff/Abs', model_diff(old_model, self._train_model), self.frame_train)
+            self.logger.add_scalar('Model Diff/Max', model_diff(old_model, self._train_model, True), self.frame_train)
 
-        self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
+        lerp_module_(self._eval_model, self._train_model, 1)
 
     @property
     def _do_actor_update(self):
-        return self._update_iter % self.critic_iters == 0
+        return self._update_iter % self.actor_update_interval == 0
 
     def _batch_update(self, batch, do_log=False):
+        self._train_model.zero_grad()
         critc_loss = self._critic_step(batch, do_log)
         critc_loss.backward()
         if self.grad_clip_norm is not None:
             clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
         self._critic_optimizer.step()
-        self._train_model.zero_grad()
 
         if self._do_actor_update:
+            self._train_model.zero_grad()
             actor_loss = self._actor_step(batch, do_log)
             actor_loss.backward()
             if self.grad_clip_norm is not None:
                 clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
             self._actor_optimizer.step()
-            self._train_model.zero_grad()
         else:
             actor_loss = 0
+
+        # with torch.no_grad():
+        #     if do_log:
+        #         self._log_training_data(data)
+        #         ratio = (data.logp - data.logp_policy).exp() - 1
+        #         self.logger.add_scalar('Prob Ratio/Mean' + tag, ratio.mean(), self.frame_train)
+        #         self.logger.add_scalar('Prob Ratio/Abs Mean' + tag, ratio.abs().mean(), self.frame_train)
+        #         self.logger.add_scalar('Prob Ratio/Abs Max' + tag, ratio.abs().max(), self.frame_train)
+        #         self.logger.add_scalar('Stability/Entropy' + tag, entropy.mean(), self.frame_train)
+        #         self.logger.add_scalar('Losses/State Value' + tag, loss_value.mean(), self.frame_train)
+        #         self.logger.add_histogram('Losses/Value Hist' + tag, loss_value, self.frame_train)
+        #         self.logger.add_histogram('Losses/Ratio Hist' + tag, ratio, self.frame_train)
 
         return actor_loss + critc_loss
 
     def _critic_step(self, data: AttrDict, do_log):
-        actor_params = AttrDict()
+        logits_last = self._train_model(data.states[-1], evaluate_heads=['logits']).logits
+        actions_last = self._train_model.heads.logits.pd.sample(logits_last)
+        logp_last = self._train_model.heads.logits.pd.logp(actions_last, logits_last).sum(-1)
 
-        pd = self._target_model.heads.logits.pd
-        logits = self._target_model(data.states[-1], evaluate_heads=['logits']).logits
-        action_noise = torch.normal(0, self.train_noise_scale, size=logits.shape, device=self.device_train)\
-            .clamp_(-self.train_noise_clip, self.train_noise_clip)
-        actor_params.actions = (pd.sample(logits) + action_noise)\
-            .clamp_(-pd.max_action, pd.max_action)
+        ac_out_last = self._target_model(data.states[-1], evaluate_heads=['q1', 'q2'], actions=actions_last)
+        targets = torch.min(ac_out_last.q1, ac_out_last.q2).squeeze(-1) - self.entropy_scale * logp_last
 
-        ac_out = self._target_model(data.states[-1], evaluate_heads=['state_values_1', 'state_values_2'], **actor_params)
-        targets = torch.min(ac_out.state_values_1, ac_out.state_values_2)
-
-        rewards = data.rewards.unsqueeze(-1)
-        dones = data.dones.unsqueeze(-1)
         for i in reversed(range(self.value_target_steps)):
-            targets = rewards[i] + self.reward_discount * (1 - dones[i]) * targets
+            targets = data.rewards[i] + self.reward_discount * (1 - data.dones[i]) * targets
+        # assert self.value_target_steps == 1 and data.states.shape[0] == 2
+        # targets = data.rewards[0] + self.reward_discount * (1 - data.dones[0]) * targets
 
-        actor_params = AttrDict()
-        actor_params.actions = data.actions[0]
+        assert targets.shape == data.rewards.shape[1:] == logp_last.shape, (targets.shape, data.rewards.shape, logp_last.shape)
 
         with torch.enable_grad():
-            ac_out = self._train_model(data.states[0], evaluate_heads=['state_values_1', 'state_values_2'], **actor_params)
-            loss = F.mse_loss(ac_out.state_values_1, targets) + F.mse_loss(ac_out.state_values_2, targets)
+            ac_out_first = self._train_model(data.states[0], evaluate_heads=['q1', 'q2'], actions=data.actions[0])
+            loss = (ac_out_first.q1.squeeze(-1) - targets) ** 2 + (ac_out_first.q2.squeeze(-1) - targets) ** 2
+            assert targets.shape == loss.shape
+            loss = loss.mean()
 
         return loss
 
     def _actor_step(self, data: AttrDict, do_log):
-        actor_params = AttrDict()
-
+        pd = self._train_model.heads.logits.pd
+        logits_target = self._target_model(data.states, evaluate_heads=['logits']).logits
         with torch.enable_grad():
-            logits = self._train_model(data.states[0], evaluate_heads=['logits']).logits
-            actor_params.actions = self._train_model.heads.logits.pd.sample(logits)
-            state_values = self._train_model(data.states[0], evaluate_heads=['state_values_1'], **actor_params).state_values_1
-            return -state_values.mean()
+            logits = self._train_model(data.states, evaluate_heads=['logits']).logits
+            actions = self._train_model.heads.logits.pd.sample(logits)
+            logp = pd.logp(actions, logits).sum(-1)
+
+            ac_out = self._train_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions)
+            q_target = torch.min(ac_out.q1, ac_out.q2).squeeze(-1)
+            kl = pd.kl(logits_target, logits)
+            loss = self.entropy_scale * logp - q_target + self.kl_pull * kl.mean(-1)
+            assert logp.shape == data.rewards.shape == q_target.shape == loss.shape, (logp.shape, data.rewards.shape, q_target.shape, loss.shape)
+            return loss.mean()
 
     def drop_collected_steps(self):
         self._prev_data = None

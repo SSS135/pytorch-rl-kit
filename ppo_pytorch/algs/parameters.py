@@ -3,7 +3,7 @@ from functools import partial
 import torch.optim as optim
 
 from ..common import DecayLR, ValueDecay
-from ..actors import create_ppo_fc_actor, create_ppo_cnn_actor, create_td3_fc_actor
+from ..actors import create_ppo_fc_actor, create_ppo_cnn_actor
 
 
 def create_ppo_kwargs(learning_decay_frames=None, **kwargs):
@@ -55,7 +55,7 @@ def create_fc_kwargs(learning_decay_frames=None, **kwargs):
     return defaults
 
 
-def create_td3_fc_kwargs(learning_decay_frames=None, **kwargs):
+def create_sac_fc_kwargs(learning_decay_frames=None, **kwargs):
     """
     Get hyperparameters for simple envs like CartPole or Acrobot
     Args:

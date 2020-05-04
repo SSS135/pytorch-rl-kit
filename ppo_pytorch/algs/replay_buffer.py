@@ -7,8 +7,9 @@ import random
 
 
 class ReplayBuffer:
-    def __init__(self, capacity):
+    def __init__(self, capacity, end_sampling_factor=1.0):
         self._sample_capacity = capacity
+        self.end_sampling_factor = end_sampling_factor
         self._data: Dict[torch.Tensor] = None
         self._index = 0
         self._full_loop = False
@@ -38,10 +39,10 @@ class ReplayBuffer:
             self._index = 0
             self._full_loop = True
 
-    def sample(self, rollouts, horizon, end_sampling_factor=1.0):
+    def sample(self, rollouts, horizon):
         index = self._index
         len_horizon = self._len_horizon
-        end_sampling_factor = min(1.0, end_sampling_factor * self._sample_capacity / len(self))
+        end_sampling_factor = min(1.0, self.end_sampling_factor * self._sample_capacity / len(self))
         nu = end_sampling_factor ** (1 / rollouts)
         samples = defaultdict(list)
         for r in range(rollouts):
