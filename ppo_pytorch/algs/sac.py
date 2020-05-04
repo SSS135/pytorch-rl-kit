@@ -13,6 +13,7 @@ import torch.optim as optim
 from ppo_pytorch.actors import Actor
 from ppo_pytorch.actors.fc_actors import create_sac_fc_actor
 from ppo_pytorch.algs.ppo import copy_state_dict
+from ppo_pytorch.common.gae import calc_vtrace
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 
@@ -33,7 +34,7 @@ class SAC(RLBase):
                  train_interval=16,
                  batch_size=128,
                  num_batches=16,
-                 value_target_steps=1,
+                 rollout_length=2,
                  replay_buffer_size=128*1024,
                  target_model_blend=0.005,
                  actor_update_interval=2,
@@ -51,6 +52,8 @@ class SAC(RLBase):
                  lr_scheduler_factory=None,
                  entropy_decay_factory=None,
                  # use_pop_art=False,
+                 vtrace_max_ratio=1.0,
+                 vtrace_kl_limit=0.2,
                  **kwargs):
         super().__init__(observation_space, action_space, **kwargs)
         self._init_args = locals()
@@ -58,7 +61,7 @@ class SAC(RLBase):
         self.train_interval = train_interval
         self.batch_size = batch_size
         self.num_batches = num_batches
-        self.value_target_steps = value_target_steps
+        self.rollout_length = rollout_length
         self.replay_buffer_size = replay_buffer_size
         self.target_model_blend = target_model_blend
         self.actor_update_interval = actor_update_interval
@@ -72,7 +75,11 @@ class SAC(RLBase):
         self.reward_scale = reward_scale
         # self.barron_alpha_c = barron_alpha_c
         # self.use_pop_art = use_pop_art
+        self.vtrace_max_ratio = vtrace_max_ratio
+        self.vtrace_kl_limit = vtrace_kl_limit
 
+        assert rollout_length >= 2
+        assert batch_size % rollout_length == 0
         assert isinstance(action_space, gym.spaces.Box), action_space
 
         self._train_model: ModularActor = model_factory(observation_space, action_space)
@@ -120,7 +127,7 @@ class SAC(RLBase):
                 self._eval_steps += 1
                 self._prev_data = dict(logits=ac_out.logits, states=data.obs, actions=actions)
 
-                min_replay_size = self.batch_size * (self.value_target_steps + 1)
+                min_replay_size = self.batch_size * self.rollout_length
                 if self.frame_eval > self.random_policy_frames \
                         and self._eval_steps >= self.train_interval \
                         and len(self._replay_buffer) >= min_replay_size:
@@ -165,7 +172,7 @@ class SAC(RLBase):
 
     def _create_data(self):
         # (steps, actors, *)
-        data = self._replay_buffer.sample(self.batch_size * self.num_batches, self.value_target_steps + 1)
+        data = self._replay_buffer.sample(self.batch_size // self.rollout_length * self.num_batches, self.rollout_length)
         data = AttrDict(data)
         data.rewards = self.reward_scale * data.rewards
         return data
@@ -173,7 +180,8 @@ class SAC(RLBase):
     def _sac_update(self, data: AttrDict):
         num_rollouts = data.states.shape[1]
 
-        data = AttrDict(states=data.states, actions=data.actions, rewards=data.rewards[..., 0], dones=data.dones)
+        data = AttrDict(states=data.states, logits_old=data.logits, actions=data.actions,
+                        rewards=data.rewards[..., 0], dones=data.dones)
 
         rand_idx = torch.randperm(num_rollouts, device=self.device_train).chunk(self.num_batches)
 
@@ -236,22 +244,33 @@ class SAC(RLBase):
         return actor_loss + critc_loss
 
     def _critic_step(self, data: AttrDict, do_log):
-        logits_last = self._train_model(data.states[-1], evaluate_heads=['logits']).logits
-        actions_last = self._train_model.heads.logits.pd.sample(logits_last)
-        logp_last = self._train_model.heads.logits.pd.logp(actions_last, logits_last).sum(-1)
+        pd = self._train_model.heads.logits.pd
 
-        ac_out_last = self._target_model(data.states[-1], evaluate_heads=['q1', 'q2'], actions=actions_last)
-        targets = torch.min(ac_out_last.q1, ac_out_last.q2).squeeze(-1) - self.entropy_scale * logp_last
+        logits = self._train_model(data.states, evaluate_heads=['logits']).logits
+        actions = pd.sample(logits)
+        logp = pd.logp(actions, logits)
 
-        for i in reversed(range(self.value_target_steps)):
-            targets = data.rewards[i] + self.reward_discount * (1 - data.dones[i]) * targets
+        ac_out = self._target_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions)
+        q_values = torch.min(ac_out.q1, ac_out.q2).squeeze(-1) - self.entropy_scale * logp.mean(-1)
+
+        probs_ratio = (pd.logp(data.actions, logits) - pd.logp(data.actions, data.logits_old)).exp()
+        kl_replay = pd.kl(data.logits_old, logits)
+
+        vtrace_targets, _, _, _ = calc_vtrace(
+            data.rewards[1:-1], q_values[1:],
+            data.dones[1:-1], probs_ratio[1:-1].detach().mean(-1), kl_replay[1:-1].detach().mean(-1),
+            self.reward_discount, self.vtrace_max_ratio, self.vtrace_kl_limit)
+        targets = data.rewards[:-2] + self.reward_discount * (1 - data.dones[:-2]) * vtrace_targets
+
+        # for i in reversed(range(self.value_target_steps)):
+        #     targets = data.rewards[i] + self.reward_discount * (1 - data.dones[i]) * targets
         # assert self.value_target_steps == 1 and data.states.shape[0] == 2
         # targets = data.rewards[0] + self.reward_discount * (1 - data.dones[0]) * targets
 
-        assert targets.shape == data.rewards.shape[1:] == logp_last.shape, (targets.shape, data.rewards.shape, logp_last.shape)
+        assert (targets.shape[0] + 2, *targets.shape[1:]) == data.rewards.shape == logp.shape[:-1], (targets.shape, data.rewards.shape, logp.shape)
 
         with torch.enable_grad():
-            ac_out_first = self._train_model(data.states[0], evaluate_heads=['q1', 'q2'], actions=data.actions[0])
+            ac_out_first = self._train_model(data.states[:-2], evaluate_heads=['q1', 'q2'], actions=data.actions[:-2])
             loss = (ac_out_first.q1.squeeze(-1) - targets) ** 2 + (ac_out_first.q2.squeeze(-1) - targets) ** 2
             assert targets.shape == loss.shape
             loss = loss.mean()
@@ -261,10 +280,11 @@ class SAC(RLBase):
     def _actor_step(self, data: AttrDict, do_log):
         pd = self._train_model.heads.logits.pd
         logits_target = self._target_model(data.states, evaluate_heads=['logits']).logits
+
         with torch.enable_grad():
             logits = self._train_model(data.states, evaluate_heads=['logits']).logits
             actions = self._train_model.heads.logits.pd.sample(logits)
-            logp = pd.logp(actions, logits).sum(-1)
+            logp = pd.logp(actions, logits).mean(-1)
 
             ac_out = self._train_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions)
             q_target = torch.min(ac_out.q1, ac_out.q2).squeeze(-1)
