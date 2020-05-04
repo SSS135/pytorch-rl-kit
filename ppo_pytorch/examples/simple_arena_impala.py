@@ -3,19 +3,20 @@ if __name__ == '__main__':
     from rl_exp.unity.variable_unity_env import VariableUnityVecEnv
 
     num_envs = 8
-    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuousR\DungeonAI'
-    env_factory = partial(VariableUnityVecEnv, exe_path, num_envs=num_envs, visual_observations=True, stacked_frames=4)
+    actors_per_env = 8
+    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuous\DungeonAI'
+    env_factory = partial(VariableUnityVecEnv, exe_path, num_envs=num_envs, visual_observations=False, stacked_frames=4)
     # env_factory = partial(UnityVecEnv, exe_path, visual_observations=True, stacked_frames=4)
 
     alg_class = rl.algs.IMPALA
     alg_params = rl.algs.create_ppo_kwargs(
         20e6,
 
-        train_interval_frames=512 * num_envs,
+        train_interval_frames=128 * num_envs * actors_per_env,
         train_horizon=128,
-        batch_size=256,
+        batch_size=1024,
         value_loss_scale=1.0,
-        cuda_eval=False,
+        cuda_eval=True,
         cuda_train=True,
 
         # reward_discount=0.997,
@@ -26,12 +27,12 @@ if __name__ == '__main__':
         grad_clip_norm=None,
         use_pop_art=False,
         reward_scale=1.0,
-        kl_pull=0.1,
+        kl_pull=0.05,
         vtrace_max_ratio=1.0,
         vtrace_kl_limit=0.2,
         kl_limit=0.2,
         loss_type='impala',
-        eval_model_blend=0.03,
+        eval_model_blend=0.05,
         replay_ratio=7,
         upgo_scale=0.0,
         entropy_loss_scale=0.002,
@@ -40,8 +41,8 @@ if __name__ == '__main__':
         activation_norm_scale=0.0,
 
         optimizer_factory=partial(optim.Adam, lr=3e-4),
-        model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
-        # model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
+        # model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
+        model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
         # model_factory=partial(rl.actors.create_ppo_fc_actor, hidden_sizes=(256, 256, 256),
         #                       activation=rl.actors.SiLU),
 
@@ -51,7 +52,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[matfix_cnn_noan]',
+        tag='[pb0.05_h128_r7_8env_8act_4spd]',
         log_root_path=log_path,
         log_interval=20000,
     )
