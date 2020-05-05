@@ -103,6 +103,10 @@ class ModularActor(Actor):
     def heads(self):
         return self._heads
 
+    @property
+    def feature_extractors(self):
+        return self._fx_modules
+
     def _register_models(self):
         self._heads = AttrDict({name: head for heads in self.models.values() for name, head in heads.items()})
         self._head_modules = nn.ModuleDict(self._heads)

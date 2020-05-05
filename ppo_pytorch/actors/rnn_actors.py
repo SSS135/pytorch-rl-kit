@@ -8,22 +8,23 @@ import sru
 
 
 def create_ppo_rnn_actor(observation_space, action_space, hidden_size=128, num_layers=2,
-                            split_policy_value_network=False):
+                         split_policy_value_network=False, goal_size=0):
     assert len(observation_space.shape) == 1
 
     def fx_factory(): return RNNFeatureExtractor(
-        observation_space.shape[0], hidden_size, num_layers)
+        observation_space.shape[0], hidden_size, num_layers, goal_size=goal_size)
     return create_ppo_actor(action_space, fx_factory, split_policy_value_network, is_recurrent=True)
 
 
 class RNNFeatureExtractor(FeatureExtractorBase):
-    def __init__(self, input_size: int, hidden_size=128, num_layers=2, **kwargs):
+    def __init__(self, input_size: int, hidden_size=128, num_layers=2, goal_size=0, **kwargs):
         super().__init__(**kwargs)
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
+        self.goal_size = goal_size
         assert self.norm_factory is None
-        self.model = sru.SRU(input_size, hidden_size, num_layers, rescale=True, use_tanh=True)
+        self.model = sru.SRU(input_size + goal_size, hidden_size, num_layers, rescale=True, use_tanh=True)
         # self.model = QRNN(input_size, hidden_size, num_layers)
 
     @property
@@ -35,7 +36,9 @@ class RNNFeatureExtractor(FeatureExtractorBase):
         if hasattr(self.model, 'reset_parameters'):
             self.model.reset_parameters()
 
-    def forward(self, input: torch.Tensor, memory: torch.Tensor, dones: torch.Tensor, logger=None, cur_step=None, **kwargs):
+    def forward(self, input: torch.Tensor, memory: torch.Tensor, dones: torch.Tensor, logger=None, cur_step=None, goal=None, **kwargs):
+        if goal is not None:
+            input = torch.cat([input, goal], -1)
         # memory: (B, L, *) -> (L, B, *)
         rnn_kwargs = dict(reset_flags=dones) if isinstance(self.model, QRNN) or isinstance(self.model, DenseQRNN) else dict()
         x, memory = self.model(input, memory.transpose(0, 1).contiguous() if memory is not None else None, **rnn_kwargs)

@@ -39,6 +39,7 @@ if __name__ == '__main__':
         barron_alpha_c=(2.0, 1.0),
         memory_burn_in_steps=32,
         activation_norm_scale=0.0,
+        num_rewards=6,
 
         optimizer_factory=partial(optim.Adam, lr=3e-4),
         # model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
@@ -52,7 +53,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[bs512_8e8a]',
+        tag='[rw-randn_bs512_8e8a]',
         log_root_path=log_path,
         log_interval=20000,
     )
