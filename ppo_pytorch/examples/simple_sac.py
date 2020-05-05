@@ -11,18 +11,18 @@ if __name__ == '__main__':
         num_actors=8,
         train_interval=64,
         batch_size=128,
-        num_batches=32,
+        num_batches=64,
         kl_pull=0.5,
         reward_scale=0.1,
         rollout_length=16,
         vtrace_kl_limit=0.2,
-        actor_update_interval=1,
-        entropy_scale=0.2,
+        actor_update_interval=2,
+        entropy_scale=0.1,
     )
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[vtrace16_rbs128_kl0.5_ui16]',
+        tag='[vt2_rand_tanh_es0.1_vtrace16_rbs128_kl0.5_ui8]',
         log_root_path=log_path,
         log_interval=10000,
     )

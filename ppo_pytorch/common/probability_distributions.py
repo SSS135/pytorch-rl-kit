@@ -264,6 +264,9 @@ class DiagGaussianPd(ProbabilityDistribution):
             + np.log(2 * np.pi)
         )
 
+    def logp_tanh(self, x, prob):
+        return self.logp(x, prob) - 2 * (math.log(2) - x - F.softplus(-2 * x))
+
     def kl(self, prob1, prob2):
         mean1, logstd1 = self.split_probs(prob1)
         mean2, logstd2 = self.split_probs(prob2)

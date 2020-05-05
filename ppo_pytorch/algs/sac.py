@@ -1,3 +1,4 @@
+import math
 from asyncio import Future
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -118,7 +119,8 @@ class SAC(RLBase):
             pd = self._eval_model.heads.logits.pd
             actions = pd.sample(ac_out.logits).cpu()
             if self.frame_eval < self.random_policy_frames:
-                actions.data.uniform_(-3, 3)
+                actions.uniform_(-0.97, 0.97)
+                actions = 0.5 * torch.log((1 + actions) / (1 - actions))
 
             if not self.disable_training:
                 if self._prev_data is not None and data.rewards is not None:
@@ -135,15 +137,7 @@ class SAC(RLBase):
                     self._pre_train()
                     self._train()
 
-            return self.limit_actions(actions)
-
-    def limit_actions(self, actions):
-        if isinstance(self.action_space, gym.spaces.Box):
-            return actions.clamp(-3, 3) / 3
-        else:
-            assert isinstance(self.action_space, gym.spaces.Discrete) or \
-                   isinstance(self.action_space, gym.spaces.MultiDiscrete)
-            return actions
+            return actions.tanh()
 
     def _pre_train(self):
         self.frame_train = self.frame_eval
@@ -248,12 +242,12 @@ class SAC(RLBase):
 
         logits = self._train_model(data.states, evaluate_heads=['logits']).logits
         actions = pd.sample(logits)
-        logp = pd.logp(actions, logits)
+        logp = pd.logp_tanh(actions, logits)
 
-        ac_out = self._target_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions)
+        ac_out = self._target_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions.tanh())
         q_values = torch.min(ac_out.q1, ac_out.q2).squeeze(-1) - self.entropy_scale * logp.mean(-1)
 
-        probs_ratio = (pd.logp(data.actions, logits) - pd.logp(data.actions, data.logits_old)).exp()
+        probs_ratio = (pd.logp_tanh(data.actions, logits) - pd.logp_tanh(data.actions, data.logits_old)).exp()
         kl_replay = pd.kl(data.logits_old, logits)
 
         vtrace_targets, _, _, _ = calc_vtrace(
@@ -270,7 +264,9 @@ class SAC(RLBase):
         assert (targets.shape[0] + 2, *targets.shape[1:]) == data.rewards.shape == logp.shape[:-1], (targets.shape, data.rewards.shape, logp.shape)
 
         with torch.enable_grad():
-            ac_out_first = self._train_model(data.states[:-2], evaluate_heads=['q1', 'q2'], actions=data.actions[:-2])
+            ac = data.actions[:-2].tanh()
+            ac = ac + torch.empty_like(ac).uniform_(-0.1, 0.1)
+            ac_out_first = self._train_model(data.states[:-2], evaluate_heads=['q1', 'q2'], actions=ac)
             loss = (ac_out_first.q1.squeeze(-1) - targets) ** 2 + (ac_out_first.q2.squeeze(-1) - targets) ** 2
             assert targets.shape == loss.shape
             loss = loss.mean()
@@ -283,10 +279,10 @@ class SAC(RLBase):
 
         with torch.enable_grad():
             logits = self._train_model(data.states, evaluate_heads=['logits']).logits
-            actions = self._train_model.heads.logits.pd.sample(logits)
-            logp = pd.logp(actions, logits).mean(-1)
+            actions = pd.sample(logits)
+            logp = pd.logp_tanh(actions, logits).mean(-1)
 
-            ac_out = self._train_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions)
+            ac_out = self._train_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions.tanh())
             q_target = torch.min(ac_out.q1, ac_out.q2).squeeze(-1)
             kl = pd.kl(logits_target, logits)
             loss = self.entropy_scale * logp - q_target + self.kl_pull * kl.mean(-1)
