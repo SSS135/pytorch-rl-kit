@@ -438,7 +438,6 @@ class IMPALA(RLBase):
             self.logger.add_scalar('Advantages/RMS', advantages.pow(2).mean().sqrt(), self.frame_train)
             self.logger.add_scalar('Advantages/Std', advantages.std(), self.frame_train)
 
-        advantages_upgo *= self.upgo_scale
         if self.use_pop_art:
             value_targets = (value_targets - pa_mean) / pa_std
             if LossType.impala is self.loss_type:
@@ -447,7 +446,7 @@ class IMPALA(RLBase):
 
         # if LossType.impala is self.loss_type:
         advantages = self._adv_norm(advantages)
-        advantages_upgo = self._adv_norm(advantages_upgo, update_stats=False)
+        advantages_upgo = self.upgo_scale * self._adv_norm(advantages_upgo, update_stats=False)
 
         data.vtrace_p, data.advantages_upgo = p, advantages_upgo
         data.value_targets, data.advantages, data.rewards = value_targets, advantages, norm_rewards

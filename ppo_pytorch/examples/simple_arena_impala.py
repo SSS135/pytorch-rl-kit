@@ -14,7 +14,7 @@ if __name__ == '__main__':
 
         train_interval_frames=128 * num_envs * actors_per_env,
         train_horizon=128,
-        batch_size=1024,
+        batch_size=512,
         value_loss_scale=1.0,
         cuda_eval=True,
         cuda_train=True,
@@ -28,11 +28,11 @@ if __name__ == '__main__':
         use_pop_art=False,
         reward_scale=1.0,
         kl_pull=0.05,
+        eval_model_blend=0.05,
         vtrace_max_ratio=1.0,
         vtrace_kl_limit=0.2,
         kl_limit=0.2,
         loss_type='impala',
-        eval_model_blend=0.05,
         replay_ratio=7,
         upgo_scale=0.0,
         entropy_loss_scale=0.002,
@@ -52,7 +52,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[pb0.05_h128_r7_8env_8act_4spd]',
+        tag='[bs512_8e8a]',
         log_root_path=log_path,
         log_interval=20000,
     )
