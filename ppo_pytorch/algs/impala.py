@@ -28,7 +28,7 @@ from ..algs.utils import lerp_module_
 from ..common.attr_dict import AttrDict
 from ..common.barron_loss import barron_loss
 from ..common.data_loader import DataLoader
-from ..common.gae import calc_vtrace
+from ..common.gae import calc_vtrace, calc_value_targets
 from ..common.pop_art import PopArt
 from ..common.rl_base import RLBase, RLStepData
 from torch import Tensor
@@ -464,18 +464,16 @@ class IMPALA(RLBase):
             self.logger.add_scalar('Advantages/Mean', advantages.mean(), self.frame_train)
             self.logger.add_scalar('Advantages/RMS', advantages.pow(2).mean().sqrt(), self.frame_train)
             self.logger.add_scalar('Advantages/Std', advantages.std(), self.frame_train)
-            self.logger.add_scalar('Values/Values', data.state_values.mean(), self.frame_train)
+            self.logger.add_scalar('Values/Values', state_values.mean(), self.frame_train)
+            self.logger.add_scalar('Values/Value Targets', value_targets.mean(), self.frame_train)
 
         if self.use_pop_art:
-            self.logger.add_scalar('Values/Value Targets PopArt', value_targets.mean(), self.frame_train)
-            self.logger.add_scalar('Values/Values PopArt', state_values.mean(), self.frame_train)
             value_targets = (value_targets - pa_mean) / pa_std
             if LossType.impala is self.loss_type:
                 advantages /= pa_std
                 advantages_upgo /= pa_std
-
-        if do_log:
-            self.logger.add_scalar('Values/Value Targets', value_targets.mean(), self.frame_train)
+            self.logger.add_scalar('Values/Values PopArt', data.state_values.mean(), self.frame_train)
+            self.logger.add_scalar('Values/Value Targets PopArt', value_targets.mean(), self.frame_train)
 
         # if LossType.impala is self.loss_type:
         advantages = self._adv_norm(advantages)

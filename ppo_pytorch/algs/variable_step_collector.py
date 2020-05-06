@@ -148,6 +148,51 @@ class VariableStepCollector:
             data.reward_weights = rw
 
 
+def test_variable_step_collector_reweight():
+    torch.manual_seed(123)
+    random.seed(123)
+
+    num_actors = 2
+    capacity = 8 * num_actors
+    horizon = 8
+    actor_ids = torch.arange(num_actors)
+
+    actor = Mock()
+    actor.is_recurrent = False
+    actor.return_value = AttrDict(logits=torch.zeros(num_actors, 2), state_values=torch.zeros(num_actors, 1))
+    actor.heads.logits.pd.sample.return_value = torch.zeros(num_actors, 2)
+    buffer = VariableReplayBuffer(capacity, horizon, 0.1)
+    rw_gen = RewardWeightGenerator(3)
+    collector = VariableStepCollector(actor, buffer, torch.device('cpu'), rw_gen, 5)
+
+    datas = []
+    def step():
+        data = RLStepData(rewards=torch.rand((num_actors, 1)), true_reward=torch.rand(num_actors),
+                          done=torch.zeros(num_actors), obs=torch.rand((num_actors, 1)), actor_id=actor_ids)
+        datas.append(data)
+        collector.step(data)
+
+    step()
+    weights = [d.reward_weights for d in collector._step_datas.values()]
+    assert all(w is not None for w in weights)
+    step()
+    weights2 = [d.reward_weights for d in collector._step_datas.values()]
+    assert all(torch.allclose(a, b) for a, b in zip(weights, weights2))
+    # step()
+    # step()
+    # step()
+    # weights2 = [d.reward_weights for d in collector._step_datas.values()]
+    # assert not all(torch.allclose(a, b) for a, b in zip(weights, weights2))
+    # print()
+    # for d in datas:
+    #     print(d)
+    # print()
+    # for b in buffer._buffers:
+    #     print(len(b))
+    #     for k, v in b._data.items():
+    #         print(k, v)
+
+
 def test_variable_step_collector_normal():
     torch.manual_seed(123)
     random.seed(123)
