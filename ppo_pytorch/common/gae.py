@@ -103,17 +103,50 @@ def calc_upgo(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor,
     targets = values.clone()
     q = rewards + nonterm_disc * values[1:]
     target_factor = gae_lambda * (q > values[:-1]).float()
+    target_factor[:-1] = target_factor[1:].clone()
 
+    premult_values_plus_rewards = rewards + nonterm_disc * (1 - target_factor) * values[1:]
+    nonterm_disc_lerp = nonterm_disc * target_factor
     for t_inv in range(rewards.shape[0]):
         t = rewards.shape[0] - 1 - t_inv
-        lerp = target_factor[t + 1] if t_inv > 0 else target_factor[t]
-        targets[t] = rewards[t] + nonterm_disc[t] * torch.lerp(values[t + 1], targets[t + 1], lerp)
+        # targets[t] = premult_values_plus_rewards[t] + nonterm_disc_lerp[t] * targets[t + 1]
+        torch.addcmul(premult_values_plus_rewards[t], nonterm_disc_lerp[t], targets[t + 1], out=targets[t])
 
     return targets[:-1]
 
 
 @torch.jit.script
 def calc_vtrace(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor,
+                probs_ratio: torch.Tensor, kl_div: torch.Tensor,
+                discount: float, max_ratio: float = 1.0, kl_limit: float = 0.3, gae_lambda: float = 0.95
+                ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    _check_data(rewards, values, dones)
+    assert probs_ratio.shape == rewards.shape == kl_div.shape == dones.shape, (probs_ratio.shape, rewards.shape, kl_div.shape)
+    assert rewards.shape[0] == values.shape[0] - 1 and rewards.shape[1:] == values.shape[1:]
+
+    kl_mask = 1.0 - (kl_div / kl_limit).clamp_max(1.0)
+    p = (probs_ratio.clamp_max(max_ratio) * kl_mask).clamp_max(1.0)
+    nonterminal = 1 - dones
+
+    premult_values_plus_rewards = (1 - p) * values[:-1] + p * rewards
+    disc_p_nonterm_prod = discount * p * nonterminal
+    value_targets = values.clone()
+    for i_inv in range(rewards.shape[0]):
+        i = rewards.shape[0] - 1 - i_inv
+        # value_targets[i] = premult_values_plus_rewards[i] + disc_p_nonterm_prod[i] * value_targets[i + 1]
+        torch.addcmul(premult_values_plus_rewards[i], disc_p_nonterm_prod[i], value_targets[i + 1], out=value_targets[i])
+
+    advantages_vtrace = rewards + nonterminal * discount * value_targets[1:] - values[:-1]
+    advantages_upgo = calc_upgo(rewards, values, dones, discount, gae_lambda=gae_lambda) - values[:-1]
+
+    assert value_targets.shape == values.shape, (value_targets.shape, values.shape)
+    assert advantages_vtrace.shape == advantages_upgo.shape == rewards.shape, (advantages_vtrace.shape, rewards.shape)
+
+    return value_targets[:-1], advantages_vtrace, advantages_upgo, p
+
+
+@torch.jit.script
+def calc_vtrace_old(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor,
                 probs_ratio: torch.Tensor, kl_div: torch.Tensor,
                 discount: float, max_ratio: float = 2.0, kl_limit: float = 0.3
                 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -175,9 +208,18 @@ def test_vtrace():
     kl_div = torch.zeros(N)
     ret = calc_value_targets(rewards, values, dones, discount)
     adv = calc_advantages(rewards, values, dones, discount, 1)
-    v_ret, v_adv, upgo, p = calc_vtrace(rewards, values, dones, prob_ratio, kl_div, discount, 2.0, 0.3)
+    v_ret, v_adv, upgo, p = calc_vtrace(rewards, values, dones, prob_ratio, kl_div, discount, 1.0, 0.3, gae_lambda=1.0)
 
     assert v_ret.shape == ret.shape
     assert v_adv.shape == adv.shape
     assert ((ret - v_ret).abs() > 1e-3).sum().item() == 0, (ret[-8:, 0], v_ret[-8:, 0])
     assert ((adv - v_adv).abs() > 1e-3).sum().item() == 0, (adv[-8:, 0], v_adv[-8:, 0])
+
+    rand_prob = 0.5 + torch.rand_like(prob_ratio)
+    rand_kl = torch.rand_like(kl_div)
+    oldtest_args = rewards, values, dones, rand_prob, rand_kl, discount, 1.0, 0.3
+    v_ret_p, v_adv_p, upgo_p, p_p = calc_vtrace(*oldtest_args, gae_lambda=1.0)
+    v_ret_old, v_adv_old, upgo_old, p_old = calc_vtrace_old(*oldtest_args)
+    assert torch.allclose(p_p, p_old, atol=1e-3)
+    assert torch.allclose(v_ret_old, v_ret_p, atol=1e-3), (v_ret_old[-8:, 0], v_ret_p[-8:, 0])
+    assert torch.allclose(v_adv_old, v_adv_p, atol=1e-3), (v_adv_old[-8:, 0], v_adv_p[-8:, 0])
