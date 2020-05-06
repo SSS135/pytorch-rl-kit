@@ -95,52 +95,24 @@ def calc_value_targets(rewards: torch.Tensor, values: torch.Tensor, dones: torch
 @torch.jit.script
 def calc_vtrace(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor,
                 probs_ratio: torch.Tensor, kl_div: torch.Tensor,
-                discount: float, max_ratio: float = 1.0, kl_limit: float = 0.3
+                discount: float, max_ratio: float = 2.0, kl_limit: float = 0.3
                 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     _check_data(rewards, values, dones)
     assert probs_ratio.shape == rewards.shape == kl_div.shape == dones.shape, (probs_ratio.shape, rewards.shape, kl_div.shape)
     assert rewards.shape[0] == values.shape[0] - 1 and rewards.shape[1:] == values.shape[1:]
 
-    p = probs_ratio.clamp_max(max_ratio) * (kl_div < kl_limit).float()
     nonterminal = 1 - dones
-
-    value_targets = values.clone()
-    for i_inv in range(rewards.shape[0]):
-        i = rewards.shape[0] - 1 - i_inv
-        value_targets[i] = torch.lerp(values[i], rewards[i] + discount * nonterminal[i] * value_targets[i + 1], p[i])
-
-    advantages_vtrace = value_targets[:-1] - values[:-1]
-    advantages_upgo = calc_value_targets(rewards, values, dones, discount, upgo=True) - values[:-1]
-
-    assert value_targets.shape == values.shape, (value_targets.shape, values.shape)
-    assert advantages_vtrace.shape == advantages_upgo.shape == rewards.shape, (advantages_vtrace.shape, rewards.shape)
-
-    return value_targets[:-1], advantages_vtrace, advantages_upgo, p
-
-
-@torch.jit.script
-def calc_vtrace_old(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor,
-                probs_ratio: torch.Tensor, kl_div: torch.Tensor,
-                discount: float, max_ratio: float = 1.0, kl_limit: float = 0.3
-                ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    _check_data(rewards, values, dones)
-    assert probs_ratio.shape == rewards.shape == kl_div.shape == dones.shape, (probs_ratio.shape, rewards.shape, kl_div.shape)
-    assert rewards.shape[0] == values.shape[0] - 1 and rewards.shape[1:] == values.shape[1:]
-
-    # if max_ratio > 1.0:
-    #     for i_inv in range(probs_ratio.shape[0] - 1):
-    #         i = probs_ratio.shape[0] - 2 - i_inv
-    #         probs_ratio[i] *= torch.addcmul(dones[i], probs_ratio[i + 1].clamp(1.0, max_ratio), nonterminal[i])
+    if max_ratio > 1.0:
+        for i_inv in range(probs_ratio.shape[0] - 1):
+            i = probs_ratio.shape[0] - 2 - i_inv
+            probs_ratio[i] *= torch.addcmul(dones[i], probs_ratio[i + 1].clamp(1.0, max_ratio), nonterminal[i])
     kl_mask = 1.0 - (kl_div / kl_limit).clamp_max(1.0)
-    p = (probs_ratio.clamp_max(max_ratio) * kl_mask).clamp_max(1.0)
-    # dones = p * dones
-    nonterminal = 1 - dones
+    c = p = (probs_ratio.clamp_max(max_ratio) * kl_mask).clamp_max(1.0)
     deltas = p * (rewards + nonterminal * discount * values[1:] - values[:-1])
-    nonterm_c = nonterminal * p
+    nonterm_c = nonterminal * c
     vs_minus_v_xs = torch.zeros_like(values)
     for i_inv in range(rewards.shape[0]):
         i = rewards.shape[0] - 1 - i_inv
-        # vs_minus_v_xs[i] = deltas[i] + discount * torch.lerp(c[i] * vs_minus_v_xs[i + 1], 0, dones[i])
         torch.addcmul(deltas[i], nonterm_c[i], vs_minus_v_xs[i + 1], value=discount, out=vs_minus_v_xs[i])
     value_targets = vs_minus_v_xs + values
     advantages_vtrace = rewards + nonterminal * discount * value_targets[1:] - values[:-1]
