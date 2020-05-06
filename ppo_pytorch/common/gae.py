@@ -61,7 +61,7 @@ def calc_advantages_noreward(rewards: torch.Tensor, values: torch.Tensor, dones:
 
 @torch.jit.script
 def calc_value_targets(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor,
-                       reward_discount: float, gae_lambda: float = 1.0, upgo: bool = False) -> torch.Tensor:
+                       reward_discount: float, gae_lambda: float = 1.0) -> torch.Tensor:
     """
     Calculate temporal difference targets
     Args:
@@ -74,22 +74,42 @@ def calc_value_targets(rewards: torch.Tensor, values: torch.Tensor, dones: torch
     """
     _check_data(rewards, values, dones)
 
-    R = values[-1]
-    targets_shape = list(values.shape)
-    targets_shape[0] = targets_shape[0] - 1
-    targets = torch.zeros(targets_shape, device=values.device, dtype=values.dtype)
-    one = torch.scalar_tensor(1, device=values.device, dtype=values.dtype)
     nonterminal = 1 - dones
+    targets = values.clone()
+
     for t_inv in range(rewards.shape[0]):
         t = rewards.shape[0] - 1 - t_inv
-        if upgo and t + 1 < rewards.shape[0]:
-            good = rewards[t + 1].addcmul(nonterminal[t + 1], values[t + 2], value=reward_discount).gt_(values[t + 1])
-        else:
-            good = one
-        rewards[t].addcmul(nonterminal[t], torch.lerp(values[t + 1], R, gae_lambda * good), value=reward_discount, out=targets[t])
-        R = targets[t]
+        targets[t] = rewards[t] + nonterminal[t] * reward_discount * torch.lerp(values[t + 1], targets[t + 1], gae_lambda)
 
-    return targets
+    return targets[:-1]
+
+
+@torch.jit.script
+def calc_upgo(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor,
+              reward_discount: float, gae_lambda: float = 1.0) -> torch.Tensor:
+    """
+    Calculate temporal difference targets
+    Args:
+        rewards: Rewards from environment (steps, actors)
+        values: State-values (steps, actors)
+        dones: Episode ended flags (steps, actors)
+        reward_discount: Discount factor for state-values
+
+    Returns: Target values (steps, actors)
+    """
+    _check_data(rewards, values, dones)
+
+    nonterm_disc = reward_discount * (1 - dones)
+    targets = values.clone()
+    q = rewards + nonterm_disc * values[1:]
+    target_factor = gae_lambda * (q > values[:-1]).float()
+
+    for t_inv in range(rewards.shape[0]):
+        t = rewards.shape[0] - 1 - t_inv
+        lerp = target_factor[t + 1] if t_inv > 0 else target_factor[t]
+        targets[t] = rewards[t] + nonterm_disc[t] * torch.lerp(values[t + 1], targets[t + 1], lerp)
+
+    return targets[:-1]
 
 
 @torch.jit.script
@@ -116,7 +136,7 @@ def calc_vtrace(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor
         torch.addcmul(deltas[i], nonterm_c[i], vs_minus_v_xs[i + 1], value=discount, out=vs_minus_v_xs[i])
     value_targets = vs_minus_v_xs + values
     advantages_vtrace = rewards + nonterminal * discount * value_targets[1:] - values[:-1]
-    advantages_upgo = calc_value_targets(rewards, values, dones, discount, upgo=True) - values[:-1]
+    advantages_upgo = calc_upgo(rewards, values, dones, discount, gae_lambda=0.95) - values[:-1]
 
     assert value_targets.shape == values.shape, (value_targets.shape, values.shape)
     assert advantages_vtrace.shape == advantages_upgo.shape == rewards.shape, (advantages_vtrace.shape, rewards.shape)
@@ -127,6 +147,21 @@ def calc_vtrace(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor
 def assert_equal_tensors(a, b, abs_tol=1e-4):
     assert a.shape == b.shape, (a.shape, b.shape)
     assert (a - b).abs().max().item() < abs_tol, (a, b)
+
+
+def test_upgo():
+    rewards = torch.tensor([0, 0, 1], dtype=torch.float)
+    dones = torch.tensor([0, 0, 0], dtype=torch.float)
+
+    values_low = torch.tensor(     [0.5, 0.5, 0.5, 0], dtype=torch.float) # q = (0.5, 0.5, 1.0)
+    upgo_target_low = torch.tensor([0.5, 1, 1], dtype=torch.float)
+    upgo_low = calc_upgo(rewards.unsqueeze(1), values_low.unsqueeze(1), dones.unsqueeze(1), 1.0).squeeze(1)
+    assert torch.allclose(upgo_low, upgo_target_low), upgo_low
+
+    values_high = torch.tensor([1, 1, 2, 2], dtype=torch.float)
+    upgo_high = calc_upgo(rewards.unsqueeze(1), values_high.unsqueeze(1), dones.unsqueeze(1), 1.0).squeeze(1)
+    returns_high = calc_value_targets(rewards.unsqueeze(1), values_high.unsqueeze(1), dones.unsqueeze(1), 1.0).squeeze(1)
+    assert torch.allclose(upgo_high, returns_high), upgo_high
 
 
 def test_vtrace():

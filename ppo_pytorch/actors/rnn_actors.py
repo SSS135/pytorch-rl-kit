@@ -1,3 +1,4 @@
+from ppo_pytorch.actors.silu import silu
 from ppo_pytorch.common.attr_dict import AttrDict
 
 from .actors import FeatureExtractorBase, create_ppo_actor
@@ -5,6 +6,7 @@ import torch
 from torch import nn
 from ..common.qrnn import DenseQRNN, QRNN
 import sru
+import torch.nn.functional as F
 
 
 def create_ppo_rnn_actor(observation_space, action_space, hidden_size=128, num_layers=2,
@@ -17,14 +19,17 @@ def create_ppo_rnn_actor(observation_space, action_space, hidden_size=128, num_l
 
 
 class RNNFeatureExtractor(FeatureExtractorBase):
-    def __init__(self, input_size: int, hidden_size=128, num_layers=2, goal_size=0, **kwargs):
+    def __init__(self, input_size: int, hidden_size=128, num_layers=2, goal_size=0, num_goal_embeddings=32, **kwargs):
         super().__init__(**kwargs)
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.goal_size = goal_size
+        self.num_goal_embeddings = num_goal_embeddings
         assert self.norm_factory is None
-        self.model = sru.SRU(input_size + goal_size, hidden_size, num_layers, rescale=True, use_tanh=True)
+        self.model = sru.SRU(input_size, hidden_size, num_layers, rescale=True, use_tanh=True)
+        # self.goal_embedding = nn.Linear(goal_size, num_goal_embeddings) if goal_size > 0 else None
+        self.out_embedding = nn.Linear(goal_size, hidden_size) if goal_size > 0 else None
         # self.model = QRNN(input_size, hidden_size, num_layers)
 
     @property
@@ -37,11 +42,14 @@ class RNNFeatureExtractor(FeatureExtractorBase):
             self.model.reset_parameters()
 
     def forward(self, input: torch.Tensor, memory: torch.Tensor, dones: torch.Tensor, logger=None, cur_step=None, goal=None, **kwargs):
-        if goal is not None:
-            input = torch.cat([input, goal], -1)
+        # if self.goal_size > 0:
+            # goal = self.goal_embedding(goal)
+            # input = torch.cat([input, goal], -1)
         # memory: (B, L, *) -> (L, B, *)
         rnn_kwargs = dict(reset_flags=dones) if isinstance(self.model, QRNN) or isinstance(self.model, DenseQRNN) else dict()
         x, memory = self.model(input, memory.transpose(0, 1).contiguous() if memory is not None else None, **rnn_kwargs)
+        if self.goal_size > 0:
+            x = x * F.leaky_relu(self.out_embedding(goal), 0.1)
         if logger is not None:
             logger.add_histogram(f'layer_{self.num_layers - 1}_output', x, cur_step)
             logger.add_histogram(f'memory', memory, cur_step)

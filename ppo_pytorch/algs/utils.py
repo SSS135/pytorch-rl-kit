@@ -25,7 +25,7 @@ def v_mpo_loss(kl_target: torch.Tensor, logp: torch.Tensor, advantages: torch.Te
     assert advantages.shape == vtrace_p.shape == advantages_upgo.shape and advantages.dim() == 1
     assert kl_target.shape == logp.shape and kl_target.dim() == 2
 
-    advantages = advantages.mul(vtrace_p).add_(advantages_upgo)
+    advantages = (advantages + advantages_upgo).mul(vtrace_p)
 
     mask = vtrace_p > 0.1
     if mask.float().mean().item() < 0.2:
@@ -51,7 +51,7 @@ def scaled_impala_loss(kl_target: torch.Tensor, logp: torch.Tensor, advantages: 
     assert advantages.shape == vtrace_p.shape == advantages_upgo.shape and advantages.dim() == 1
     assert kl_target.shape == logp.shape and kl_target.dim() == 2
 
-    advantages = advantages.mul(vtrace_p).add_(advantages_upgo)
+    advantages = (advantages + advantages_upgo).mul(vtrace_p)
 
     kl_mask = (kl_target <= kl_limit).float()
     loss_policy = advantages.clamp(-5, 5).unsqueeze_(-1).detach_().mul(-logp).mul_(kl_mask)
