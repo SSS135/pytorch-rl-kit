@@ -112,10 +112,11 @@ class FCActionFeatureExtractor(FeatureExtractorBase):
     def output_size(self):
         return self.hidden_sizes[-1]
 
-    def forward(self, input: torch.Tensor, logger=None, cur_step=None, actions=None, **kwargs):
+    def forward(self, input: torch.Tensor, logger=None, cur_step=None, actions=None, logits=None, **kwargs):
         x = input.view(-1, input.shape[-1])
         ac_inputs = self.pd.to_inputs(actions)
-        ac_inputs = ac_inputs.view(-1, ac_inputs.shape[-1])
+        ac_inputs = (ac_inputs + 0.05 * torch.randn_like(ac_inputs)).view(-1, ac_inputs.shape[-1])
+        # ac_inputs = logits.detach().view(-1, logits.shape[-1])
         for i, layer in enumerate(self.model):
             x = layer(torch.cat([x, ac_inputs], -1))
             if logger is not None:

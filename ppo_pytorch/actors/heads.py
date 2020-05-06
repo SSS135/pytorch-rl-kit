@@ -28,7 +28,7 @@ class HeadBase(nn.Module):
         pass
 
 
-class ActionValuesHead(HeadBase):
+class MultiActionValueHead(HeadBase):
     """
     Head with state-values. Used in Q learning. Support dueling architecture.
     """
@@ -59,6 +59,45 @@ class ActionValuesHead(HeadBase):
             Q = A
         Q = Q.contiguous()
         return Q
+
+
+class ActionValueHead(HeadBase):
+    """
+    Actor-critic head. Used in PPO / A3C.
+    """
+
+    def __init__(self, in_features, pd: ProbabilityDistribution = None):
+        """
+        Args:
+            in_features: Input feature vector width.
+            pd: Action probability distribution.
+        """
+        super().__init__(in_features)
+        self.pd = pd
+        self.linear = Linear(in_features, pd.input_vector_len + 1)
+        self.reset_weights()
+
+    # def reset_weights(self):
+    #     normalized_columns_initializer_(self.linear.weight.data, 1.0)
+    #     self.linear.bias.data.fill_(0)
+
+    def forward(self, x, actions=None, **kwargs):
+        # (*xd, bins, 1)
+        q = self.linear(x)
+        q = q[..., 0:1] + (q[..., 1:] * actions).sum(-1, keepdim=True)
+        assert q.shape == (*x.shape[:-1], 1)
+        return q
+
+    # def normalize(self, mean, std):
+    #     self.linear.bias.data -= mean
+    #     self.linear.bias.data /= std
+    #     self.linear.weight.data /= std
+    #
+    # def unnormalize(self, mean, std):
+    #     self.linear.weight.data *= std
+    #     self.linear.bias.data *= std
+    #     self.linear.bias.data += mean
+
 
 
 class PolicyHead(HeadBase):

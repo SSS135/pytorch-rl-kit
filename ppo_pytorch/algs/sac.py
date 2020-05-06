@@ -244,7 +244,7 @@ class SAC(RLBase):
         actions = pd.sample(logits)
         logp = pd.logp_tanh(actions, logits)
 
-        ac_out = self._target_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions.tanh())
+        ac_out = self._target_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions.tanh(), logits=logits)
         q_values = torch.min(ac_out.q1, ac_out.q2).squeeze(-1) - self.entropy_scale * logp.mean(-1)
 
         probs_ratio = (pd.logp_tanh(data.actions, logits) - pd.logp_tanh(data.actions, data.logits_old)).exp()
@@ -265,8 +265,8 @@ class SAC(RLBase):
 
         with torch.enable_grad():
             ac = data.actions[:-2].tanh()
-            ac = ac + torch.empty_like(ac).uniform_(-0.1, 0.1)
-            ac_out_first = self._train_model(data.states[:-2], evaluate_heads=['q1', 'q2'], actions=ac)
+            # ac = ac + torch.empty_like(ac).uniform_(-0.1, 0.1)
+            ac_out_first = self._train_model(data.states[:-2], evaluate_heads=['q1', 'q2'], actions=ac, logits=data.logits_old[:-2])
             loss = (ac_out_first.q1.squeeze(-1) - targets) ** 2 + (ac_out_first.q2.squeeze(-1) - targets) ** 2
             assert targets.shape == loss.shape
             loss = loss.mean()
@@ -282,7 +282,7 @@ class SAC(RLBase):
             actions = pd.sample(logits)
             logp = pd.logp_tanh(actions, logits).mean(-1)
 
-            ac_out = self._train_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions.tanh())
+            ac_out = self._train_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions.tanh(), logits=logits)
             q_target = torch.min(ac_out.q1, ac_out.q2).squeeze(-1)
             kl = pd.kl(logits_target, logits)
             loss = self.entropy_scale * logp - q_target + self.kl_pull * kl.mean(-1)

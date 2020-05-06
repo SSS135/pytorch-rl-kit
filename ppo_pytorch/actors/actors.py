@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.init as init
 from .kaiming_trunc_normal import kaiming_trunc_normal_
 
-from .heads import HeadBase, StateValueHead, PolicyHead
+from .heads import HeadBase, StateValueHead, PolicyHead, ActionValueHead
 from .norm_factory import NormFactory
 from .utils import weights_init
 from ..common.probability_distributions import make_pd
@@ -35,8 +35,8 @@ def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, 
 def create_sac_actor(pd, policy_fx_factory, q_fx_factory, is_recurrent=False):
     fx_policy, fx_q1, fx_q2 = policy_fx_factory(), q_fx_factory(), q_fx_factory()
 
-    q1_head = StateValueHead(fx_q1.output_size, pd=pd)
-    q2_head = StateValueHead(fx_q2.output_size, pd=pd)
+    q1_head = ActionValueHead(fx_q1.output_size, pd=pd)
+    q2_head = ActionValueHead(fx_q2.output_size, pd=pd)
     policy_head = PolicyHead(fx_policy.output_size, pd=pd)
     models = {fx_policy: dict(logits=policy_head), fx_q1: dict(q1=q1_head), fx_q2: dict(q2=q2_head)}
     return ModularActor(models, is_recurrent)

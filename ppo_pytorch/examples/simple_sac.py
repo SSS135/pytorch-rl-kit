@@ -14,15 +14,17 @@ if __name__ == '__main__':
         num_batches=64,
         kl_pull=0.5,
         reward_scale=0.1,
-        rollout_length=16,
+        rollout_length=32,
         vtrace_kl_limit=0.2,
         actor_update_interval=2,
         entropy_scale=0.1,
+        actor_optimizer_factory=partial(optim.Adam, lr=1e-3),
+        critic_optimizer_factory=partial(optim.Adam, lr=1e-3),
     )
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[vt2_rand_tanh_es0.1_vtrace16_rbs128_kl0.5_ui8]',
+        tag='[lr1e-3_hq_rand0.05_vt2_tanh_es0.1_vtrace32_rbs128_kl0.5_ui8]',
         log_root_path=log_path,
         log_interval=10000,
     )
