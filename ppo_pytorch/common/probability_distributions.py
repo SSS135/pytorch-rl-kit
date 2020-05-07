@@ -301,7 +301,8 @@ class DiagGaussianPd(ProbabilityDistribution):
 
     def split_probs(self, probs):
         mean, logstd = probs.chunk(2, -1)
-        return mean, logstd.clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)
+        return limit_action_length(mean, maxlen=2.0), \
+               limit_action_length(logstd, maxlen=2.0).clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)
 
 
 class PointCloudPd(ProbabilityDistribution):
