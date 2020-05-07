@@ -3,7 +3,7 @@
 
 import math
 from functools import partial
-from typing import Tuple, Optional, Callable, Dict, Any
+from typing import Tuple, Optional, Callable, Dict, Any, List
 
 import gym.spaces
 import numpy as np
@@ -23,10 +23,10 @@ def make_pd(space: gym.Space):
         # return LinearTanhPd(space.shape[0])
         # return FixedStdGaussianPd(space.shape[0], 1.0)
         # return BetaPd(space.shape[0], 1)
-        return DiagGaussianPd(space.shape[0])
+        # return DiagGaussianPd(space.shape[0])
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
         # return PointCloudPd(space.shape[0])
-        # return DiscretizedCategoricalPd(space.shape[0], 7)
+        return DiscretizedCategoricalPd(space.shape[0], 11, limit=2, ordinal=True)
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     elif isinstance(space, gym.spaces.MultiDiscrete):
@@ -78,10 +78,6 @@ class ProbabilityDistribution:
 
     def sample(self, prob):
         """Sample action from probabilities"""
-        return self.sample_with_random(prob, None)[0]
-
-    def sample_with_random(self, prob: torch.Tensor, rand: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Sample action with fixed random noise"""
         raise NotImplementedError()
 
     def to_inputs(self, action):
@@ -96,9 +92,10 @@ class ProbabilityDistribution:
 
 
 class CategoricalPd(ProbabilityDistribution):
-    def __init__(self, n):
+    def __init__(self, n, ordinal=False):
         super().__init__(locals())
         self.n = n
+        self.ordinal = ordinal
 
     @property
     def prob_vector_len(self):
@@ -117,18 +114,23 @@ class CategoricalPd(ProbabilityDistribution):
         return torch.int64
 
     def logp(self, a, logits):
+        logits = self._process_logits(logits)
         logp = F.log_softmax(logits, dim=-1)
         return logp.gather(dim=-1, index=a)
 
     def kl(self, logits0, logits1):
+        logits0 = self._process_logits(logits0)
+        logits1 = self._process_logits(logits1)
         return (logits0 - logits1).pow(2).mean(-1, keepdim=True)
 
     def entropy(self, logits):
+        logits = self._process_logits(logits)
         logits = logits - logits.logsumexp(dim=-1, keepdim=True)
         p_log_p = logits * logits.softmax(-1)
         return -p_log_p.sum(-1, keepdim=True)
 
     def sample(self, logits):
+        logits = self._process_logits(logits)
         return F.softmax(logits.reshape(-1, logits.shape[-1]), dim=-1).multinomial(1).reshape(*logits.shape[:-1], -1)
 
     def to_inputs(self, action):
@@ -137,56 +139,67 @@ class CategoricalPd(ProbabilityDistribution):
             onehot.scatter_(dim=-1, index=action, value=1)
         return onehot
 
+    def _process_logits(self, logits):
+        return make_logits_ordnial(logits) if self.ordinal else logits
 
-class MultiCategoricalPd(ProbabilityDistribution):
-    def __init__(self, sizes):
+
+class MultiPd(ProbabilityDistribution):
+    def __init__(self, pds: List[ProbabilityDistribution]):
         super().__init__(locals())
-        self.sizes = list(sizes)
-        self.pds = [CategoricalPd(s) for s in self.sizes]
+        self.pds = pds
+        self._prob_sizes = [pd.prob_vector_len for pd in pds]
+        self._actions_sizes = [pd.action_vector_len for pd in pds]
+        self._input_sizes = [pd.input_vector_len for pd in pds]
+        assert all(pd.dtype == pds[0].dtype for pd in pds)
 
     @property
     def prob_vector_len(self):
-        return sum(self.sizes)
+        return sum(self._prob_sizes)
 
     @property
     def action_vector_len(self):
-        return len(self.sizes)
+        return sum(self._actions_sizes)
 
     @property
     def input_vector_len(self):
-        return sum(self.sizes)
+        return sum(self._input_sizes)
 
     @property
     def dtype(self):
-        return torch.int64
+        return self.pds[0].dtype
 
     def logp(self, all_actions, all_logits):
-        split_logits = all_logits.split(self.sizes, -1)
-        split_actions = all_actions.chunk(len(self.sizes), -1)
+        split_logits = all_logits.split(self._prob_sizes, -1)
+        split_actions = all_actions.split(self._actions_sizes, -1)
         all_logp = [pd.logp(a, logits) for pd, logits, a in zip(self.pds, split_logits, split_actions)]
         return torch.cat(all_logp, -1)
 
     def kl(self, all_logits0, all_logits1):
-        split_logits0 = all_logits0.split(self.sizes, -1)
-        split_logits1 = all_logits1.split(self.sizes, -1)
+        split_logits0 = all_logits0.split(self._prob_sizes, -1)
+        split_logits1 = all_logits1.split(self._prob_sizes, -1)
         all_kl = [pd.kl(logits0, logits1) for pd, logits0, logits1 in zip(self.pds, split_logits0, split_logits1)]
         return torch.cat(all_kl, -1)
 
     def entropy(self, all_logits):
-        split_logits = all_logits.split(self.sizes, -1)
+        split_logits = all_logits.split(self._prob_sizes, -1)
         all_ent = [pd.entropy(logits) for pd, logits in zip(self.pds, split_logits)]
         return torch.cat(all_ent, -1)
 
     def sample(self, all_logits):
-        split_logits = all_logits.split(self.sizes, -1)
+        split_logits = all_logits.split(self._prob_sizes, -1)
         all_actions = [pd.sample(logits) for pd, logits in zip(self.pds, split_logits)]
         return torch.cat(all_actions, -1)
 
     def to_inputs(self, all_actions):
         with torch.no_grad():
-            split_actions = all_actions.chunk(len(self.sizes), -1)
+            split_actions = all_actions.split(self._actions_sizes, -1)
             all_inputs = [pd.to_inputs(action) for pd, action in zip(self.pds, split_actions)]
             return torch.cat(all_inputs, -1)
+
+
+class MultiCategoricalPd(MultiPd):
+    def __init__(self, sizes: List[int]):
+        super().__init__([CategoricalPd(s) for s in sizes])
 
 
 class BernoulliPd(ProbabilityDistribution):
@@ -640,12 +653,12 @@ class TransactionPd(ProbabilityDistribution):
 
 
 class DiscretizedCategoricalPd(ProbabilityDistribution):
-    def __init__(self, d, num_bins, limits=(-1, 1)):
+    def __init__(self, d, num_bins, limit=1, ordinal=True):
         super().__init__(locals())
         self.d = d
         self.num_bins = num_bins
-        self.limits = limits
-        self.cpd = MultiCategoricalPd((num_bins,) * d)
+        self.limit = limit
+        self.cpd = MultiPd([CategoricalPd(num_bins, ordinal) for _ in range(d)])
 
     @property
     def prob_vector_len(self):
@@ -664,7 +677,7 @@ class DiscretizedCategoricalPd(ProbabilityDistribution):
         return torch.float
 
     def logp(self, action, logits):
-        bin_indexes = (action - self.limits[0]) * ((self.num_bins - 1.0) / (self.limits[1] - self.limits[0]))
+        bin_indexes = (action + self.limit) * ((self.num_bins - 1.0) / (2 * self.limit))
         bin_indexes = bin_indexes.round().long()
         return self.cpd.logp(bin_indexes, logits)
 
@@ -676,7 +689,15 @@ class DiscretizedCategoricalPd(ProbabilityDistribution):
 
     def sample(self, logits):
         bin_indexes = self.cpd.sample(logits)
-        return bin_indexes.float() * ((self.limits[1] - self.limits[0]) / (self.num_bins - 1.0)) + self.limits[0]
+        return bin_indexes.float() * ((2 * self.limit) / (self.num_bins - 1.0)) - self.limit
+
+
+def make_logits_ordnial(logits):
+    logits = logits.sigmoid().unsqueeze(-2)
+    upper_tri = torch.ones(logits.shape[-1], logits.shape[-1]).triu(1)
+    next_sum = (upper_tri * (1 - logits).log()).sum(-1)
+    prev_cur_sum = ((1 - upper_tri) * logits.log()).sum(-1)
+    return prev_cur_sum + next_sum
 
 
 def test_probtypes():

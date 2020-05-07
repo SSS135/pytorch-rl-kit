@@ -54,7 +54,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[upgo0.5_vtlim1.0_lrmult_binary_rw_4e8a]',
+        tag='[ord_upgo0.5_vtlim1.0_lrmult_binary_rw_4e8a]',
         log_root_path=log_path,
         log_interval=20000,
     )
