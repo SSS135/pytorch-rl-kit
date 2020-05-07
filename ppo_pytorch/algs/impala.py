@@ -172,7 +172,7 @@ class IMPALA(RLBase):
 
     def limit_actions(self, actions):
         if isinstance(self.action_space, gym.spaces.Box):
-            return actions.clamp(-3, 3) / 3
+            return actions.clamp(-2, 2) / 2
         else:
             assert isinstance(self.action_space, gym.spaces.Discrete) or \
                    isinstance(self.action_space, gym.spaces.MultiDiscrete)

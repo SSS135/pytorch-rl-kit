@@ -1,4 +1,5 @@
 from ppo_pytorch.actors.silu import silu
+from ppo_pytorch.common.activation_norm import ActivationNorm
 from ppo_pytorch.common.attr_dict import AttrDict
 
 from .actors import FeatureExtractorBase, create_ppo_actor
@@ -49,7 +50,7 @@ class RNNFeatureExtractor(FeatureExtractorBase):
         rnn_kwargs = dict(reset_flags=dones) if isinstance(self.model, QRNN) or isinstance(self.model, DenseQRNN) else dict()
         x, memory = self.model(input, memory.transpose(0, 1).contiguous() if memory is not None else None, **rnn_kwargs)
         if self.goal_size > 0:
-            x = x * F.leaky_relu(self.out_embedding(goal), 0.1)
+            x = x * self.out_embedding(goal).sigmoid()
         if logger is not None:
             logger.add_histogram(f'layer_{self.num_layers - 1}_output', x, cur_step)
             logger.add_histogram(f'memory', memory, cur_step)

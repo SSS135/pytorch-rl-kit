@@ -269,7 +269,7 @@ class Sega_CNNFeatureExtractor(CNNFeatureExtractor):
 def create_ppo_cnn_actor(observation_space, action_space, cnn_kind='normal',
                          cnn_activation=nn.ReLU, fc_activation=nn.ReLU, norm_factory: NormFactory=None,
                          split_policy_value_network=False, num_out=1,
-                         add_positional_features=False, normalize_input=False):
+                         add_positional_features=False, normalize_input=False, goal_size=None):
     assert len(observation_space.shape) == 3
 
     def fx_factory(): return CNNFeatureExtractor(
