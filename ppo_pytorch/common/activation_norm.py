@@ -1,4 +1,5 @@
 import random
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -7,18 +8,25 @@ import torch.nn as nn
 class ActivationNorm(nn.Module):
     def __init__(self):
         super().__init__()
-        self.loss = 0
+        self._input = None
 
     def forward(self, input: torch.Tensor, always_run=False):
         if not always_run and not input.requires_grad:
             return input
-        assert input.dim() == 2 or input.dim() == 4
-        B, C = input.shape[:2]
-        x = input.reshape(B, C, -1)
-        std, mean = torch.std_mean(x, dim=(0, 2))
-        self.loss = 0.5 * ((std - 1).pow(2).mean() + mean.pow(2).mean())
-        # self.loss = x.pow(2).mean(dim=2).sqrt().sub(1).pow(2).mean().mul(0.5)
+        assert input.dim() == 2 #or input.dim() == 4
+        self._input = input
         return input
+
+    def get_loss(self, clear=True) -> Optional[torch.Tensor]:
+        if self._input is None:
+            return None
+        B, C = self._input.shape[:2]
+        x = self._input.reshape(B, C, -1)
+        std, mean = torch.std_mean(x, dim=0)
+        loss = 0.5 * (std.pow(2).mean() + mean.pow(2).mean() - 2 * std.log().mean())
+        if clear:
+            self._input = None
+        return loss
 
 
 class ActivationNormWrapper(nn.Module):
@@ -37,7 +45,8 @@ class ActivationNormWrapper(nn.Module):
 def activation_norm_loss(module):
     losses = []
     for m in module.modules():
-        if isinstance(m, ActivationNorm) and torch.is_tensor(m.loss):
-            losses.append(m.loss.view(1))
-            m.loss = 0
+        if isinstance(m, ActivationNorm):
+            loss = m.get_loss()
+            if loss is not None:
+                losses.append(loss.view(1))
     return torch.cat(losses).mean() if len(losses) > 0 else torch.scalar_tensor(0.0)
