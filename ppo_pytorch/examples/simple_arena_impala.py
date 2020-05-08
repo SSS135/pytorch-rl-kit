@@ -17,6 +17,7 @@ if __name__ == '__main__':
         batch_size=1024,
         value_loss_scale=0.5,
         q_loss_scale=2.0,
+        loss_dpg_scale=0.5,
         cuda_eval=True,
         cuda_train=True,
 
@@ -55,7 +56,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[q-loss_ord_rkill_vtlim0.5_4e8a]',
+        tag='[dpg0.5_gract-fix_q-loss_tanh_rkill_vtlim0.5_4e8a]',
         log_root_path=log_path,
         log_interval=20000,
     )

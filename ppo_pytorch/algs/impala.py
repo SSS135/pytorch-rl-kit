@@ -52,6 +52,7 @@ class IMPALA(RLBase):
                  optimizer_factory=partial(optim.Adam, lr=3e-4),
                  value_loss_scale=0.5,
                  q_loss_scale=1.0,
+                 loss_dpg_scale=0.5,
                  entropy_loss_scale=0.01,
                  cuda_eval=False,
                  cuda_train=False,
@@ -90,6 +91,7 @@ class IMPALA(RLBase):
         self.grad_clip_norm = grad_clip_norm
         self.value_loss_scale = value_loss_scale
         self.q_loss_scale = q_loss_scale
+        self.loss_dpg_scale = loss_dpg_scale
         self.model_factory = model_factory
         self.optimizer_factory = optimizer_factory
         self.reward_scale = reward_scale
@@ -318,6 +320,7 @@ class IMPALA(RLBase):
             if do_log:
                 batch.state_values = log_gradients(batch.state_values, self.logger, 'Values', self.frame_train)
                 batch.q_values = log_gradients(batch.q_values, self.logger, 'Q Values', self.frame_train)
+                batch.state_values_grad_act = log_gradients(batch.state_values_grad_act, self.logger, 'Values Grad Act', self.frame_train)
                 batch.logits = log_gradients(batch.logits, self.logger, 'Logits', self.frame_train)
 
             # get loss
@@ -373,15 +376,33 @@ class IMPALA(RLBase):
         logits = torch.cat([actor_out_burn_in.logits, actor_out.logits], 0)
         features = torch.cat([actor_out_burn_in.features_0, actor_out.features_0], 0)
         actions_desired = self._train_model.heads.logits.pd.sample(logits)
-        actions_stack = torch.stack([actions_desired, actions_old], 0)
+        actions_stack = torch.stack([actions_desired.detach(), actions_old], 0)
         state_values, q_values = self._train_model.heads.state_values(features, actions=actions_stack).unbind(0)
-        assert state_values.shape == (*states.shape[:-1], 1)
+        state_values_grad_act = self._calc_actgrad_values(actions_desired, features)
+        assert state_values.shape == state_values_grad_act.shape == (*states.shape[:-1], 1)
 
         return dict(
             logits=logits,
             state_values=state_values.squeeze(-1),
+            state_values_grad_act=state_values_grad_act.squeeze(-1),
             q_values=q_values.squeeze(-1),
             logits_policy=actor_out_policy.logits)
+
+    def _calc_actgrad_values(self, actions_desired, features):
+        assert actions_desired.requires_grad
+
+        head = self._train_model.heads.state_values
+
+        for p in head.parameters():
+            p.requires_grad = False
+
+        q_grad_act = head(features.detach(), actions=actions_desired)
+
+        for p in head.parameters():
+            p.requires_grad = True
+
+        assert q_grad_act.requires_grad
+        return q_grad_act
 
     def _get_impala_loss(self, data, do_log=False, pd=None, tag=''):
         """
@@ -432,16 +453,18 @@ class IMPALA(RLBase):
         loss_ent = self.entropy_loss_scale * -entropy.mean()
         loss_value = self.value_loss_scale * barron_loss(data.state_values, data.value_targets, *self.barron_alpha_c, reduce=False)
         loss_q = self.q_loss_scale * barron_loss(data.q_values, data.q_targets, *self.barron_alpha_c, reduce=False)
+        loss_dpg = self.loss_dpg_scale * -data.state_values_grad_act
 
         assert loss_value.shape == data.state_values.shape, (loss_value.shape, data.state_values.shape)
-        assert loss_q.shape == loss_value.shape
+        assert loss_q.shape == loss_dpg.shape == loss_value.shape
 
         loss_ent = loss_ent.mean()
         loss_value = loss_value.mean()
         loss_q = loss_q.mean()
+        loss_dpg = loss_dpg.mean()
 
         # sum all losses
-        total_loss = loss_policy + loss_value + loss_q + loss_ent
+        total_loss = loss_policy + loss_value + loss_q + loss_dpg + loss_ent
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_policy.mean().item(), loss_value.mean().item())
 
