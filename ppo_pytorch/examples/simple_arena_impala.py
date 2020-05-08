@@ -56,7 +56,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[detsample_oldenc_qls1.0_ord_upgo0.5_vtlim1.0_lrmult_binary_rw_4e8a]',
+        tag='[q-target_qls1.0_ord_vtlim1.0_negrew]',
         log_root_path=log_path,
         log_interval=20000,
     )

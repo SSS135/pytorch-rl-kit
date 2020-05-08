@@ -509,7 +509,7 @@ class IMPALA(RLBase):
             self.reward_discount, self.vtrace_max_ratio, self.vtrace_kl_limit)
         advantages_upgo = calc_upgo(norm_rewards, state_values, data.dones, self.reward_discount,
                                     gae_lambda=0.95, q_values=q_values) - state_values[:-1]
-        q_targets = norm_rewards + self.reward_discount * (1 - data.dones) * state_values[1:]
+        q_targets = norm_rewards + self.reward_discount * (1 - data.dones) * value_targets[1:]
         value_targets = value_targets[:-1]
 
         if do_log:
