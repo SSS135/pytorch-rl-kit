@@ -21,7 +21,6 @@ class StepData:
     obs: Tensor = None
     input_memory: Tensor = None
     output_memory: Tensor = None
-    values: Tensor = None
     logits: Tensor = None
     actions: Tensor = None
     rewards: Tensor = None
@@ -30,8 +29,9 @@ class StepData:
 
 
 class VariableStepCollector:
-    def __init__(self, actor: Actor, replay_buffer: VariableReplayBuffer, device: torch.device,
+    def __init__(self, actor: ModularActor, replay_buffer: VariableReplayBuffer, device: torch.device,
                  reward_weight_gen: RewardWeightGenerator, reward_reweight_interval: int):
+        assert len(actor.feature_extractors) == 1
         self.actor = actor
         self.replay_buffer = replay_buffer
         self.device = device
@@ -48,12 +48,12 @@ class VariableStepCollector:
                 self._reward_reweight_counter = 0
                 self._reweight_rewards()
 
-            values, logits, reward_weights, memory_in, memory_out = self._run_model(data)
+            logits, reward_weights, memory_in, memory_out = self._run_model(data)
 
             actions = self.actor.heads.logits.pd.sample(logits)
             assert not torch.isnan(actions.sum())
 
-            self._push_to_buffer(data, values, logits, actions, reward_weights, memory_in, memory_out)
+            self._push_to_buffer(data, logits, actions, reward_weights, memory_in, memory_out)
             return actions
 
     def drop_collected_steps(self):
@@ -68,22 +68,22 @@ class VariableStepCollector:
             dones_t = data.done.unsqueeze(0).to(self.device)
             if self._memory_shape is None:
                 self._memory_shape = self.actor(obs.unsqueeze(0), memory=None, dones=dones_t,
-                                                goal=reward_weights.unsqueeze(0)).memory.shape[1:]
+                                                goal=reward_weights.unsqueeze(0), evaluate_heads=['logits']).memory.shape[1:]
             input_memory = self._get_data_field(data.actor_id, data.done,
                                                 lambda x: x.output_memory,
-                                                lambda: torch.zeros(self._memory_shape))
-            ac_out = self.actor(obs.unsqueeze(0), memory=input_memory, dones=dones_t, goal=reward_weights.unsqueeze(0))
-            ac_out.logits, ac_out.state_values = [x.squeeze(0) for x in (ac_out.logits, ac_out.state_values)]
+                                                lambda: torch.zeros(self._memory_shape, device=self.device))
+            ac_out = self.actor(obs.unsqueeze(0), memory=input_memory, dones=dones_t,
+                                goal=reward_weights.unsqueeze(0), evaluate_heads=['logits'])
+            ac_out.logits = ac_out.logits.squeeze(0)
         else:
-            ac_out = self.actor(obs, goal=reward_weights)
+            ac_out = self.actor(obs, goal=reward_weights, evaluate_heads=['logits'])
 
-        ac_out = AttrDict({k: v.cpu() for k, v in ac_out.items()})
-        ac_out.state_values = ac_out.state_values.squeeze(-1)
+        # ac_out = AttrDict({k: v.cpu() for k, v in ac_out.items()})
 
         mem_tuple = (input_memory, ac_out.memory) if self.actor.is_recurrent else (None, None)
-        return (ac_out.state_values, ac_out.logits, reward_weights, *mem_tuple)
+        return (ac_out.logits, reward_weights, *mem_tuple)
 
-    def _push_to_buffer(self, data: RLStepData, values, logits, actions, reward_weights, memory_in, memory_out):
+    def _push_to_buffer(self, data: RLStepData, logits, actions, reward_weights, memory_in, memory_out):
         # write rewards and done to step data, extract complete steps
         full_step_datas = {}
         for i, (aid, done) in enumerate(zip(data.actor_id.tolist(), data.done.tolist())):
@@ -104,17 +104,19 @@ class VariableStepCollector:
                                for k in full_step_datas[0].keys() if full_step_datas[0][k] is not None}
             full_step_datas = StepData(**full_step_datas)
 
-            # push to buffer
-            self.replay_buffer.push(
+            buffer_data = dict(
                 actor_ids=torch.tensor(full_actor_ids, dtype=torch.long),
                 states=full_step_datas.obs,
-                state_values=full_step_datas.values,
                 logits=full_step_datas.logits,
                 actions=full_step_datas.actions,
                 **(dict(memory=full_step_datas.input_memory) if self.actor.is_recurrent else {}),
                 rewards=full_step_datas.rewards,
                 dones=full_step_datas.done,
             )
+            buffer_data = {k: v.cpu() for k, v in buffer_data.items()}
+
+            # push to buffer
+            self.replay_buffer.push(**buffer_data)
 
         # add new steps to _step_datas
         for i, (aid, done) in enumerate(zip(data.actor_id.tolist(), data.done.tolist())):
@@ -122,7 +124,6 @@ class VariableStepCollector:
                 continue
             step_data = self._step_datas[aid]
             step_data.obs = data.obs[i]
-            step_data.values = values[i]
             step_data.logits = logits[i]
             step_data.actions = actions[i]
             step_data.reward_weights = reward_weights[i]

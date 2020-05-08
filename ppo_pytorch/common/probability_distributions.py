@@ -697,7 +697,7 @@ class DiscretizedCategoricalPd(ProbabilityDistribution):
 
 def make_logits_ordnial(logits):
     logits = logits.sigmoid().unsqueeze(-2)
-    upper_tri = torch.ones(logits.shape[-1], logits.shape[-1]).triu(1)
+    upper_tri = torch.ones(logits.shape[-1], logits.shape[-1], device=logits.device).triu(1)
     next_sum = (upper_tri * (1 - logits).log()).sum(-1)
     prev_cur_sum = ((1 - upper_tri) * logits.log()).sum(-1)
     return prev_cur_sum + next_sum

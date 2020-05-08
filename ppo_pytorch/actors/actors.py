@@ -23,7 +23,7 @@ def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, 
     else:
         fx_policy = fx_value = fx_factory()
 
-    value_head = StateValueHead(fx_value.output_size, pd=pd, num_out=num_out)
+    value_head = ActionValueHead(fx_value.output_size, pd=pd, num_out=num_out)
     policy_head = PolicyHead(fx_policy.output_size, pd=pd)
     if split_policy_value_network:
         models = {fx_policy: dict(logits=policy_head), fx_value: dict(state_values=value_head)}
@@ -122,7 +122,7 @@ class ModularActor(Actor):
 
         memory_output = []
 
-        for (fx, heads), memory_input in zip(self.models.items(), memory_input):
+        for i, ((fx, heads), memory_input) in enumerate(zip(self.models.items(), memory_input)):
             if evaluate_heads is not None and len(set(evaluate_heads) - set(heads.keys())) == len(evaluate_heads):
                 assert not self.is_recurrent
                 continue
@@ -131,8 +131,10 @@ class ModularActor(Actor):
                 memory_output.append(memory)
             else:
                 features = fx(input, **kwargs)
+            output[f'features_{i}'] = features
             for name, head in heads.items():
-                output[name] = head(features, **kwargs)
+                if evaluate_heads is None or name in evaluate_heads:
+                    output[name] = head(features, **kwargs)
 
         if self.is_recurrent:
             output.memory = torch.cat(memory_output, dim=2)

@@ -15,7 +15,8 @@ if __name__ == '__main__':
         train_interval_frames=128 * num_envs * actors_per_env,
         train_horizon=128,
         batch_size=1024,
-        value_loss_scale=1.0,
+        value_loss_scale=0.5,
+        q_loss_scale=2.0,
         cuda_eval=True,
         cuda_train=True,
 
@@ -54,7 +55,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[rkill_vtlim0.5_4e8a]',
+        tag='[q-loss_ord_rkill_vtlim0.5_4e8a]',
         log_root_path=log_path,
         log_interval=20000,
     )

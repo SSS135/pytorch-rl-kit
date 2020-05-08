@@ -66,7 +66,7 @@ class ActionValueHead(HeadBase):
     Actor-critic head. Used in PPO / A3C.
     """
 
-    def __init__(self, in_features, pd: ProbabilityDistribution = None):
+    def __init__(self, in_features, num_out=1, pd: ProbabilityDistribution = None):
         """
         Args:
             in_features: Input feature vector width.
@@ -74,7 +74,9 @@ class ActionValueHead(HeadBase):
         """
         super().__init__(in_features)
         self.pd = pd
-        self.linear = Linear(in_features, pd.input_vector_len + 1)
+        self.num_out = num_out
+        self.linear = Linear(in_features, num_out)
+        self.action_enc = nn.Sequential(nn.Linear(pd.input_vector_len, in_features), nn.Sigmoid())
         self.reset_weights()
 
     # def reset_weights(self):
@@ -82,10 +84,8 @@ class ActionValueHead(HeadBase):
     #     self.linear.bias.data.fill_(0)
 
     def forward(self, x, actions=None, **kwargs):
-        # (*xd, bins, 1)
-        q = self.linear(x)
-        q = q[..., 0:1] + (q[..., 1:] * actions).sum(-1, keepdim=True)
-        assert q.shape == (*x.shape[:-1], 1)
+        q = self.linear(x * self.action_enc(actions))
+        assert q.shape == (*actions.shape[:-1], self.num_out)
         return q
 
     # def normalize(self, mean, std):
