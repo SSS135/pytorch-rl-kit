@@ -13,6 +13,7 @@ import torch.autograd
 import torch.optim as optim
 from optfn.gradient_logger import log_gradients
 from ppo_pytorch.algs.reward_weight_generator import RewardWeightGenerator
+from ppo_pytorch.common.probability_distributions import DiagGaussianPd, FixedStdGaussianPd
 
 from .ppo import SchedulerManager, copy_state_dict, log_training_data
 from torch.nn.utils import clip_grad_norm_
@@ -172,7 +173,11 @@ class IMPALA(RLBase):
 
     def limit_actions(self, actions):
         if isinstance(self.action_space, gym.spaces.Box):
-            return actions.clamp(-2, 2) / 2
+            pd = self._eval_model.heads.logits.pd
+            if isinstance(pd, DiagGaussianPd) or isinstance(pd, FixedStdGaussianPd):
+                return actions.tanh()
+            else:
+                return actions.clamp(-2, 2) / 2
         else:
             assert isinstance(self.action_space, gym.spaces.Discrete) or \
                    isinstance(self.action_space, gym.spaces.MultiDiscrete)

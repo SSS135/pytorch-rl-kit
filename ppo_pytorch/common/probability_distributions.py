@@ -23,10 +23,10 @@ def make_pd(space: gym.Space):
         # return LinearTanhPd(space.shape[0])
         # return FixedStdGaussianPd(space.shape[0], 1.0)
         # return BetaPd(space.shape[0], 1)
-        # return DiagGaussianPd(space.shape[0])
+        return DiagGaussianPd(space.shape[0], max_norm=2.0)
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
         # return PointCloudPd(space.shape[0])
-        return DiscretizedCategoricalPd(space.shape[0], 11, limit=2, ordinal=True)
+        # return DiscretizedCategoricalPd(space.shape[0], 11, limit=2, ordinal=True)
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     elif isinstance(space, gym.spaces.MultiDiscrete):
@@ -247,9 +247,11 @@ class DiagGaussianPd(ProbabilityDistribution):
     LOG_STD_MAX = 2
     LOG_STD_MIN = -20
 
-    def __init__(self, d, eps=1e-6):
+    def __init__(self, d, tanh_correction=True, max_norm=1.0, eps=1e-6):
         super().__init__(locals())
         self.d = d
+        self.tanh_correction = tanh_correction
+        self.max_norm = max_norm
         self.eps = eps
 
     @property
@@ -271,14 +273,14 @@ class DiagGaussianPd(ProbabilityDistribution):
     def logp(self, x, prob):
         mean, logstd = self.split_probs(prob)
         std = logstd.exp()
-        return -0.5 * (
+        logp = -0.5 * (
             ((x - mean) / (std + 1e-6)) ** 2
             + 2 * logstd
             + np.log(2 * np.pi)
         )
-
-    def logp_tanh(self, x, prob):
-        return self.logp(x, prob) - 2 * (math.log(2) - x - F.softplus(-2 * x))
+        if self.tanh_correction and x.requires_grad:
+            logp = logp - 2 * (math.log(2) - x - F.softplus(-2 * x))
+        return logp
 
     def kl(self, prob1, prob2):
         mean1, logstd1 = self.split_probs(prob1)
@@ -301,8 +303,8 @@ class DiagGaussianPd(ProbabilityDistribution):
 
     def split_probs(self, probs):
         mean, logstd = probs.chunk(2, -1)
-        return limit_action_length(mean, maxlen=2.0), \
-               limit_action_length(logstd, maxlen=2.0).clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)
+        return limit_action_length(mean, maxlen=self.max_norm), \
+               limit_action_length(logstd, maxlen=self.max_norm).clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)
 
 
 class PointCloudPd(ProbabilityDistribution):

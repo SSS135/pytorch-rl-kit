@@ -242,12 +242,12 @@ class SAC(RLBase):
 
         logits = self._train_model(data.states, evaluate_heads=['logits']).logits
         actions = pd.sample(logits)
-        logp = pd.logp_tanh(actions, logits)
+        logp = pd.logp(actions, logits)
 
         ac_out = self._target_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions.tanh(), logits=logits)
         q_values = torch.min(ac_out.q1, ac_out.q2).squeeze(-1) - self.entropy_scale * logp.mean(-1)
 
-        probs_ratio = (pd.logp_tanh(data.actions, logits) - pd.logp_tanh(data.actions, data.logits_old)).exp()
+        probs_ratio = (pd.logp(data.actions, logits) - pd.logp(data.actions, data.logits_old)).exp()
         kl_replay = pd.kl(data.logits_old, logits)
 
         vtrace_targets, _, _, _ = calc_vtrace(
@@ -280,7 +280,7 @@ class SAC(RLBase):
         with torch.enable_grad():
             logits = self._train_model(data.states, evaluate_heads=['logits']).logits
             actions = pd.sample(logits)
-            logp = pd.logp_tanh(actions, logits).mean(-1)
+            logp = pd.logp(actions, logits).mean(-1)
 
             ac_out = self._train_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions.tanh(), logits=logits)
             q_target = torch.min(ac_out.q1, ac_out.q2).squeeze(-1)
