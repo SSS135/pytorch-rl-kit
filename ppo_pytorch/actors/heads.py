@@ -77,14 +77,9 @@ class ActionValueHead(HeadBase):
         self.num_out = num_out
         self.linear = Linear(in_features, num_out)
         self.action_enc = nn.Sequential(nn.Linear(pd.input_vector_len, in_features), nn.Sigmoid())
-        self.reset_weights()
-
-    # def reset_weights(self):
-    #     normalized_columns_initializer_(self.linear.weight.data, 1.0)
-    #     self.linear.bias.data.fill_(0)
 
     def forward(self, x, actions=None, **kwargs):
-        q = self.linear(x * self.action_enc(actions))
+        q = self.linear(x * 2 * self.action_enc(actions))
         assert q.shape == (*actions.shape[:-1], self.num_out)
         return q
 

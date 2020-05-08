@@ -50,7 +50,7 @@ class RNNFeatureExtractor(FeatureExtractorBase):
         rnn_kwargs = dict(reset_flags=dones) if isinstance(self.model, QRNN) or isinstance(self.model, DenseQRNN) else dict()
         x, memory = self.model(input, memory.transpose(0, 1).contiguous() if memory is not None else None, **rnn_kwargs)
         if self.goal_size > 0:
-            x = x * self.out_embedding(goal).sigmoid()
+            x = x * 2 * self.out_embedding(goal).sigmoid()
         if logger is not None:
             logger.add_histogram(f'layer_{self.num_layers - 1}_output', x, cur_step)
             logger.add_histogram(f'memory', memory, cur_step)

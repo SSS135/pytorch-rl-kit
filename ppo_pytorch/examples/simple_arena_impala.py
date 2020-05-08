@@ -14,10 +14,10 @@ if __name__ == '__main__':
 
         train_interval_frames=128 * num_envs * actors_per_env,
         train_horizon=128,
-        batch_size=1024,
-        value_loss_scale=0.5,
-        q_loss_scale=2.0,
-        loss_dpg_scale=0.5,
+        batch_size=512,
+        value_loss_scale=1.0,
+        q_loss_scale=1.0,
+        loss_dpg_scale=0.0,
         cuda_eval=True,
         cuda_train=True,
 
@@ -32,7 +32,7 @@ if __name__ == '__main__':
         kl_pull=0.05,
         eval_model_blend=0.05,
         vtrace_max_ratio=1.0,
-        vtrace_kl_limit=0.5,
+        vtrace_kl_limit=1.0,
         kl_limit=0.2,
         loss_type='impala',
         replay_ratio=7,
@@ -56,7 +56,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[dpg0.5_gract-fix_q-loss_tanh_rkill_vtlim0.5_4e8a]',
+        tag='[detsample_oldenc_qls1.0_ord_upgo0.5_vtlim1.0_lrmult_binary_rw_4e8a]',
         log_root_path=log_path,
         log_interval=20000,
     )

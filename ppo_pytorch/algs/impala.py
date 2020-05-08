@@ -377,8 +377,10 @@ class IMPALA(RLBase):
         features = torch.cat([actor_out_burn_in.features_0, actor_out.features_0], 0)
         actions_desired = self._train_model.heads.logits.pd.sample(logits)
         actions_stack = torch.stack([actions_desired.detach(), actions_old], 0)
-        state_values, q_values = self._train_model.heads.state_values(features, actions=actions_stack).unbind(0)
-        state_values_grad_act = self._calc_actgrad_values(actions_desired, features)
+        values_stack = self._train_model.heads.state_values(features, actions=actions_stack)
+        state_values, q_values = values_stack.unbind(0)
+        state_values_grad_act = self._calc_actgrad_values(actions_desired, features) \
+            if actions_desired.requires_grad else state_values.detach()
         assert state_values.shape == state_values_grad_act.shape == (*states.shape[:-1], 1)
 
         return dict(
@@ -508,6 +510,7 @@ class IMPALA(RLBase):
         advantages_upgo = calc_upgo(norm_rewards, state_values, data.dones, self.reward_discount,
                                     gae_lambda=0.95, q_values=q_values) - state_values[:-1]
         q_targets = norm_rewards + self.reward_discount * (1 - data.dones) * state_values[1:]
+        value_targets = value_targets[:-1]
 
         if do_log:
             self.logger.add_scalar('Advantages/Mean', advantages.mean(), self.frame_train)

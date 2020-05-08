@@ -145,7 +145,7 @@ def calc_vtrace(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor
     assert value_targets.shape == values.shape, (value_targets.shape, values.shape)
     assert advantages_vtrace.shape == rewards.shape, (advantages_vtrace.shape, rewards.shape)
 
-    return value_targets[:-1], advantages_vtrace, p
+    return value_targets, advantages_vtrace, p
 
 
 def assert_equal_tensors(a, b, abs_tol=1e-4):
