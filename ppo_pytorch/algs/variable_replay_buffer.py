@@ -101,7 +101,7 @@ class VariableReplayBuffer:
         self.horizon = horizon
         self.end_sampling_factor = end_sampling_factor
         self._buffers: List[BufferThread] = []
-        self._actor_id_to_index: Dict[int, int] = {}
+        self._actor_id_to_buf_index: Dict[int, int] = {}
         self._lock = threading.Lock()
 
     @property
@@ -116,7 +116,7 @@ class VariableReplayBuffer:
             assert len(sample_aids) == len(set(sample_aids)), sample_aids
 
             # resize buffers
-            buf_aid_set = set(self._actor_id_to_index.keys())
+            buf_aid_set = set(self._actor_id_to_buf_index.keys())
             sample_aid_set = set(sample_aids)
             desired_buf_count = len(buf_aid_set | sample_aid_set)
             if desired_buf_count > len(self._buffers):
@@ -124,24 +124,24 @@ class VariableReplayBuffer:
 
             # fill new actor ids to buffer
             new_aids = sample_aid_set - buf_aid_set
-            free_buffer_pointers = list(set(range(len(self._buffers))) - set(self._actor_id_to_index.values()))
-            random.shuffle(free_buffer_pointers)
+            free_buffer_pointers = list(set(range(len(self._buffers))) - set(self._actor_id_to_buf_index.values()))
+            free_buffer_pointers.sort(key=lambda idx: -len(self._buffers[idx]))
             for new_aid in new_aids:
                 pointer = free_buffer_pointers.pop()
-                assert new_aid not in self._actor_id_to_index and pointer not in self._actor_id_to_index.values()
-                self._actor_id_to_index[new_aid] = pointer
+                assert new_aid not in self._actor_id_to_buf_index and pointer not in self._actor_id_to_buf_index.values()
+                self._actor_id_to_buf_index[new_aid] = pointer
 
             # add samples
             sample_items = list(sample.items())
             for i, aid in enumerate(sample_aids):
-                buffer = self._buffers[self._actor_id_to_index[aid]]
+                buffer = self._buffers[self._actor_id_to_buf_index[aid]]
                 buffer.push([(k, v[i]) for k, v in sample_items])
 
             # remove done actors
             dones = sample[DONE].tolist()
             for ac_sample_pos, (sample_aid, ac_done) in enumerate(zip(sample_aids, dones)):
-                if ac_done and sample_aid in self._actor_id_to_index:
-                    del self._actor_id_to_index[sample_aid]
+                if ac_done and sample_aid in self._actor_id_to_buf_index:
+                    del self._actor_id_to_buf_index[sample_aid]
 
     def sample(self, num_rollouts) -> Dict[str, Tensor]:
         with self._lock:

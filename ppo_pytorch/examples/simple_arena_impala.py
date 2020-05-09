@@ -3,11 +3,10 @@ if __name__ == '__main__':
     from rl_exp.unity.variable_unity_env import VariableUnityVecEnv
 
     num_envs = 4
-    actors_per_env = 8
-    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuous\DungeonAI'
+    actors_per_env = 8 * 4
+    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuousR\DungeonAI'
     env_factory = partial(VariableUnityVecEnv, exe_path, num_envs=num_envs, visual_observations=False, stacked_frames=4,
-                          no_graphics_except_first=False)
-    # env_factory = partial(UnityVecEnv, exe_path, visual_observations=True, stacked_frames=4)
+                          no_graphics_except_first=True)
 
     alg_class = rl.algs.IMPALA
     alg_params = rl.algs.create_ppo_kwargs(
@@ -16,8 +15,8 @@ if __name__ == '__main__':
         train_interval_frames=128 * num_envs * actors_per_env,
         train_horizon=128,
         batch_size=512,
-        value_loss_scale=1.0,
-        q_loss_scale=1.0,
+        value_loss_scale=2.0,
+        q_loss_scale=2.0,
         loss_dpg_scale=0.0,
         cuda_eval=True,
         cuda_train=True,
@@ -39,7 +38,7 @@ if __name__ == '__main__':
         replay_ratio=7,
         upgo_scale=0.5,
         entropy_loss_scale=0.002,
-        barron_alpha_c=(2.0, 1.0),
+        barron_alpha_c=(1.5, 1.0),
         memory_burn_in_steps=32,
         activation_norm_scale=0.0,
         num_rewards=3,
@@ -57,7 +56,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[q-target_qls1.0_ord_vtlim1.0_negrew]',
+        tag='[bar1.5_q-target_vls2.0_qls2.0_ord_vtlim1.0]',
         log_root_path=log_path,
         log_interval=20000,
     )

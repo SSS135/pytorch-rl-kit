@@ -237,6 +237,7 @@ class IMPALA(RLBase):
 
         num_samples = data.states.shape[0] * data.states.shape[1]
         num_rollouts = data.states.shape[1]
+        assert num_samples > 0
 
         data = AttrDict(states=data.states, logits_old=data.logits,
                         actions=data.actions, rewards=data.rewards, dones=data.dones,
