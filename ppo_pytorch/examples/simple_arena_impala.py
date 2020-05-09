@@ -5,7 +5,8 @@ if __name__ == '__main__':
     num_envs = 4
     actors_per_env = 8
     exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuous\DungeonAI'
-    env_factory = partial(VariableUnityVecEnv, exe_path, num_envs=num_envs, visual_observations=False, stacked_frames=4)
+    env_factory = partial(VariableUnityVecEnv, exe_path, num_envs=num_envs, visual_observations=False, stacked_frames=4,
+                          no_graphics_except_first=False)
     # env_factory = partial(UnityVecEnv, exe_path, visual_observations=True, stacked_frames=4)
 
     alg_class = rl.algs.IMPALA
