@@ -14,7 +14,7 @@ from optfn.skip_connections import ResidualBlock
 import torch.jit
 
 
-def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm: NormFactory = None, activation_norm=False):
+def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm: NormFactory = None, activation_norm=True):
     """
     Create fully connected network
     Args:
@@ -34,7 +34,7 @@ def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm:
         n_out = hidden_sizes[i]
         layer = [Linear(n_in, n_out, bias=norm is None or not norm.disable_bias)]
         if activation_norm:
-            layer.append(ActivationNorm())
+            layer.append(ActivationNorm(1))
         if norm is not None and norm.allow_fc and (norm.allow_after_first_layer or i != 0):
             layer.append(norm.create_fc_norm(n_out, i == 0))
         layer.append(activation())

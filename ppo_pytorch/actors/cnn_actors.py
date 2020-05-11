@@ -123,12 +123,14 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                         nn.ReLU(True),
                         nn.Conv2d(c_out, c_out, 3, 1, 1),
                     ),
-                    # ActivationNorm(c_out, c_out // 16),
                 )
             self.convs = nn.Sequential(
                 impala_block(input_channels, 16 * c_mult),
+                ActivationNorm(3),
                 impala_block(16 * c_mult, 32 * c_mult),
+                ActivationNorm(3),
                 impala_block(32 * c_mult, 32 * c_mult),
+                ActivationNorm(3),
                 # impala_block(64 * c_mult, 64 * c_mult),
                 nn.Sequential(
                     *cnn_norm_fn(32 * c_mult),
@@ -137,7 +139,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
             )
             self.linear = nn.Sequential(
                 Linear(self._calc_linear_size(), 256),
-                # ActivationNorm(256, 256 // 16),
+                ActivationNorm(1),
                 *fc_norm_fn(256),
                 nn.ReLU(True),
             )
@@ -158,24 +160,24 @@ class CNNFeatureExtractor(FeatureExtractorBase):
         out_shape = self._extract_features(torch.randn(shape)).shape
         return out_shape[1] * out_shape[2] * out_shape[3]
 
-    def _make_fc_layer(self, in_features, out_features, first_layer=False, activation_norm=False):
+    def _make_fc_layer(self, in_features, out_features, first_layer=False, activation_norm=True):
         bias = self.norm_factory is None or not self.norm_factory.disable_bias or not self.norm_factory.allow_fc
         return self._make_layer(Linear(in_features, out_features, bias=bias),
                                 first_layer=first_layer, activation_norm=activation_norm)
 
-    def _make_cnn_layer(self, *args, first_layer=False, activation_norm=False, **kwargs):
+    def _make_cnn_layer(self, *args, first_layer=False, activation_norm=True, **kwargs):
         bias = self.norm_factory is None or not self.norm_factory.disable_bias or not self.norm_factory.allow_cnn
         return self._make_layer(nn.Conv2d(*args, **kwargs, bias=bias),
                                 first_layer=first_layer, activation_norm=activation_norm)
 
-    def _make_layer(self, transf, first_layer=False, activation_norm=False):
+    def _make_layer(self, transf, first_layer=False, activation_norm=True):
         is_linear = isinstance(transf, nn.Linear) or isinstance(transf, Linear)
         features = transf.out_features if is_linear else transf.out_channels
 
         # parts = [ActivationNormWrapper(transf)]
         parts = [transf]
         if activation_norm:
-            parts.append(ActivationNorm())
+            parts.append(ActivationNorm(1 if is_linear else 3))
         if self.norm_factory is not None and \
                 (self.norm_factory.allow_after_first_layer or not first_layer) and \
                 (self.norm_factory.allow_fc if is_linear else self.norm_factory.allow_cnn):
@@ -201,6 +203,9 @@ class CNNFeatureExtractor(FeatureExtractorBase):
         return torch.cat([x, self._prev_positions], -3)
 
     def forward(self, input, logger=None, cur_step=None, **kwargs):
+        input_shape = input.shape
+        input = input.view(-1, *input_shape[-3:])
+
         input = image_to_float(input)
         if self.normalize_input:
             input = input * 2 - 1
@@ -214,7 +219,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
         if logger is not None:
             logger.add_histogram('conv_activations_linear', x, cur_step)
 
-        return x
+        return x.view(*input_shape[:-3], x.shape[-1])
 
     def _log_conv_activations(self, index: int, x: torch.Tensor, logger, cur_step):
         with torch.no_grad():
