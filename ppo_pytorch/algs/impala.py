@@ -33,6 +33,7 @@ from ..common.gae import calc_vtrace, calc_value_targets, calc_upgo
 from ..common.pop_art import PopArt
 from ..common.rl_base import RLBase, RLStepData
 from torch import Tensor
+import kornia
 
 
 class LossType(Enum):
@@ -61,6 +62,7 @@ class IMPALA(RLBase):
                  lr_scheduler_factory=None,
                  clip_decay_factory=None,
                  entropy_decay_factory=None,
+                 random_crop_obs=False,
 
                  replay_buf_size=256 * 1024,
                  replay_ratio=7,
@@ -113,6 +115,7 @@ class IMPALA(RLBase):
         self.activation_norm_scale = activation_norm_scale
         self.reward_reweight_interval = reward_reweight_interval
         self.num_rewards = num_rewards
+        self.random_crop_obs = random_crop_obs
 
         self._reward_weight_gen = RewardWeightGenerator(self.num_rewards)
         goal_size = self._reward_weight_gen.num_weights
@@ -155,6 +158,7 @@ class IMPALA(RLBase):
         self._train_future: Optional[Future] = None
         self._data_future: Optional[Future] = None
         self._executor = ThreadPoolExecutor(max_workers=1, initializer=lambda: torch.set_num_threads(4))
+        self._crop = None
 
     @property
     def _learning_rate(self):
@@ -258,6 +262,7 @@ class IMPALA(RLBase):
             for batch_index in range(num_batches):
                 # prepare batch data
                 batch = AttrDict(data_loader.get_next_batch())
+                batch.states = self._augment_obs(batch.states)
                 loss = self._impala_step(batch, self._do_log and batch_index == num_batches - 1)
                 kls_policy.append(batch.kl_policy.mean().item())
                 kls_replay.append(batch.kl_replay.mean().item())
@@ -302,6 +307,16 @@ class IMPALA(RLBase):
         data.rewards = (data.rewards * self._reward_weight_gen.get_true_weights(data.reward_weights)).sum(-1)
         assert data.rewards.shape == (horizon, num_rollouts)
 
+    def _augment_obs(self, states: Tensor) -> Tensor:
+        if not self.random_crop_obs:
+            return states
+        assert states.ndim == 5
+        if states.dtype == torch.uint8:
+            states = states.float().div_(255)
+        if self._crop is None:
+            self._crop = kornia.augmentation.RandomCrop(states.shape[-2:], 4, padding_mode='replicate')
+        return self._crop(states.view(-1, *states.shape[2:])).view_as(states)
+
     def _impala_step(self, batch, do_log):
         with torch.enable_grad():
             actor_params = AttrDict()
@@ -312,7 +327,7 @@ class IMPALA(RLBase):
             if self._train_model.is_recurrent:
                 actor_out = self._run_train_model_rnn(batch.states, batch.memory, batch.dones, batch.reward_weights, batch.actions, actor_params)
             else:
-                actor_out = self._run_train_model_fc(batch.states, batch.reward_weights, batch.actions, actor_params)
+                actor_out = self._run_train_model_feedforward(batch.states, batch.reward_weights, batch.actions, actor_params)
             batch.update(actor_out)
 
             for k, v in batch.items():
@@ -328,7 +343,7 @@ class IMPALA(RLBase):
             loss = self._get_impala_loss(batch, do_log)
             if loss is None:
                 return None
-            act_norm_loss = activation_norm_loss(self._train_model).cpu()
+            act_norm_loss = activation_norm_loss(self._train_model).cpu() if self.activation_norm_scale > 0 else 0
             loss = loss.mean() + self.activation_norm_scale * act_norm_loss
 
         if do_log:
@@ -348,20 +363,26 @@ class IMPALA(RLBase):
 
         return loss
 
-    def _run_train_model_fc(self, states, reward_weights, actor_params):
-        input_states = states.reshape(-1, *states.shape[2:])
-        actor_out = self._train_model(input_states, goal=reward_weights, **actor_params)
+    def _run_train_model_feedforward(self, states, reward_weights, actions_old, actor_params):
+        actor_out = self._train_model(states, goal=reward_weights, evaluate_heads=['logits'], **actor_params)
         with torch.no_grad():
-            actor_out_policy = self._target_model(input_states, goal=reward_weights)
+            actor_out_policy = self._target_model(states, goal=reward_weights, evaluate_heads=['logits'])
 
-        logits = actor_out.logits\
-            .reshape(*states.shape[:2], *actor_out.logits.shape[1:])
-        logits_policy = actor_out_policy.logits\
-            .reshape(*states.shape[:2], *actor_out.logits.shape[1:])
-        state_values = actor_out.state_values\
-            .reshape(*states.shape[:2])
+        actions_desired = self._train_model.heads.logits.pd.sample(actor_out.logits)
+        actions_stack = torch.stack([actions_desired.detach(), actions_old], 0)
+        values_stack = self._train_model.heads.state_values(actor_out.features_0, actions=actions_stack)
+        state_values, q_values = values_stack.unbind(0)
+        state_values_grad_act = self._calc_actgrad_values(actions_desired, actor_out.features_0) \
+            if actions_desired.requires_grad else state_values.detach()
+        assert state_values.shape == state_values_grad_act.shape == (*states.shape[:2], 1), \
+            (state_values.shape, state_values_grad_act.shape, (*states.shape[:2], 1), states.shape)
 
-        return dict(logits=logits, logits_policy=logits_policy, state_values=state_values)
+        return dict(
+            logits=actor_out.logits,
+            state_values=state_values.squeeze(-1),
+            state_values_grad_act=state_values_grad_act.squeeze(-1),
+            q_values=q_values.squeeze(-1),
+            logits_policy=actor_out_policy.logits)
 
     def _run_train_model_rnn(self, states, memory, dones, reward_weights, actions_old, actor_params):
         with torch.no_grad():
@@ -467,7 +488,7 @@ class IMPALA(RLBase):
         loss_dpg = loss_dpg.mean()
 
         # sum all losses
-        total_loss = loss_policy + loss_value + loss_q + loss_dpg + loss_ent
+        total_loss = loss_policy + loss_value + loss_q + loss_ent #+ loss_dpg
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_policy.mean().item(), loss_value.mean().item())
 
