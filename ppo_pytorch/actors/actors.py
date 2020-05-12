@@ -131,7 +131,14 @@ class ModularActor(Actor):
                 memory_output.append(memory)
             else:
                 features = fx(input, **kwargs)
-            output[f'features_{i}'] = features
+
+            if isinstance(features, dict):
+                for k, v in features.items():
+                    output[f'{k}_{i}'] = v
+                features = features['features']
+            else:
+                output[f'features_{i}'] = features
+
             for name, head in heads.items():
                 if evaluate_heads is None or name in evaluate_heads:
                     output[name] = head(features, **kwargs)

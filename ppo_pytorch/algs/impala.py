@@ -12,6 +12,7 @@ import torch
 import torch.autograd
 import torch.optim as optim
 from optfn.gradient_logger import log_gradients
+from ppo_pytorch.actors import FCFeatureExtractor
 from ppo_pytorch.algs.reward_weight_generator import RewardWeightGenerator
 from ppo_pytorch.common.probability_distributions import DiagGaussianPd, FixedStdGaussianPd
 
@@ -319,7 +320,7 @@ class IMPALA(RLBase):
             batch.update(actor_out)
 
             for k, v in batch.items():
-                batch[k] = v if k == 'states' else v.cpu()
+                batch[k] = v if k in ('states', 'features_raw') else v.cpu()
 
             if do_log:
                 batch.state_values = log_gradients(batch.state_values, self.logger, 'Values', self.frame_train)
@@ -360,8 +361,9 @@ class IMPALA(RLBase):
         actions_stack = torch.stack([actions_desired.detach(), actions_old], 0)
         values_stack = self._train_model.heads.state_values(actor_out.features_0, actions=actions_stack)
         state_values, q_values = values_stack.unbind(0)
-        state_values_grad_act = self._calc_actgrad_values(actions_desired, actor_out.features_0) \
-            if actions_desired.requires_grad else state_values.detach()
+        state_values_grad_act = state_values.detach()
+        # state_values_grad_act = self._calc_actgrad_values(actions_desired, actor_out.features_0) \
+        #     if actions_desired.requires_grad else state_values.detach()
         assert state_values.shape == state_values_grad_act.shape == (*states.shape[:2], 1), \
             (state_values.shape, state_values_grad_act.shape, (*states.shape[:2], 1), states.shape)
 
@@ -370,7 +372,9 @@ class IMPALA(RLBase):
             state_values=state_values.squeeze(-1),
             state_values_grad_act=state_values_grad_act.squeeze(-1),
             q_values=q_values.squeeze(-1),
-            logits_policy=actor_out_policy.logits)
+            logits_policy=actor_out_policy.logits,
+            features_raw=actor_out.features_raw_0,
+        )
 
     def _run_train_model_rnn(self, states, memory, dones, reward_weights, actions_old, actor_params):
         with torch.no_grad():
@@ -385,12 +389,14 @@ class IMPALA(RLBase):
 
         logits = torch.cat([actor_out_burn_in.logits, actor_out.logits], 0)
         features = torch.cat([actor_out_burn_in.features_0, actor_out.features_0], 0)
+        features_raw = torch.cat([actor_out_burn_in.features_raw_0, actor_out.features_raw_0], 0)
         actions_desired = self._train_model.heads.logits.pd.sample(logits)
         actions_stack = torch.stack([actions_desired.detach(), actions_old], 0)
         values_stack = self._train_model.heads.state_values(features, actions=actions_stack)
         state_values, q_values = values_stack.unbind(0)
-        state_values_grad_act = self._calc_actgrad_values(actions_desired, features) \
-            if actions_desired.requires_grad else state_values.detach()
+        state_values_grad_act = state_values.detach()
+        # state_values_grad_act = self._calc_actgrad_values(actions_desired, features) \
+        #     if actions_desired.requires_grad else state_values.detach()
         assert state_values.shape == state_values_grad_act.shape == (*states.shape[:-1], 1)
 
         return dict(
@@ -398,23 +404,25 @@ class IMPALA(RLBase):
             state_values=state_values.squeeze(-1),
             state_values_grad_act=state_values_grad_act.squeeze(-1),
             q_values=q_values.squeeze(-1),
-            logits_policy=actor_out_policy.logits)
+            logits_policy=actor_out_policy.logits,
+            features_raw=features_raw,
+        )
 
-    def _calc_actgrad_values(self, actions_desired, features):
-        assert actions_desired.requires_grad
-
-        head = self._train_model.heads.state_values
-
-        for p in head.parameters():
-            p.requires_grad = False
-
-        q_grad_act = head(features.detach(), actions=actions_desired)
-
-        for p in head.parameters():
-            p.requires_grad = True
-
-        assert q_grad_act.requires_grad
-        return q_grad_act
+    # def _calc_actgrad_values(self, actions_desired, features):
+    #     assert actions_desired.requires_grad
+    #
+    #     head = self._train_model.heads.state_values
+    #
+    #     for p in head.parameters():
+    #         p.requires_grad = False
+    #
+    #     q_grad_act = head(features.detach(), actions=actions_desired)
+    #
+    #     for p in head.parameters():
+    #         p.requires_grad = True
+    #
+    #     assert q_grad_act.requires_grad
+    #     return q_grad_act
 
     def _get_impala_loss(self, data, do_log=False, pd=None, tag=''):
         """
@@ -441,6 +449,8 @@ class IMPALA(RLBase):
         data.state_values = data.state_values[:-1]
         data.q_values = data.q_values[:-1]
 
+        loss_world_model = self._get_world_model_loss(data, do_log)
+
         for k, v in data.items():
             data[k] = v.flatten(end_dim=1)
 
@@ -465,18 +475,19 @@ class IMPALA(RLBase):
         loss_ent = self.entropy_loss_scale * -entropy.mean()
         loss_value = self.value_loss_scale * barron_loss(data.state_values, data.value_targets, *self.barron_alpha_c, reduce=False)
         loss_q = self.q_loss_scale * barron_loss(data.q_values, data.q_targets, *self.barron_alpha_c, reduce=False)
-        loss_dpg = self.loss_dpg_scale * -data.state_values_grad_act
+        # loss_dpg = self.loss_dpg_scale * -data.state_values_grad_act
 
         assert loss_value.shape == data.state_values.shape, (loss_value.shape, data.state_values.shape)
-        assert loss_q.shape == loss_dpg.shape == loss_value.shape
+        assert loss_q.shape == loss_value.shape #== loss_dpg.shape
 
         loss_ent = loss_ent.mean()
         loss_value = loss_value.mean()
         loss_q = loss_q.mean()
-        loss_dpg = loss_dpg.mean()
+        # loss_world_model = loss_world_model.mean()
+        # loss_dpg = loss_dpg.mean()
 
         # sum all losses
-        total_loss = loss_policy + loss_value + loss_q + loss_ent #+ loss_dpg
+        total_loss = loss_policy + loss_value + loss_q + loss_ent + loss_world_model #+ loss_dpg
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_policy.mean().item(), loss_value.mean().item())
 
@@ -503,6 +514,40 @@ class IMPALA(RLBase):
                 self.logger.add_histogram('Losses/Ratio Hist' + tag, ratio, self.frame_train)
 
         return total_loss
+
+    def _get_world_model_loss(self, data: AttrDict, do_log: bool) -> torch.Tensor:
+        pd = self._train_model.heads.logits.pd
+        fx: FCFeatureExtractor = self._train_model.feature_extractors[0]
+
+        data_values, data_rewards, data_logits, data_actions = \
+            [x.to(self.device_train) for x in (data.value_targets, data.rewards, data.logits, data.actions)]
+
+        assert data_rewards.ndim >= 2
+
+        with torch.no_grad():
+            sliced_data = []
+            h = data.states.shape[0]
+            for i in range(fx.sim_depth):
+                sliced_data.append([
+                    data_rewards[i: i + h - fx.sim_depth],
+                    data_actions[i: i + h - fx.sim_depth],
+                    data_values[i: i + h - fx.sim_depth],
+                    data_logits[i: i + h - fx.sim_depth],
+                ])
+            rewards, actions, values, logits = [torch.stack(x, 0).detach_() for x in zip(*sliced_data)]
+
+        pred_values, pred_rewards, pred_logits = fx.run_world_model(data.features_raw[:h - fx.sim_depth], actions)
+        kl = pd.kl(logits, pred_logits[:-1]).mean()
+        value_loss = barron_loss(pred_values[:-1].squeeze(-1), values, *self.barron_alpha_c, reduce=False).mean()
+        reward_loss = barron_loss(pred_rewards[:-2].squeeze(-1), rewards[1:], *self.barron_alpha_c, reduce=False).mean()
+
+        with torch.no_grad():
+            if do_log:
+                self.logger.add_scalar('Losses/World Value', value_loss, self.frame_train)
+                self.logger.add_scalar('Losses/World KL', kl, self.frame_train)
+                self.logger.add_scalar('Losses/World Reward', reward_loss, self.frame_train)
+
+        return (kl + value_loss + reward_loss).cpu()
 
     def _process_rewards(self, data, do_log, mean_norm=True):
         norm_rewards = self.reward_scale * data.rewards
