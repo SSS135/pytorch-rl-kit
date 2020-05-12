@@ -34,8 +34,9 @@ class VariableEnvTrainer:
         print('Log dir:', log_dir)
         self._data = self.env.reset()
 
-        self.rl_alg = rl_alg_factory(self.env.observation_space, self.env.action_space,
-                                     log_interval=log_interval, model_save_folder=log_dir)
+        self.rl_alg = rl_alg_factory(
+            self.env.observation_space, self.env.action_space, num_rewards=len(self._data.reward_names),
+            log_interval=log_interval, model_save_folder=log_dir)
 
         self.logger = TensorboardEnvLogger(alg_name, self.env.env_name, log_dir, log_interval, tag=tag)
         self.logger.add_text('EnvTrainer', pprint.pformat(self._init_args))
