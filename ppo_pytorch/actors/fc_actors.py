@@ -69,12 +69,14 @@ def create_residual_fc(input_size, hidden_size, use_norm=False):
 
 
 class FCFeatureExtractor(FeatureExtractorBase):
-    def __init__(self, input_size: int, hidden_sizes=(128, 128), activation=nn.Tanh, **kwargs):
+    def __init__(self, input_size: int, hidden_sizes=(128, 128), activation=nn.Tanh, goal_size=None, **kwargs):
         super().__init__(**kwargs)
         self.input_size = input_size
         self.hidden_sizes = hidden_sizes
         self.activation = activation
+        self.goal_size = goal_size
         self.model = create_fc(input_size, hidden_sizes, activation, self.norm_factory)
+        self.out_embedding = nn.Linear(goal_size, hidden_sizes[-1]) if goal_size > 0 else None
         # self.model = create_residual_fc(input_size, hidden_sizes[0])
         # super().reset_weights()
         # fixup_init(self.model)
@@ -89,14 +91,17 @@ class FCFeatureExtractor(FeatureExtractorBase):
     def output_size(self):
         return self.hidden_sizes[-1]
 
-    def forward(self, input: torch.Tensor, logger=None, cur_step=None, **kwargs):
+    def forward(self, input: torch.Tensor, logger=None, cur_step=None, goal=None, **kwargs):
         x = input.reshape(-1, input.shape[-1])
         # x = self.model(x)
         for i, layer in enumerate(self.model):
             x = layer(x)
             if logger is not None:
                 logger.add_histogram(f'layer_{i}_output', x, cur_step)
-        return x.reshape(*input.shape[:-1], -1)
+        x = x.reshape(*input.shape[:-1], -1)
+        if self.goal_size is not None:
+            x = x * 2 * self.out_embedding(goal).sigmoid()
+        return x
 
 
 class FCActionFeatureExtractor(FeatureExtractorBase):
@@ -143,7 +148,7 @@ def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128)
     assert len(observation_space.shape) == 1
 
     def fx_factory(): return FCFeatureExtractor(
-        observation_space.shape[0], hidden_sizes, activation, norm_factory=norm_factory)
+        observation_space.shape[0], hidden_sizes, activation, norm_factory=norm_factory, goal_size=goal_size)
     return create_ppo_actor(action_space, fx_factory, split_policy_value_network, num_out=num_values)
 
 
