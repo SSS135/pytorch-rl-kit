@@ -23,10 +23,10 @@ def make_pd(space: gym.Space):
         # return LinearTanhPd(space.shape[0])
         # return FixedStdGaussianPd(space.shape[0], 1.0)
         # return BetaPd(space.shape[0], 1)
-        # return DiagGaussianPd(space.shape[0], max_norm=2.0)
+        return DiagGaussianPd(space.shape[0], max_norm=2.0)
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
         # return PointCloudPd(space.shape[0])
-        return DiscretizedCategoricalPd(space.shape[0], 11, ordinal=True)
+        # return DiscretizedCategoricalPd(space.shape[0], 11, ordinal=True)
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     elif isinstance(space, gym.spaces.MultiDiscrete):
@@ -156,6 +156,7 @@ class MultiPd(ProbabilityDistribution):
         self._prob_sizes = [pd.prob_vector_len for pd in pds]
         self._actions_sizes = [pd.action_vector_len for pd in pds]
         self._input_sizes = [pd.input_vector_len for pd in pds]
+        self._dtype = pds[0].dtype if all(p.dtype == pds[0].dtype for p in pds) else torch.float32
 
     @property
     def prob_vector_len(self):
@@ -171,7 +172,7 @@ class MultiPd(ProbabilityDistribution):
 
     @property
     def dtype(self):
-        return torch.float32
+        return self._dtype
 
     def logp(self, all_actions, all_logits):
         split_logits = all_logits.split(self._prob_sizes, -1)
@@ -198,7 +199,7 @@ class MultiPd(ProbabilityDistribution):
     def to_inputs(self, all_actions):
         with torch.no_grad():
             split_actions = all_actions.split(self._actions_sizes, -1)
-            all_inputs = [pd.to_inputs(action.type(pd.dtype)).type(self.dtype) for pd, action in zip(self.pds, split_actions)]
+            all_inputs = [pd.to_inputs(action.type(pd.dtype)).type(torch.float32) for pd, action in zip(self.pds, split_actions)]
             return torch.cat(all_inputs, -1)
 
 
