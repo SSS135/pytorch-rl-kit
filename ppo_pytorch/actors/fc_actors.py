@@ -7,7 +7,7 @@ from ppo_pytorch.common.activation_norm import ActivationNorm
 from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor
 from .heads import PolicyHead, StateValueHead
 from .norm_factory import NormFactory
-from ..common.probability_distributions import LinearTanhPd, ProbabilityDistribution, make_pd
+from ..common.probability_distributions import ProbabilityDistribution, make_pd
 import torch
 from ..config import Linear
 from optfn.skip_connections import ResidualBlock

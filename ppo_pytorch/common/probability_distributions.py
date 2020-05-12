@@ -26,11 +26,13 @@ def make_pd(space: gym.Space):
         # return DiagGaussianPd(space.shape[0], max_norm=2.0)
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
         # return PointCloudPd(space.shape[0])
-        return DiscretizedCategoricalPd(space.shape[0], 11, limit=2, ordinal=True)
+        return DiscretizedCategoricalPd(space.shape[0], 11, ordinal=True)
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     elif isinstance(space, gym.spaces.MultiDiscrete):
         return MultiCategoricalPd(space.nvec)
+    elif isinstance(space, gym.spaces.Dict):
+        return MultiPd([make_pd(s) for s in space.spaces.values()])
     else:
         raise TypeError(space)
 
@@ -82,6 +84,10 @@ class ProbabilityDistribution:
 
     def to_inputs(self, action):
         """Convert actions to neural network input vector. For example, class number to one-hot vector."""
+        return action
+
+    def postprocess_action(self, action):
+        """Action postprocessing such as tanh or clamping"""
         return action
 
     def __repr__(self):
@@ -150,7 +156,6 @@ class MultiPd(ProbabilityDistribution):
         self._prob_sizes = [pd.prob_vector_len for pd in pds]
         self._actions_sizes = [pd.action_vector_len for pd in pds]
         self._input_sizes = [pd.input_vector_len for pd in pds]
-        assert all(pd.dtype == pds[0].dtype for pd in pds)
 
     @property
     def prob_vector_len(self):
@@ -166,12 +171,12 @@ class MultiPd(ProbabilityDistribution):
 
     @property
     def dtype(self):
-        return self.pds[0].dtype
+        return torch.float32
 
     def logp(self, all_actions, all_logits):
         split_logits = all_logits.split(self._prob_sizes, -1)
         split_actions = all_actions.split(self._actions_sizes, -1)
-        all_logp = [pd.logp(a, logits) for pd, logits, a in zip(self.pds, split_logits, split_actions)]
+        all_logp = [pd.logp(a.type(pd.dtype), logits) for pd, logits, a in zip(self.pds, split_logits, split_actions)]
         return torch.cat(all_logp, -1)
 
     def kl(self, all_logits0, all_logits1):
@@ -187,13 +192,13 @@ class MultiPd(ProbabilityDistribution):
 
     def sample(self, all_logits):
         split_logits = all_logits.split(self._prob_sizes, -1)
-        all_actions = [pd.sample(logits) for pd, logits in zip(self.pds, split_logits)]
+        all_actions = [pd.sample(logits).type(self.dtype) for pd, logits in zip(self.pds, split_logits)]
         return torch.cat(all_actions, -1)
 
     def to_inputs(self, all_actions):
         with torch.no_grad():
             split_actions = all_actions.split(self._actions_sizes, -1)
-            all_inputs = [pd.to_inputs(action) for pd, action in zip(self.pds, split_actions)]
+            all_inputs = [pd.to_inputs(action.type(pd.dtype)).type(self.dtype) for pd, action in zip(self.pds, split_actions)]
             return torch.cat(all_inputs, -1)
 
 
@@ -305,6 +310,9 @@ class DiagGaussianPd(ProbabilityDistribution):
         mean, logstd = probs.chunk(2, -1)
         return limit_action_length(mean, maxlen=self.max_norm), \
                limit_action_length(logstd, maxlen=self.max_norm).clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)
+
+    def postprocess_action(self, action):
+        return action.tanh()
 
 
 class PointCloudPd(ProbabilityDistribution):
@@ -429,77 +437,6 @@ class BetaPd(ProbabilityDistribution):
         return Beta(*prob.chunk(2, -1))
 
 
-class MixturePd(ProbabilityDistribution):
-    def __init__(self, d, num_mixtures=8, pd_type: Callable=DiagGaussianPd, eps=1e-6):
-        raise NotImplementedError
-        args = locals()
-
-        self.d = d
-        self.num_mixtures = num_mixtures
-        self.eps = eps
-        self._mix_pd = pd_type(d)
-        self._cpd = CategoricalPd(num_mixtures)
-
-        args['pd_type'] = self._mix_pd
-        super().__init__(args)
-
-    @property
-    def prob_vector_len(self):
-        return self.d * 2 * self.num_mixtures + self.num_mixtures
-
-    @property
-    def action_vector_len(self):
-        return self.d
-
-    @property
-    def input_vector_len(self):
-        return self.d
-
-    @property
-    def dtype(self):
-        return torch.float
-
-    def logp(self, x, prob):
-        logw, mix_prob = self._split_prob(prob)
-        # FIXME: replace F.log_softmax(logw, -1) with self._cpd.logp(cat_act, logw)
-        logp = self._mix_pd.logp(x.unsqueeze(-2), mix_prob).mean(-1, keepdim=True) + F.log_softmax(logw, -1).unsqueeze(-1)
-        return logp.mean(-2)
-
-    def kl(self, prob1, prob2):
-        logw1, mix_prob_1 = self._split_prob(prob1)
-        logw2, mix_prob_2 = self._split_prob(prob2)
-        kl = self._mix_pd.kl(mix_prob_1, mix_prob_2).mean(-1, keepdim=True) + self._cpd.kl(logw1, logw2).unsqueeze(-1)
-        return kl.mean(-2)
-
-    def entropy(self, prob):
-        logw, mix_prob = self._split_prob(prob)
-        ent = self._mix_pd.entropy(mix_prob).mean(-1, keepdim=True) + self._cpd.entropy(logw).unsqueeze(-1)
-        return ent.mean(-2)
-
-    def sample(self, prob):
-        logw, mix_prob = self._split_prob(prob.view(-1, prob.shape[-1]))
-        # (..., 1)
-        mixture_idx = self._cpd.sample(logw)
-        rep = *((mix_prob.dim() - 1) * [1]), mix_prob.shape[-1]
-        index = mixture_idx.unsqueeze(-1).repeat(rep)
-        selected = mix_prob.gather(dim=-2, index=index).squeeze(-2)
-        sample = self._mix_pd.sample(selected)
-        return sample.view(*prob.shape[:-1], sample.shape[-1])
-
-    # def mean(self, prob):
-    #     logw, mix_prob = self._split_prob(prob)
-    #     mean = mix_prob[..., :self.d]
-    #     w = F.softmax(logw, -1).unsqueeze(-1)
-    #     return (mean * w).sum(-2)
-
-    def _split_prob(self, prob):
-        logw, mix_prob = prob.split([self.num_mixtures, self.d * 2 * self.num_mixtures], dim=-1)
-        mix_prob = mix_prob.reshape(*mix_prob.shape[:-1], self.num_mixtures, self.d * 2)
-        # logw - (..., n)
-        # mix_prob - (..., n, d * 2)
-        return logw, mix_prob
-
-
 class FixedStdGaussianPd(ProbabilityDistribution):
     def __init__(self, d, std):
         super().__init__(locals())
@@ -538,6 +475,9 @@ class FixedStdGaussianPd(ProbabilityDistribution):
     def _clamp_logits(self, logits):
         return logits / logits.abs().mean(-1, keepdim=True).clamp_min(1.0)
 
+    def postprocess_action(self, action):
+        return action.tanh()
+
 
 @torch.jit.script
 def limit_action_length(v: torch.Tensor, maxlen: float):
@@ -545,122 +485,11 @@ def limit_action_length(v: torch.Tensor, maxlen: float):
     return v * (maxlen / len)
 
 
-class LinearTanhPd(ProbabilityDistribution):
-    def __init__(self, d, max_action):
-        super().__init__(locals())
-        self.d = d
-        self.max_action = max_action
-
-    @property
-    def prob_vector_len(self):
-        return self.d
-
-    @property
-    def action_vector_len(self):
-        return self.d
-
-    @property
-    def input_vector_len(self):
-        return self.d
-
-    @property
-    def dtype(self):
-        return torch.float
-
-    def logp(self, x, mean):
-        return -(x - self.max_action * mean.tanh()).pow(2)
-
-    def kl(self, mean1, mean2):
-        return (mean1 - mean2).pow(2)
-
-    def entropy(self, mean):
-        return mean.pow(2)
-
-    def sample(self, mean):
-        return self.max_action * limit_action_length(mean, 1.0).tanh()
-
-
-class LinearPd(ProbabilityDistribution):
-    def __init__(self, d, max_action):
-        super().__init__(locals())
-        self.d = d
-        self.max_action = max_action
-
-    @property
-    def prob_vector_len(self):
-        return self.d
-
-    @property
-    def action_vector_len(self):
-        return self.d
-
-    @property
-    def input_vector_len(self):
-        return self.d
-
-    @property
-    def dtype(self):
-        return torch.float
-
-    def logp(self, x, mean):
-        return -(x - self.max_action).pow(2)
-
-    def kl(self, mean1, mean2):
-        return (mean1 - mean2).pow(2)
-
-    def entropy(self, mean):
-        return -mean.pow(2)
-
-    def sample(self, mean):
-        return self.max_action * mean
-
-
-class TransactionPd(ProbabilityDistribution):
-    def __init__(self, d):
-        super().__init__(locals())
-        self.d = d
-
-    @property
-    def prob_vector_len(self):
-        return self.d
-
-    @property
-    def action_vector_len(self):
-        return self.d
-
-    @property
-    def input_vector_len(self):
-        return self.d
-
-    @property
-    def dtype(self):
-        return torch.float
-
-    def logp(self, x, mean):
-        p = self.atanh(F.cosine_similarity(x, mean, dim=-1))
-        return p
-
-    def kl(self, mean1, mean2):
-        def rmse(a, b):
-            return (a - b).pow(2).mean(-1).add(1e-6).sqrt()
-        return rmse(mean1, mean2) / 10
-
-    def entropy(self, mean):
-        return mean.new_zeros(mean.shape[:-1])
-
-    def sample(self, mean):
-        return mean
-
-    def atanh(self, x):
-        return 0.5 * torch.log((1 + x) / (1 - x))
-
-
 class DiscretizedCategoricalPd(ProbabilityDistribution):
-    def __init__(self, d, num_bins, limit=1, ordinal=True):
+    def __init__(self, d, num_bins, ordinal=True):
         super().__init__(locals())
         self.d = d
         self.num_bins = num_bins
-        self.limit = limit
         self.cpd = MultiPd([CategoricalPd(num_bins, ordinal) for _ in range(d)])
 
     @property
@@ -680,7 +509,7 @@ class DiscretizedCategoricalPd(ProbabilityDistribution):
         return torch.float
 
     def logp(self, action, logits):
-        bin_indexes = (action + self.limit) * ((self.num_bins - 1.0) / (2 * self.limit))
+        bin_indexes = (action + 1) * ((self.num_bins - 1.0) / 2)
         bin_indexes = bin_indexes.round().long()
         return self.cpd.logp(bin_indexes, logits)
 
@@ -692,7 +521,7 @@ class DiscretizedCategoricalPd(ProbabilityDistribution):
 
     def sample(self, logits):
         bin_indexes = self.cpd.sample(logits)
-        return bin_indexes.float() * ((2 * self.limit) / (self.num_bins - 1.0)) - self.limit
+        return bin_indexes.float() * (2 / (self.num_bins - 1.0)) - 1
 
 
 @torch.jit.script

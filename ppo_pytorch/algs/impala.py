@@ -177,19 +177,7 @@ class IMPALA(RLBase):
                 self._train()
                 self._new_frames = 0
 
-        return self.limit_actions(actions.cpu())
-
-    def limit_actions(self, actions):
-        if isinstance(self.action_space, gym.spaces.Box):
-            pd = self._eval_model.heads.logits.pd
-            if isinstance(pd, DiagGaussianPd) or isinstance(pd, FixedStdGaussianPd):
-                return actions.tanh()
-            else:
-                return actions.clamp(-2, 2) / 2
-        else:
-            assert isinstance(self.action_space, gym.spaces.Discrete) or \
-                   isinstance(self.action_space, gym.spaces.MultiDiscrete)
-            return actions
+        return self._eval_model.heads.logits.pd.postprocess_action(actions.cpu())
 
     def _train(self):
         self.frame_train = self.frame_eval

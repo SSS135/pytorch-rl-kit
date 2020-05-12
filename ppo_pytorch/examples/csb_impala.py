@@ -1,14 +1,14 @@
 if __name__ == '__main__':
     from .init_vars import *
-    import coders_strike_back
+    from coders_strike_back import make_silver_bot_env
 
     num_envs = 32
     actors_per_env = 1
-    env_factory = partial(rl.common.SimpleVecEnv, 'CSBSilverVsScript-v0', parallel='dummy')
+    env_factory = partial(make_silver_bot_env, num_envs=num_envs, frame_stack=4, render_first_env=False)
 
     alg_class = rl.algs.IMPALA
     alg_params = rl.algs.create_ppo_kwargs(
-        3e6,
+        20e6,
 
         num_actors=num_envs,
         train_interval_frames=128 * num_envs,
@@ -20,7 +20,7 @@ if __name__ == '__main__':
         cuda_eval=True,
         cuda_train=True,
 
-        # reward_discount=0.997,
+        reward_discount=0.99,
         # reward_scale=1.0,
 
         replay_buf_size=512 * 1024,
@@ -36,24 +36,26 @@ if __name__ == '__main__':
         loss_type='impala',
         replay_ratio=7,
         upgo_scale=0.5,
-        entropy_loss_scale=0.002,
+        entropy_loss_scale=0.003,
         barron_alpha_c=(1.5, 1.0),
         memory_burn_in_steps=32,
         activation_norm_scale=0.003,
-        num_rewards=3,
         reward_reweight_interval=40,
 
         model_factory=partial(rl.actors.create_ppo_fc_actor, hidden_sizes=(256, 256, 256),
                               activation=rl.actors.SiLU, split_policy_value_network=False),
         # model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
         optimizer_factory=partial(optim.Adam, lr=3e-4),
+
+        # model_init_path=r'c:\Users\Alexander\sync-pc\Jupyter\tensorboard\IMPALA_CSBSilverVsScript_2020-05-12_12-36-32_[0.75_ent0.003_mixed-pd]_xz0j8a13\model_0.pth',
+        # disable_training=True,
     )
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[]',
+        tag='[newr_0.7_ent0.003_mixed-pd]',
         log_root_path=log_path,
         log_interval=10000,
     )
 
-    rl_alg_test(hparams, wrap_params, alg_class, alg_params, env_factory, num_processes=1, iters=1, frames=3e6)
+    rl_alg_test(hparams, wrap_params, alg_class, alg_params, env_factory, variable_env=True, frames=20e6)
