@@ -1,10 +1,10 @@
 if __name__ == '__main__':
     from .init_vars import *
-    from coders_strike_back import make_silver_bot_env
+    from coders_strike_back import make_gold_bot_env
 
     num_envs = 32
     actors_per_env = 1
-    env_factory = partial(make_silver_bot_env, num_envs=num_envs, frame_stack=4, render_first_env=False)
+    env_factory = partial(make_gold_bot_env, num_pods=2, num_envs=num_envs, frame_stack=4, render_first_env=False)
 
     alg_class = rl.algs.IMPALA
     alg_params = rl.algs.create_ppo_kwargs(
@@ -47,13 +47,13 @@ if __name__ == '__main__':
         # model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
         optimizer_factory=partial(optim.Adam, lr=3e-4),
 
-        # model_init_path=r'c:\Users\Alexander\sync-pc\Jupyter\tensorboard\IMPALA_CSBSilverVsScript_2020-05-12_12-36-32_[0.75_ent0.003_mixed-pd]_xz0j8a13\model_0.pth',
+        # model_init_path='net64.pt',
         # disable_training=True,
     )
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[newr_0.7_ent0.003_mixed-pd]',
+        tag='[gold1v1_b0.5_meanr_crossdot_ent0.003]',
         log_root_path=log_path,
         log_interval=10000,
     )
