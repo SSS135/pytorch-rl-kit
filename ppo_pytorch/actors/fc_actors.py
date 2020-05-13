@@ -83,7 +83,7 @@ class FCFeatureExtractor(FeatureExtractorBase):
         self.sim_depth = sim_depth
         self.rand_std = rand_std
         self.model = create_fc(input_size, hidden_sizes, activation, self.norm_factory)
-        self.out_embedding = nn.Linear(goal_size, hidden_sizes[-1]) if goal_size > 0 else None
+        self.out_embedding = nn.Linear(goal_size, hidden_sizes[-1]) if goal_size is not None else None
 
         h = hidden_sizes[-1]
         self.action_linear = nn.Linear(pd.input_vector_len, h)
