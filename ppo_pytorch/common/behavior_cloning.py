@@ -38,15 +38,15 @@ def load_all_demos(name_mask, folder, visual_observations, discount):
     return [torch.cat(x, 0) for x in zip(*data)]
 
 
-def train(num_epochs, states, logits, model_factory, observation_space, action_space):
+def train(num_epochs, states, logits, net):
     with torch.no_grad():
         device = torch.device('cuda')
         batch_size = 256
         log_interval = 100
 
-        net = model_factory(observation_space, action_space).to(device)
-        optimizer = torch.optim.SGD(net.parameters(), lr=0.1, momentum=0.9, weight_decay=1e-3)
-        sched = torch.optim.lr_scheduler.MultiStepLR(optimizer, [3, 7], 0.1)
+        net = net.to(device)
+        optimizer = torch.optim.AdamW(net.parameters(), lr=0.005, weight_decay=5e-4)
+        sched = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 10, 2)
         data = AttrDict(states=states, logits=logits)
 
         total_batch_index = 0
@@ -59,7 +59,7 @@ def train(num_epochs, states, logits, model_factory, observation_space, action_s
                     do_log = total_batch_index % log_interval == 0
                     train_step(net, batch, optimizer, epoch, batch_index, do_log)
                     total_batch_index += 1
-            sched.step()
+                    sched.step()
 
         return net
 
@@ -77,4 +77,4 @@ def train_step(net, batch, optimizer, epoch, batch_index, do_log):
     optimizer.zero_grad()
 
     if do_log:
-        print(f'epoch {epoch}, batch {batch_index}, kl {loss:.4f}')
+        print(f'epoch {epoch}, batch {batch_index}, kl {loss:.4f}, lr {optimizer.param_groups[0]["lr"]}')
