@@ -1,5 +1,5 @@
 import torch
-nt = 4 if __name__ == '__main__' else 1
+nt = 8 if __name__ == '__main__' else 1
 torch.set_num_threads(nt)
 torch.set_num_interop_threads(nt)
 

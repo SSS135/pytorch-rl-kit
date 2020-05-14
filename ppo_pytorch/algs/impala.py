@@ -234,6 +234,8 @@ class IMPALA(RLBase):
         num_rollouts = data.states.shape[1]
         assert num_samples > 0
 
+        data.rewards = self.reward_scale * data.rewards
+
         data = AttrDict(states=data.states, logits_old=data.logits,
                         actions=data.actions, rewards=data.rewards, dones=data.dones,
                         **(dict(memory=data.memory) if self._train_model.is_recurrent else dict()))
@@ -552,8 +554,6 @@ class IMPALA(RLBase):
         return (kl + value_loss + reward_loss).cpu()
 
     def _process_rewards(self, data, do_log, mean_norm=True):
-        norm_rewards = self.reward_scale * data.rewards
-
         if self.use_pop_art:
             pa_mean, pa_std = self._pop_art.statistics
 
@@ -561,12 +561,12 @@ class IMPALA(RLBase):
         q_values = data.q_values.detach() * pa_std + pa_mean if self.use_pop_art else data.q_values.detach()
         # calculate value targets and advantages
         value_targets, advantages, p = calc_vtrace(
-            norm_rewards, state_values,
+            data.rewards, state_values,
             data.dones, data.probs_ratio.detach().mean(-1), data.kl_replay.detach().mean(-1),
             self.reward_discount, self.vtrace_max_ratio, self.vtrace_kl_limit)
-        advantages_upgo = calc_upgo(norm_rewards, state_values, data.dones, self.reward_discount,
+        advantages_upgo = calc_upgo(data.rewards, state_values, data.dones, self.reward_discount,
                                     gae_lambda=0.95, q_values=q_values) - state_values[:-1]
-        q_targets = norm_rewards + self.reward_discount * (1 - data.dones) * value_targets[1:]
+        q_targets = data.rewards + self.reward_discount * (1 - data.dones) * value_targets[1:]
         value_targets = value_targets[:-1]
 
         if do_log:
@@ -574,6 +574,8 @@ class IMPALA(RLBase):
             self.logger.add_scalar('Advantages/RMS', advantages.pow(2).mean().sqrt(), self.frame_train)
             self.logger.add_scalar('Advantages/Std', advantages.std(), self.frame_train)
             self.logger.add_scalar('Values/Values', state_values.mean(), self.frame_train)
+            self.logger.add_scalar('Values/Values RMS', state_values.pow(2).mean().sqrt(), self.frame_train)
+            self.logger.add_scalar('Values/Values Std', state_values.std(), self.frame_train)
             self.logger.add_scalar('Values/Value Targets', value_targets.mean(), self.frame_train)
 
         if self.use_pop_art:
@@ -582,15 +584,16 @@ class IMPALA(RLBase):
             if LossType.impala is self.loss_type:
                 advantages /= pa_std
                 advantages_upgo /= pa_std
-            self.logger.add_scalar('Values/Values PopArt', data.state_values.mean(), self.frame_train)
-            self.logger.add_scalar('Values/Value Targets PopArt', value_targets.mean(), self.frame_train)
+            if do_log:
+                self.logger.add_scalar('Values/Values PopArt', data.state_values.mean(), self.frame_train)
+                self.logger.add_scalar('Values/Value Targets PopArt', value_targets.mean(), self.frame_train)
 
         # if LossType.impala is self.loss_type:
         advantages = self._adv_norm(advantages)
         advantages_upgo = self.upgo_scale * self._adv_norm(advantages_upgo, update_stats=False)
 
         data.vtrace_p, data.advantages_upgo = p, advantages_upgo
-        data.value_targets, data.advantages, data.rewards = value_targets, advantages, norm_rewards
+        data.value_targets, data.advantages = value_targets, advantages
         data.q_targets = q_targets
 
     def drop_collected_steps(self):
