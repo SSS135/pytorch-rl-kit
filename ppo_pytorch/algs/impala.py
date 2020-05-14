@@ -13,6 +13,7 @@ import torch.autograd
 import torch.optim as optim
 from optfn.gradient_logger import log_gradients
 from ppo_pytorch.actors import FCFeatureExtractor
+from ppo_pytorch.actors.fc_actors import squash
 from ppo_pytorch.algs.reward_weight_generator import RewardWeightGenerator
 from ppo_pytorch.common.probability_distributions import DiagGaussianPd, FixedStdGaussianPd
 
@@ -151,8 +152,9 @@ class IMPALA(RLBase):
         assert self.batch_size % self.train_horizon == 0, (self.batch_size, self.train_horizon)
 
         self._replay_buffer = VariableReplayBuffer(replay_buf_size, self.train_horizon, self.replay_end_sampling_factor)
-        self._step_collector = VariableStepCollector(self._eval_model, self._replay_buffer, self.device_eval,
-                                                     self._reward_weight_gen, self.reward_reweight_interval)
+        self._step_collector = VariableStepCollector(
+            self._eval_model, self._replay_buffer, self.device_eval, self._reward_weight_gen,
+            self.reward_reweight_interval, self.disable_training)
         self._new_frames = 0
         self._eval_no_copy_updates = 0
         self._adv_norm = RunningNorm(momentum=0.95, mean_norm=False)
@@ -516,30 +518,30 @@ class IMPALA(RLBase):
         return total_loss
 
     def _get_world_model_loss(self, data: AttrDict, do_log: bool) -> torch.Tensor:
-        pd = self._train_model.heads.logits.pd
         fx: FCFeatureExtractor = self._train_model.feature_extractors[0]
 
         data_values, data_rewards, data_logits, data_actions = \
             [x.to(self.device_train) for x in (data.value_targets, data.rewards, data.logits, data.actions)]
 
+        sim_depth = fx.sim_depth
         assert data_rewards.ndim >= 2
 
         with torch.no_grad():
             sliced_data = []
             h = data.states.shape[0]
-            for i in range(fx.sim_depth):
+            for i in range(sim_depth):
                 sliced_data.append([
-                    data_rewards[i: i + h - fx.sim_depth],
-                    data_actions[i: i + h - fx.sim_depth],
-                    data_values[i: i + h - fx.sim_depth],
-                    data_logits[i: i + h - fx.sim_depth],
+                    data_rewards[i: i + h - sim_depth],
+                    data_actions[i: i + h - sim_depth],
+                    data_values[i: i + h - sim_depth],
+                    data_logits[i: i + h - sim_depth],
                 ])
             rewards, actions, values, logits = [torch.stack(x, 0).detach_() for x in zip(*sliced_data)]
 
-        pred_values, pred_rewards, pred_logits = fx.run_world_model(data.features_raw[:h - fx.sim_depth], actions)
-        kl = pd.kl(logits, pred_logits[:-1]).mean()
-        value_loss = barron_loss(pred_values[:-1].squeeze(-1), values, *self.barron_alpha_c, reduce=False).mean()
-        reward_loss = barron_loss(pred_rewards[:-2].squeeze(-1), rewards[1:], *self.barron_alpha_c, reduce=False).mean()
+        pred_values, pred_rewards, pred_logits = fx.run_world_model(data.features_raw[:h - sim_depth], actions)
+        kl = barron_loss(pred_logits, squash(logits), *self.barron_alpha_c)
+        value_loss = barron_loss(pred_values.squeeze(-1), squash(values), *self.barron_alpha_c)
+        reward_loss = barron_loss(pred_rewards[1:].squeeze(-1), squash(rewards[:-1]), *self.barron_alpha_c)
 
         with torch.no_grad():
             if do_log:

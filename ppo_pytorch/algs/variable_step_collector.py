@@ -30,16 +30,19 @@ class StepData:
 
 class VariableStepCollector:
     def __init__(self, actor: ModularActor, replay_buffer: VariableReplayBuffer, device: torch.device,
-                 reward_weight_gen: RewardWeightGenerator, reward_reweight_interval: int):
+                 reward_weight_gen: RewardWeightGenerator, reward_reweight_interval: int, disable_training=False):
         assert len(actor.feature_extractors) == 1
         self.actor = actor
         self.replay_buffer = replay_buffer
         self.device = device
-        self.reward_reweight_interval = reward_reweight_interval
         self.reward_weight_gen = reward_weight_gen
+        self.reward_reweight_interval = reward_reweight_interval
+        self.disable_training = disable_training
         self._step_datas: Dict[int, StepData] = defaultdict(StepData)
         self._memory_shape = None
         self._reward_reweight_counter = 0
+        # self._save_obs = []
+        # self._save_logits = []
 
     def step(self, data: RLStepData) -> Tensor:
         with torch.no_grad():
@@ -49,6 +52,13 @@ class VariableStepCollector:
                 self._reweight_rewards()
 
             logits, reward_weights, memory_in, memory_out = self._run_model(data)
+
+            # self._save_obs.extend(data.obs.cpu())
+            # self._save_logits.extend(logits.cpu())
+            # if len(self._save_obs) > 512 * 1024:
+            #     torch.save(torch.stack(self._save_obs, 0), 'obs.pt')
+            #     torch.save(torch.stack(self._save_logits, 0), 'logits.pt')
+            #     raise
 
             actions = self.actor.heads.logits.pd.sample(logits)
             assert not torch.isnan(actions.sum())
@@ -96,7 +106,7 @@ class VariableStepCollector:
             if done:
                 del self._step_datas[aid]
 
-        if len(full_step_datas) > 0:
+        if len(full_step_datas) > 0 and not self.disable_training:
             # convert full_step_datas to tensors
             full_actor_ids, full_step_datas = list(full_step_datas.keys()), list(full_step_datas.values())
             full_step_datas = [dataclasses.asdict(x) for x in full_step_datas]

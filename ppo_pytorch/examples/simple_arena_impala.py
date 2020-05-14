@@ -3,10 +3,11 @@ if __name__ == '__main__':
     from rl_exp.unity.variable_unity_env import VariableUnityVecEnv
 
     num_envs = 4
-    actors_per_env = 8 * 4
-    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuousR\DungeonAI'
-    env_factory = partial(VariableUnityVecEnv, exe_path, num_envs=num_envs, visual_observations=False, stacked_frames=4,
-                          no_graphics_except_first=True)
+    actors_per_env = 8 * 1
+    visual = True
+    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuousVisual\DungeonAI'
+    env_factory = partial(VariableUnityVecEnv, exe_path, num_envs=num_envs, visual_observations=visual, stacked_frames=4,
+                          no_graphics_except_first=False)
 
     alg_class = rl.algs.IMPALA
     alg_params = rl.algs.create_ppo_kwargs(
@@ -40,15 +41,16 @@ if __name__ == '__main__':
         entropy_loss_scale=0.002,
         barron_alpha_c=(1.5, 1.0),
         memory_burn_in_steps=32,
-        activation_norm_scale=0.0,
+        activation_norm_scale=0.003,
         num_rewards=3,
         reward_reweight_interval=40,
+        random_crop_obs=visual,
 
         optimizer_factory=partial(optim.Adam, lr=3e-4),
-        # model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
-        model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
+        model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='normal'),
+        # model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
         # model_factory=partial(rl.actors.create_ppo_fc_actor, hidden_sizes=(256, 256, 256),
-        #                       activation=rl.actors.SiLU),
+        #                       activation=rl.actors.SiLU, split_policy_value_network=False),
 
         # model_init_path=r'c:\Users\Alexander\sync-pc\Jupyter\tensorboard\IMPALA_SimpleArenaContinuous_2020-04-27_15-08-03_[vls1.0_advnorm0.99]_dlwu5k0o\model_0.pth',
         # disable_training=True,
@@ -56,7 +58,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[bar1.5_q-target_vls2.0_qls2.0_ord_vtlim1.0]',
+        tag='[cnn-normal_an0.003_rwkill]',
         log_root_path=log_path,
         log_interval=20000,
     )

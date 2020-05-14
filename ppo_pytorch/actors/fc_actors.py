@@ -2,7 +2,7 @@ import math
 from typing import List, Callable
 
 import torch.nn as nn
-from .silu import SiLU
+from .silu import SiLU, silu
 from ..common.activation_norm import ActivationNorm
 
 from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor
@@ -71,8 +71,63 @@ def create_residual_fc(input_size, hidden_size, use_norm=False):
 
 
 class FCFeatureExtractor(FeatureExtractorBase):
+    def __init__(self, input_size: int, hidden_sizes=(128, 128), activation=nn.Tanh, goal_size=None, **kwargs):
+        super().__init__(**kwargs)
+        self.input_size = input_size
+        self.hidden_sizes = hidden_sizes
+        self.activation = activation
+        self.goal_size = goal_size
+        self.model = create_fc(input_size, hidden_sizes, activation, self.norm_factory)
+        self.out_embedding = nn.Linear(goal_size, hidden_sizes[-1]) if goal_size is not None else None
+
+        # self.model = create_residual_fc(input_size, hidden_sizes[0])
+        # super().reset_weights()
+        # fixup_init(self.model)
+        # self.model = torch.jit.trace_module(self.model, dict(forward=torch.randn((8, input_size))))
+
+    # def reset_weights(self):
+    #     pass
+    #     # super().reset_weights()
+    #     # fixup_init(self.model)
+
+    @property
+    def output_size(self):
+        return self.hidden_sizes[-1]
+
+    def forward(self, input: torch.Tensor, logger=None, cur_step=None, goal=None, **kwargs):
+        x = input.reshape(-1, input.shape[-1])
+        if self.goal_size is not None:
+            goal = goal.reshape(-1, goal.shape[-1])
+        return self._extract_features(x, goal, logger, cur_step)
+
+    def _extract_features(self, x, goal,  logger, cur_step):
+        for i, layer in enumerate(self.model):
+            x = layer(x)
+            if logger is not None:
+                logger.add_histogram(f'layer_{i}_output', x, cur_step)
+        if self.goal_size is not None:
+            x = x * 2 * self.out_embedding(goal).sigmoid()
+        return x
+
+
+def squash(x):
+    return x.abs().add(1).sqrt().sub(1).mul(x.sign())
+
+
+def unsquash(x):
+    return 2 * x + x.sign() * x.pow(2)
+
+
+def test_squash():
+    torch.manual_seed(123)
+    t = torch.randn(1000) * 10
+    assert torch.allclose(t, squash(unsquash(t)), atol=1e-4), (t, squash(unsquash(t)))
+    assert torch.allclose(t, unsquash(squash(t)), atol=1e-4), (t, unsquash(squash(t)))
+
+
+class FCImaginationFeatureExtractor(FeatureExtractorBase):
     def __init__(self, input_size: int, hidden_sizes=(128, 128), activation=nn.Tanh, goal_size=None,
-                 pd=None, num_sims=4, sim_depth=8, rand_std=0.3, **kwargs):
+                 pd=None, num_sims=4, sim_depth=4, **kwargs):
         super().__init__(**kwargs)
         self.input_size = input_size
         self.hidden_sizes = hidden_sizes
@@ -81,20 +136,23 @@ class FCFeatureExtractor(FeatureExtractorBase):
         self.pd = pd
         self.num_sims = num_sims
         self.sim_depth = sim_depth
-        self.rand_std = rand_std
+        self.gate_reduce = 8
         self.model = create_fc(input_size, hidden_sizes, activation, self.norm_factory)
         self.out_embedding = nn.Linear(goal_size, hidden_sizes[-1]) if goal_size is not None else None
 
         h = hidden_sizes[-1]
         self.action_linear = nn.Linear(pd.input_vector_len, h)
-        self.value_logits_linear = nn.Linear(h, 2 + pd.prob_vector_len)
+        self.vrl_layer = nn.Sequential(SiLU(), nn.Linear(h, 2 + pd.prob_vector_len))
+        self.feature_prepare_linear = nn.Linear(h, h)
         self.world_model = nn.Sequential(
-            nn.Linear(h, h),
+            ActivationNorm(1),
             SiLU(),
             nn.Linear(h, h),
+            ActivationNorm(1),
             SiLU(),
-            nn.Linear(h, h // 2 * 3),
+            nn.Linear(h, h + h // self.gate_reduce),
         )
+        self._end_gate_linear = nn.Linear(h, h // self.gate_reduce)
 
         # self.model = create_residual_fc(input_size, hidden_sizes[0])
         # super().reset_weights()
@@ -112,7 +170,9 @@ class FCFeatureExtractor(FeatureExtractorBase):
 
     def forward(self, input: torch.Tensor, logger=None, cur_step=None, goal=None, **kwargs):
         x = input.reshape(-1, input.shape[-1])
-        goal = goal.reshape(-1, goal.shape[-1])
+        if self.goal_size is not None:
+            goal = goal.reshape(-1, goal.shape[-1])
+
         x_hall, x = self._extract_features(x, goal, logger, cur_step)
         return dict(features=x_hall.reshape(*input.shape[:-1], -1), features_raw=x.reshape(*input.shape[:-1], -1))
 
@@ -121,42 +181,49 @@ class FCFeatureExtractor(FeatureExtractorBase):
             x = layer(x)
             if logger is not None:
                 logger.add_histogram(f'layer_{i}_output', x, cur_step)
+
         if self.goal_size is not None:
             x = x * 2 * self.out_embedding(goal).sigmoid()
-        x_hall = torch.cat([x, self._hallucinate(x)], -1)
-        return x_hall, x
+
+        x_fp = self.feature_prepare_linear(x)
+        x_hall = torch.cat([x, self._hallucinate(x_fp)], -1)
+        return x_hall, x_fp
 
     def _hallucinate(self, features: Tensor) -> Tensor:
+        interm_features = []
         features = torch.stack([features] * self.num_sims, 0)
         for _ in range(self.sim_depth):
             _, _, logits = self._get_vrl(features)
-            ac = self.pd.sample(logits)
+            ac = self.pd.sample(unsquash(logits.detach()))
             features = self._world_model_step(features, ac)
-        return features.mean(0)
+            interm_features.append(features)
+
+        features = torch.cat(interm_features, 0)
+        end_gate = self._end_gate_linear(silu(features)).softmax(0).repeat_interleave(8, -1)
+        features = end_gate * features
+
+        return silu(features.sum(0))
 
     def run_world_model(self, features, actions):
         data = [self._get_vrl(features)]
-        for ac in actions:
+        for i, ac in enumerate(actions):
             features = self._world_model_step(features, ac)
-            data.append(self._get_vrl(features))
+            if i + 1 != len(actions):
+                data.append(self._get_vrl(features))
         return [torch.stack(v, 0) for v in zip(*data)]
 
     def _world_model_step(self, features, action):
-        f_det, f_rand = features.chunk(2, -1)
-        f_rand = f_rand + self.rand_std * torch.randn_like(f_rand)
-        features = torch.cat([f_det, f_rand], -1)
-
+        h = self.hidden_sizes[-1]
         ac_enc = 2 * self.action_linear(self.pd.to_inputs(action)).sigmoid()
-        x_det, x_rand, gate = self.world_model(ac_enc * features).chunk(3, -1)
+        new_f, gate = self.world_model(ac_enc * features).split([h, h // self.gate_reduce], -1)
 
-        gate = gate.sigmoid()
-        x_det = gate * x_det + (1 - gate) * f_det
-        features = torch.cat([x_det, x_rand], -1)
+        gate = gate.repeat_interleave(self.gate_reduce, -1).sigmoid()
+        features = gate * new_f + (1 - gate) * features
 
         return features
 
     def _get_vrl(self, features):
-        return self.value_logits_linear(features).split([1, 1, self.pd.prob_vector_len], -1)
+        return self.vrl_layer(features).split([1, 1, self.pd.prob_vector_len], -1)
 
 
 class FCActionFeatureExtractor(FeatureExtractorBase):
@@ -199,12 +266,18 @@ class FCActionFeatureExtractor(FeatureExtractorBase):
 
 def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128),
                         activation=nn.Tanh, norm_factory: NormFactory=None,
-                        split_policy_value_network=True, num_values=1, goal_size=None):
+                        split_policy_value_network=True, num_values=1, goal_size=None, use_hallucination=True):
     assert len(observation_space.shape) == 1
 
-    pd = make_pd(action_space)
-    def fx_factory(): return FCFeatureExtractor(
-        observation_space.shape[0], hidden_sizes, activation, norm_factory=norm_factory, goal_size=goal_size, pd=pd)
+    fx_kwargs = dict(input_size=observation_space.shape[0], hidden_sizes=hidden_sizes, activation=activation,
+                     norm_factory=norm_factory, goal_size=goal_size)
+
+    if use_hallucination:
+        pd = make_pd(action_space)
+        def fx_factory(): return FCImaginationFeatureExtractor(**fx_kwargs, pd=pd)
+    else:
+        def fx_factory(): return FCFeatureExtractor(**fx_kwargs)
+
     return create_ppo_actor(action_space, fx_factory, split_policy_value_network, num_out=num_values)
 
 
