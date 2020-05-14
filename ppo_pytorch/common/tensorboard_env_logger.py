@@ -1,16 +1,15 @@
 import os
-import re
 import tempfile
 import time
-from collections import deque, namedtuple
+from collections import deque
 from dataclasses import dataclass
-from typing import List, NamedTuple, Union, Dict, Tuple, Optional
+from typing import List, Union, Dict, Tuple, Optional
 
-from rl_exp.unity.variable_step_result import VariableStepResult
+from .variable_env.variable_step_result import VariableStepResult
 from torch.utils.tensorboard import SummaryWriter
 from .utils import get_valid_filename
 
-from .monitor import EPISODE, EPISODE_ORIG
+from .monitor import EPISODE
 
 import numpy as np
 

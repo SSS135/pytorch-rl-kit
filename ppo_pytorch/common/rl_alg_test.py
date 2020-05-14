@@ -3,15 +3,14 @@ import itertools
 import os
 import pprint
 import random
-import subprocess
 from collections import namedtuple
 from functools import partial
 from multiprocessing.pool import ThreadPool
 from typing import Dict, Union
 
-from ppo_pytorch.common.env_trainer import EnvTrainer
-from ppo_pytorch.common.variable_env_trainer import VariableEnvTrainer
-from ppo_pytorch.common.utils import is_running_on_windows, set_low_priority
+from .env_trainer import EnvTrainer
+from .variable_env.variable_env_trainer import VariableEnvTrainer
+from .utils import is_running_on_windows, set_low_priority
 from sklearn.model_selection import ParameterGrid
 from torch.multiprocessing import Pool
 

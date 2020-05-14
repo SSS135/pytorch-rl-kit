@@ -2,9 +2,10 @@ import pprint
 from typing import Callable
 
 import torch
-from ppo_pytorch.common import RLBase
-from ppo_pytorch.common.tensorboard_env_logger import TensorboardEnvLogger
-from rl_exp.unity.variable_env import VariableVecEnv
+
+from .variable_env import VariableVecEnv
+from .. import RLBase
+from ..tensorboard_env_logger import TensorboardEnvLogger
 
 
 class VariableEnvTrainer:
