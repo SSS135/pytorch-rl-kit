@@ -10,24 +10,26 @@ class ActivationNorm(nn.Module):
         super().__init__()
         self.data_dims = data_dims
         self.eps = eps
-        self._input = None
+        self._input = []
 
     def forward(self, input: torch.Tensor, always_run=False):
         if not always_run and not input.requires_grad:
             return input
         assert input.dim() > self.data_dims
-        self._input = input
+        self._input.append(input)
         return input.clone()
 
     def get_loss(self, clear=True) -> Optional[torch.Tensor]:
-        if self._input is None:
+        if len(self._input) == 0:
             return None
-        var, mean = torch.var_mean(self._input, dim=tuple(range(self._input.ndim - self.data_dims)))
-        var = var + self.eps
-        loss = 0.5 * (var.mean() + mean.pow(2).mean() - var.log().mean())
+        losses = []
+        for x in self._input:
+            var, mean = torch.var_mean(x, dim=tuple(range(x.ndim - self.data_dims)))
+            var = var + self.eps
+            losses.append(0.5 * (var.mean() + mean.pow(2).mean() - var.log().mean()))
         if clear:
-            self._input = None
-        return loss
+            self._input.clear()
+        return torch.stack(losses).mean()
 
 
 # class ActivationNormFunction(torch.autograd.Function):

@@ -4,7 +4,7 @@ if __name__ == '__main__':
 
     num_envs = 32
     actors_per_env = 1
-    env_factory = partial(make_gold_bot_env, num_pods=2, num_envs=num_envs, frame_stack=4, render_first_env=False)
+    env_factory = partial(make_gold_bot_env, num_pods=4, num_envs=num_envs, frame_stack=4, render_first_env=False)
 
     alg_class = rl.algs.IMPALA
     alg_params = rl.algs.create_ppo_kwargs(
@@ -47,13 +47,13 @@ if __name__ == '__main__':
         # model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
         optimizer_factory=partial(optim.Adam, lr=3e-4),
 
-        # model_init_path='net64.pt',
+        # model_init_path='tensorboard\IMPALA_CSBSilverVsScript_2020-05-14_02-22-16_[rewsm1_rewsep]_dx_h4owk\model_0.pth',
         # disable_training=True,
     )
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[gold1v1_b0.5_meanr_crossdot_ent0.003]',
+        tag='[fp_an-w_squash]',
         log_root_path=log_path,
         log_interval=10000,
     )
