@@ -541,9 +541,9 @@ class IMPALA(RLBase):
             rewards, actions, values, logits = [torch.stack(x, 0).detach_() for x in zip(*sliced_data)]
 
         pred_values, pred_rewards, pred_logits = fx.run_world_model(data.features_raw[:h - sim_depth], actions)
-        kl = barron_loss(pred_logits, squash(logits), *self.barron_alpha_c)
-        value_loss = barron_loss(pred_values.squeeze(-1), squash(values), *self.barron_alpha_c)
-        reward_loss = barron_loss(pred_rewards[1:].squeeze(-1), squash(rewards[:-1]), *self.barron_alpha_c)
+        kl = 5 * barron_loss(pred_logits, logits, *self.barron_alpha_c)
+        value_loss = 5 * barron_loss(pred_values.squeeze(-1), values, *self.barron_alpha_c)
+        reward_loss = 10 * barron_loss(pred_rewards[1:].squeeze(-1), rewards[:-1], *self.barron_alpha_c)
 
         with torch.no_grad():
             if do_log:

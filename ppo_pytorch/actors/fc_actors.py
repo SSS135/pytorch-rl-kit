@@ -194,7 +194,7 @@ class FCImaginationFeatureExtractor(FeatureExtractorBase):
         features = torch.stack([features] * self.num_sims, 0)
         for _ in range(self.sim_depth):
             _, _, logits = self._get_vrl(features)
-            ac = self.pd.sample(unsquash(logits.detach()))
+            ac = self.pd.sample(logits.detach())
             features = self._world_model_step(features, ac)
             interm_features.append(features)
 
@@ -223,7 +223,8 @@ class FCImaginationFeatureExtractor(FeatureExtractorBase):
         return features
 
     def _get_vrl(self, features):
-        return self.vrl_layer(features).split([1, 1, self.pd.prob_vector_len], -1)
+        v, r, l = self.vrl_layer(features).split([1, 1, self.pd.prob_vector_len], -1)
+        return v, r, unsquash(l)
 
 
 class FCActionFeatureExtractor(FeatureExtractorBase):
