@@ -1,10 +1,10 @@
 if __name__ == '__main__':
     from .init_vars import *
-    from coders_strike_back import make_gold_bot_env
+    from coders_strike_back import make_gold_env
 
     num_envs = 32
     actors_per_env = 1
-    env_factory = partial(make_gold_bot_env, num_pods=4, num_envs=num_envs, frame_stack=4, render_first_env=False)
+    env_factory = partial(make_gold_env, pvp=True, num_pods=4, num_envs=num_envs, frame_stack=4, render_first_env=True)
 
     alg_class = rl.algs.IMPALA
     alg_params = rl.algs.create_ppo_kwargs(
@@ -53,7 +53,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[fp_an-w_squash]',
+        tag='[mp]',
         log_root_path=log_path,
         log_interval=10000,
     )
