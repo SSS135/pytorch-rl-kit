@@ -48,7 +48,7 @@ class RLBase:
         self.model_init_path = model_init_path
 
         self._logger = None
-        self._last_log_frame = -log_interval
+        self._last_log_frame = -log_interval if log_interval is not None else None
         self._do_log = False
         self.frame_eval = 0
         self.frame_train = 0
@@ -100,7 +100,7 @@ class RLBase:
             assert torch.allclose(actor_id, torch.arange(self.num_actors, dtype=torch.long))
 
         assert obs.shape == (num_actors, *self.observation_space.shape), f'{obs.shape} {self.observation_space.shape}'
-        assert obs.dtype == torch.float32 or obs.dtype == torch.uint8
+        assert obs.dtype == torch.float32 or obs.dtype == torch.uint8, obs.dtype
         assert rewards.shape == (num_actors, rewards.shape[1]), f'wrong reward {rewards} shape {rewards.shape}'
         assert rewards.dtype == torch.float32, rewards.dtype
         assert true_reward.shape == (num_actors,)

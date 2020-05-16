@@ -30,10 +30,9 @@ class VariableMonitor(VariableWrapper):
         data = self.env.step(action)
         self._init_stats(data)
 
-        for i in range(len(data.obs)):
-            agent_id = data.agent_id[i].item()
+        for i, (agent_id, done) in enumerate(zip(data.agent_id, data.done)):
             ep_info = self._episodes[agent_id]
-            if data.done[i]:
+            if done:
                 del self._episodes[agent_id]
             else:
                 ep_info.length += 1

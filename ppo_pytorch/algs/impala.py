@@ -521,6 +521,8 @@ class IMPALA(RLBase):
 
     def _get_world_model_loss(self, data: AttrDict, do_log: bool) -> torch.Tensor:
         fx: FCFeatureExtractor = self._train_model.feature_extractors[0]
+        if not hasattr(fx, 'run_world_model'):
+            return 0
 
         data_values, data_rewards, data_logits, data_actions = \
             [x.to(self.device_train) for x in (data.value_targets, data.rewards, data.logits, data.actions)]

@@ -1,3 +1,4 @@
+import dataclasses
 from dataclasses import dataclass
 from typing import List
 
@@ -12,6 +13,11 @@ class VariableStepResult:
     done: np.ndarray
     agent_id: np.ndarray
     true_reward: np.ndarray
+    team_id: np.ndarray
+    match_id: np.ndarray
+
+    def copy(self):
+        return VariableStepResult(**{k: np.copy(v) for k, v in dataclasses.asdict(self).items()})
 
     @staticmethod
     def concatenate(*res):
@@ -22,4 +28,6 @@ class VariableStepResult:
             done=np.concatenate([r.done for r in res], 0),
             agent_id=np.concatenate([r.agent_id for r in res], 0),
             true_reward=np.concatenate([r.true_reward for r in res], 0),
+            team_id=np.concatenate([r.team_id for r in res], 0),
+            match_id=np.concatenate([r.match_id for r in res], 0),
         )
