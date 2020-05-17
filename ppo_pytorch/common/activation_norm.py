@@ -16,8 +16,8 @@ class ActivationNorm(nn.Module):
         if not always_run and not input.requires_grad:
             return input
         assert input.dim() > self.data_dims
-        self._input.append(input)
-        return input.clone()
+        self._input.append(input.clone())
+        return input
 
     def get_loss(self, clear=True) -> Optional[torch.Tensor]:
         if len(self._input) == 0:
