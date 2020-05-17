@@ -191,19 +191,13 @@ class FCImaginationFeatureExtractor(FeatureExtractorBase):
         return x_hall, x_fp
 
     def _imagine(self, features: Tensor) -> Tensor:
-        interm_features = []
         features = torch.stack([features] * self.num_sims, 0)
         for _ in range(self.sim_depth):
             _, _, logits, _ = self._get_vrld(features)
             ac = self.pd.sample(logits.detach())
             features = self._world_model_step(features, ac)
-            interm_features.append(features)
 
-        features = torch.cat(interm_features, 0)
-        end_gate = self._end_gate_linear(silu(features)).softmax(0).repeat_interleave(8, -1)
-        features = end_gate * features
-
-        return silu(features.sum(0))
+        return silu(features.mean(0))
 
     def run_world_model(self, features, actions):
         data = [self._get_vrld(features)]
