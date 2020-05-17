@@ -524,36 +524,46 @@ class IMPALA(RLBase):
         if not hasattr(fx, 'run_world_model'):
             return 0
 
-        data_values, data_rewards, data_logits, data_actions = \
-            [x.to(self.device_train) for x in (data.value_targets, data.rewards, data.logits, data.actions)]
+        data_values, data_rewards, data_logits, data_actions, data_dones = \
+            [x.to(self.device_train) for x in (data.value_targets, data.rewards, data.logits, data.actions, data.dones)]
 
         sim_depth = fx.sim_depth
         assert data_rewards.ndim >= 2
 
         with torch.no_grad():
-            sliced_data = []
             h = data.states.shape[0]
+            nondone = torch.ones_like(data_dones[:h - sim_depth])
+            sliced_data = []
             for i in range(sim_depth):
+                step_dones = data_dones[i: i + h - sim_depth]
                 sliced_data.append([
-                    data_rewards[i: i + h - sim_depth],
+                    data_rewards[i: i + h - sim_depth] * nondone,
                     data_actions[i: i + h - sim_depth],
-                    data_values[i: i + h - sim_depth],
+                    data_values[i: i + h - sim_depth] * nondone,
                     data_logits[i: i + h - sim_depth],
+                    (step_dones + (1 - nondone)).clamp_max(1),
                 ])
-            rewards, actions, values, logits = [torch.stack(x, 0).detach_() for x in zip(*sliced_data)]
+                nondone *= 1 - step_dones
+            rewards, actions, values, logits, dones = [torch.stack(x, 0).detach_() for x in zip(*sliced_data)]
 
-        pred_values, pred_rewards, pred_logits = fx.run_world_model(data.features_raw[:h - sim_depth], actions)
-        kl = 5 * barron_loss(pred_logits, logits, *self.barron_alpha_c)
-        value_loss = 5 * barron_loss(pred_values.squeeze(-1), values, *self.barron_alpha_c)
-        reward_loss = 10 * barron_loss(pred_rewards[1:].squeeze(-1), rewards[:-1], *self.barron_alpha_c)
+        pred_values, pred_rewards, pred_logits, pred_dones = fx.run_world_model(data.features_raw[:h - sim_depth], actions)
+
+        kl = barron_loss(pred_logits, logits, *self.barron_alpha_c, reduce=False)
+        assert kl.shape[:-1] == dones.shape, (kl.shape, dones.shape)
+        kl = ((1 - dones.unsqueeze(-1)) * kl).mean()
+
+        value_loss = barron_loss(pred_values.squeeze(-1), values, *self.barron_alpha_c)
+        reward_loss = 2 * barron_loss(pred_rewards[1:].squeeze(-1), rewards[:-1], *self.barron_alpha_c)
+        done_loss = barron_loss(pred_dones.squeeze(-1), dones, *self.barron_alpha_c)
 
         with torch.no_grad():
             if do_log:
                 self.logger.add_scalar('Losses/World Value', value_loss, self.frame_train)
                 self.logger.add_scalar('Losses/World KL', kl, self.frame_train)
                 self.logger.add_scalar('Losses/World Reward', reward_loss, self.frame_train)
+                self.logger.add_scalar('Losses/World Done', done_loss, self.frame_train)
 
-        return (kl + value_loss + reward_loss).cpu()
+        return (kl + value_loss + reward_loss + done_loss).cpu()
 
     def _process_rewards(self, data, do_log, mean_norm=True):
         if self.use_pop_art:

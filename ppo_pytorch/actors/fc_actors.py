@@ -98,7 +98,8 @@ class FCFeatureExtractor(FeatureExtractorBase):
         x = input.reshape(-1, input.shape[-1])
         if self.goal_size is not None:
             goal = goal.reshape(-1, goal.shape[-1])
-        return self._extract_features(x, goal, logger, cur_step)
+        x = self._extract_features(x, goal, logger, cur_step)
+        return x.reshape(*input.shape[:-1], -1)
 
     def _extract_features(self, x, goal,  logger, cur_step):
         for i, layer in enumerate(self.model):
@@ -142,7 +143,7 @@ class FCImaginationFeatureExtractor(FeatureExtractorBase):
 
         h = hidden_sizes[-1]
         self.action_linear = nn.Linear(pd.input_vector_len, h)
-        self.vrl_layer = nn.Sequential(SiLU(), nn.Linear(h, 2 + pd.prob_vector_len))
+        self.vrld_layer = nn.Sequential(SiLU(), nn.Linear(h, 3 + pd.prob_vector_len))
         self.feature_prepare_linear = nn.Linear(h, h)
         self.world_model = nn.Sequential(
             ActivationNorm(1),
@@ -186,14 +187,14 @@ class FCImaginationFeatureExtractor(FeatureExtractorBase):
             x = x * 2 * self.out_embedding(goal).sigmoid()
 
         x_fp = self.feature_prepare_linear(x)
-        x_hall = torch.cat([x, self._hallucinate(x_fp)], -1)
+        x_hall = torch.cat([x, self._imagine(x_fp)], -1)
         return x_hall, x_fp
 
-    def _hallucinate(self, features: Tensor) -> Tensor:
+    def _imagine(self, features: Tensor) -> Tensor:
         interm_features = []
         features = torch.stack([features] * self.num_sims, 0)
         for _ in range(self.sim_depth):
-            _, _, logits = self._get_vrl(features)
+            _, _, logits, _ = self._get_vrld(features)
             ac = self.pd.sample(logits.detach())
             features = self._world_model_step(features, ac)
             interm_features.append(features)
@@ -205,11 +206,11 @@ class FCImaginationFeatureExtractor(FeatureExtractorBase):
         return silu(features.sum(0))
 
     def run_world_model(self, features, actions):
-        data = [self._get_vrl(features)]
+        data = [self._get_vrld(features)]
         for i, ac in enumerate(actions):
             features = self._world_model_step(features, ac)
             if i + 1 != len(actions):
-                data.append(self._get_vrl(features))
+                data.append(self._get_vrld(features))
         return [torch.stack(v, 0) for v in zip(*data)]
 
     def _world_model_step(self, features, action):
@@ -222,9 +223,9 @@ class FCImaginationFeatureExtractor(FeatureExtractorBase):
 
         return features
 
-    def _get_vrl(self, features):
-        v, r, l = self.vrl_layer(features).split([1, 1, self.pd.prob_vector_len], -1)
-        return v, r, unsquash(l)
+    def _get_vrld(self, features):
+        v, r, l, d = self.vrld_layer(features).split([1, 1, self.pd.prob_vector_len, 1], -1)
+        return v, r, l, d
 
 
 class FCActionFeatureExtractor(FeatureExtractorBase):
@@ -267,13 +268,13 @@ class FCActionFeatureExtractor(FeatureExtractorBase):
 
 def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128),
                         activation=nn.Tanh, norm_factory: NormFactory=None,
-                        split_policy_value_network=True, num_values=1, goal_size=None, use_hallucination=True):
+                        split_policy_value_network=True, num_values=1, goal_size=None, use_imagination=True):
     assert len(observation_space.shape) == 1
 
     fx_kwargs = dict(input_size=observation_space.shape[0], hidden_sizes=hidden_sizes, activation=activation,
                      norm_factory=norm_factory, goal_size=goal_size)
 
-    if use_hallucination:
+    if use_imagination:
         pd = make_pd(action_space)
         def fx_factory(): return FCImaginationFeatureExtractor(**fx_kwargs, pd=pd)
     else:
