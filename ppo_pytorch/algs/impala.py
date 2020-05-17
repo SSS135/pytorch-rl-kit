@@ -377,7 +377,7 @@ class IMPALA(RLBase):
             state_values_grad_act=state_values_grad_act.squeeze(-1),
             q_values=q_values.squeeze(-1),
             logits_policy=actor_out_policy.logits,
-            features_raw=actor_out.features_raw_0,
+            **(dict(features_raw=actor_out.features_raw_0) if hasattr(actor_out, 'features_raw_0') else {}),
         )
 
     def _run_train_model_rnn(self, states, memory, dones, reward_weights, actions_old, actor_params):

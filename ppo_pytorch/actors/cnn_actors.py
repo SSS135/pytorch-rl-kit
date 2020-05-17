@@ -156,9 +156,10 @@ class CNNFeatureExtractor(FeatureExtractorBase):
     #         fixup_init(self.convs)
 
     def _calc_linear_size(self):
-        shape = 1, self.input_shape[0] + (2 if self.add_positional_features else 0), *self.input_shape[1:]
-        out_shape = self._extract_features(torch.randn(shape)).shape
-        return out_shape[1] * out_shape[2] * out_shape[3]
+        with torch.no_grad():
+            shape = 1, self.input_shape[0] + (2 if self.add_positional_features else 0), *self.input_shape[1:]
+            out_shape = self._extract_features(torch.randn(shape)).shape
+            return out_shape[1] * out_shape[2] * out_shape[3]
 
     def _make_fc_layer(self, in_features, out_features, first_layer=False, activation_norm=True):
         bias = self.norm_factory is None or not self.norm_factory.disable_bias or not self.norm_factory.allow_fc
