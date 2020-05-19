@@ -16,8 +16,8 @@ class VariableStepResult:
     team_id: np.ndarray
     match_id: np.ndarray
 
-    def copy(self):
-        return VariableStepResult(**{k: np.copy(v) for k, v in dataclasses.asdict(self).items()})
+    def copy(self, shallow=False):
+        return VariableStepResult(**{k: (v if shallow else np.copy(v)) for k, v in dataclasses.asdict(self).items()})
 
     @staticmethod
     def concatenate(*res):

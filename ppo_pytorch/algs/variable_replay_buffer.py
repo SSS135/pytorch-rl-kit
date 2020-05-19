@@ -15,10 +15,16 @@ class BufferThread:
         self.capacity = capacity
         self.horizon = horizon
         self.end_sampling_factor = end_sampling_factor
-        self.num_new_samples = 0
+        self._num_new_samples = 0
         self._data: Dict[str, Tensor] = None
         self._index = 0
         self._full_loop = False
+
+    @property
+    def avail_new_samples(self):
+        if len(self) < self.horizon or self._num_new_samples < self.horizon:
+            return 0
+        return self._num_new_samples // self.horizon * self.horizon
 
     def reduce_capacity(self, new_capacity):
         assert new_capacity <= self.capacity
@@ -53,24 +59,26 @@ class BufferThread:
 
     def get_new_samples(self) -> Dict[str, Tensor]:
         index = self._index
-        assert len(self) >= self.horizon
-        assert self.num_new_samples > 0
-        # fixme: self.horizon // 2 is a sort of hack. It does not take too much of old samples and not too little of new
-        total_samples = (self.num_new_samples + self.horizon // 2) // self.horizon * self.horizon
-        total_samples = max(self.horizon, total_samples)
-        while total_samples > len(self):
-            total_samples -= self.horizon
-        self.num_new_samples = 0
+        num_samples = self.avail_new_samples
+        assert num_samples > 0
+        self._num_new_samples = max(0, self._num_new_samples - num_samples)
+
+        start = index - num_samples - self._num_new_samples
+        end = start + num_samples
+        if start < -num_samples:
+            start += self.capacity
+            end += self.capacity
+        if end >= self.capacity:
+            start -= self.capacity
+            end -= self.capacity
 
         def loop_slice(x):
-            start = index - total_samples
-            end = index
             if start >= 0:
                 x = x[start:end]
             else:
                 x = torch.cat([x[start:], x[:end]], 0)
             # [H, B, *]
-            return x.view(total_samples // self.horizon, self.horizon, *x.shape[1:]).transpose(0, 1)
+            return x.view(num_samples // self.horizon, self.horizon, *x.shape[1:]).transpose(0, 1)
 
         return {k: loop_slice(v) for k, v in self._data.items()}
 
@@ -85,7 +93,7 @@ class BufferThread:
         for name, value in sample:
             self._data[name][self._index] = value
 
-        self.num_new_samples += 1
+        self._num_new_samples += 1
         self._index += 1
         self._check_full_loop()
 
@@ -105,8 +113,9 @@ class VariableReplayBuffer:
         self._lock = threading.Lock()
 
     @property
-    def ready_for_sampling(self):
-        return all(len(buf) >= self.horizon for buf in self._buffers)
+    def avail_new_samples(self):
+        with self._lock:
+            return sum(buf.avail_new_samples for buf in self._buffers)
 
     def push(self, actor_ids: Tensor, **sample: Tensor):
         with self._lock:
@@ -160,8 +169,7 @@ class VariableReplayBuffer:
     def get_new_samples(self):
         with self._lock:
             # [H, ~B, *]
-            rollouts = [buf.get_new_samples() for buf in self._buffers
-                        if buf.num_new_samples > 0 and len(buf) >= self.horizon]
+            rollouts = [buf.get_new_samples() for buf in self._buffers if buf.avail_new_samples > 0]
             # [H, B, *]
             return {k: torch.cat([r[k] for r in rollouts], 1) for k in rollouts[0].keys()}
 

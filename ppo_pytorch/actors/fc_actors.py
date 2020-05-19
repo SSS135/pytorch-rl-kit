@@ -6,9 +6,9 @@ from .silu import SiLU, silu
 from ..common.activation_norm import ActivationNorm
 
 from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor
-from .heads import PolicyHead, StateValueHead
+from .heads import PolicyHead, StateValueHead, ActionValueHead
 from .norm_factory import NormFactory
-from ..common.probability_distributions import ProbabilityDistribution, make_pd
+from ..common.probability_distributions import ProbabilityDistribution, make_pd, DiagGaussianPd
 import torch
 from ..config import Linear
 from optfn.skip_connections import ResidualBlock
@@ -111,6 +111,58 @@ class FCFeatureExtractor(FeatureExtractorBase):
         return x
 
 
+class FCContrastiveHierarchicalFeatureExtractor(FeatureExtractorBase):
+    def __init__(self, input_size: int, hidden_sizes=(128, 128), activation=nn.Tanh,
+                 goal_size=None, contrast_repr_len=16, pd=None, **kwargs):
+        super().__init__(**kwargs)
+        self.input_size = input_size
+        self.hidden_sizes = hidden_sizes
+        self.activation = activation
+        self.goal_size = goal_size
+        self.low_pd = pd
+        self.high_pd = DiagGaussianPd(d=contrast_repr_len, max_norm=2.0)
+        self.model = create_fc(input_size, hidden_sizes, activation, self.norm_factory)
+        h = hidden_sizes[-1]
+        self.out_embedding = nn.Linear(goal_size, h) if goal_size is not None else None
+
+        self.representation_extractor = nn.Sequential(
+            nn.Linear(h * 2, h),
+            SiLU(),
+            nn.Linear(h, contrast_repr_len),
+        )
+        self.high_level_policy = nn.Sequential(
+            nn.Linear(h, h),
+            SiLU(),
+            nn.Linear(h, self.high_pd.prob_vector_len),
+        )
+        self.high_level_action_enc_linear = nn.Linear(contrast_repr_len, h)
+        self.low_level_policy = nn.Sequential(
+            nn.Linear(h, h),
+            SiLU(),
+            nn.Linear(h, self.low_pd.prob_vector_len),
+        )
+
+    @property
+    def output_size(self):
+        return self.hidden_sizes[-1]
+
+    def forward(self, input: torch.Tensor, logger=None, cur_step=None, goal=None, **kwargs):
+        x = input.reshape(-1, input.shape[-1])
+        if self.goal_size is not None:
+            goal = goal.reshape(-1, goal.shape[-1])
+        x = self._extract_features(x, goal, logger, cur_step)
+        return x.reshape(*input.shape[:-1], -1)
+
+    def _extract_features(self, x, goal,  logger, cur_step):
+        for i, layer in enumerate(self.model):
+            x = layer(x)
+            if logger is not None:
+                logger.add_histogram(f'layer_{i}_output', x, cur_step)
+        if self.goal_size is not None:
+            x = x * 2 * self.out_embedding(goal).sigmoid()
+        return x
+
+
 def squash(x):
     return x.abs().add(1).sqrt().sub(1).mul(x.sign())
 
@@ -155,16 +207,6 @@ class FCImaginationFeatureExtractor(FeatureExtractorBase):
         )
         self._end_gate_linear = nn.Linear(h, h // self.gate_reduce)
 
-        # self.model = create_residual_fc(input_size, hidden_sizes[0])
-        # super().reset_weights()
-        # fixup_init(self.model)
-        # self.model = torch.jit.trace_module(self.model, dict(forward=torch.randn((8, input_size))))
-
-    # def reset_weights(self):
-    #     pass
-    #     # super().reset_weights()
-    #     # fixup_init(self.model)
-
     @property
     def output_size(self):
         return self.hidden_sizes[-1] * 2
@@ -186,7 +228,7 @@ class FCImaginationFeatureExtractor(FeatureExtractorBase):
         if self.goal_size is not None:
             x = x * 2 * self.out_embedding(goal).sigmoid()
 
-        x_fp = self.feature_prepare_linear(x)
+        x_fp = self.feature_prepare_linear(x.detach())
         x_hall = torch.cat([x, self._imagine(x_fp)], -1)
         return x_hall, x_fp
 
@@ -219,7 +261,7 @@ class FCImaginationFeatureExtractor(FeatureExtractorBase):
 
     def _get_vrld(self, features):
         v, r, l, d = self.vrld_layer(features).split([1, 1, self.pd.prob_vector_len, 1], -1)
-        return v, r, l, d
+        return unsquash(v), r, unsquash(l), d
 
 
 class FCActionFeatureExtractor(FeatureExtractorBase):
@@ -262,7 +304,8 @@ class FCActionFeatureExtractor(FeatureExtractorBase):
 
 def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128),
                         activation=nn.Tanh, norm_factory: NormFactory=None,
-                        split_policy_value_network=True, num_values=1, goal_size=None, use_imagination=True):
+                        split_policy_value_network=True, num_values=1, goal_size=None,
+                        use_imagination=False):
     assert len(observation_space.shape) == 1
 
     fx_kwargs = dict(input_size=observation_space.shape[0], hidden_sizes=hidden_sizes, activation=activation,
@@ -275,6 +318,18 @@ def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128)
         def fx_factory(): return FCFeatureExtractor(**fx_kwargs)
 
     return create_ppo_actor(action_space, fx_factory, split_policy_value_network, num_out=num_values)
+
+
+def create_contrastive_fc_actor(observation_space, action_space, hidden_sizes=(128, 128),
+                                activation=nn.Tanh, norm_factory: NormFactory=None, goal_size=None):
+    pd = make_pd(action_space)
+    fx = FCContrastiveHierarchicalFeatureExtractor(
+        input_size=observation_space.shape[0], hidden_sizes=hidden_sizes, activation=activation,
+        norm_factory=norm_factory, goal_size=goal_size, pd=pd)
+
+    value_head = ActionValueHead(fx.output_size, pd=pd)
+    models = {fx: dict(state_values=value_head)}
+    return ModularActor(models, False)
 
 
 def create_sac_fc_actor(observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU,

@@ -13,6 +13,31 @@ from .variable_env.variable_env_trainer import VariableEnvTrainer
 from .utils import is_running_on_windows, set_low_priority
 from sklearn.model_selection import ParameterGrid
 from torch.multiprocessing import Pool
+import cProfile, pstats, io
+from pstats import SortKey
+
+
+def run_training(trainer_cls, trainer_params, alg_params, train_frames, profile=False):
+    if is_running_on_windows():
+        os.system(f'title {trainer_params["tag"]}')
+
+    with trainer_cls(**trainer_params) as trainer:
+        trainer.logger.add_text('wrap_params', pprint.pformat(trainer_params))
+        trainer.logger.add_text('alg_params', pprint.pformat(alg_params))
+
+        if profile:
+            pr = cProfile.Profile()
+            pr.enable()
+
+        trainer.train(train_frames)
+
+        if profile:
+            pr.disable()
+            s = io.StringIO()
+            sortby = SortKey.CUMULATIVE
+            ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+            ps.print_stats()
+            print(s.getvalue())
 
 
 def rl_alg_test(hyper_params: Dict[str, list] or list, wrap_params: dict, alg_class: type, alg_params: dict,

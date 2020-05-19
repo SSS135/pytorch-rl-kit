@@ -10,7 +10,7 @@ from torch import Tensor
 from ppo_pytorch.common.variable_env.variable_step_result import VariableStepResult
 
 from .variable_env import VariableVecEnv
-from .. import RLBase
+from ..rl_base import RLBase
 from ..tensorboard_env_logger import TensorboardEnvLogger
 import numpy as np
 from trueskill import Rating, rate_1vs1
@@ -94,11 +94,13 @@ class VariableSelfPlayTrainer:
         self._select_archive_model()
 
         tensors_sp, tensors_arch = self._separate_data()
-        self._validate_actors(tensors_sp[4], tensors_arch[4])
+        ac_sp = tensors_sp[4] if tensors_sp is not None else None
+        ac_arch = tensors_arch[4] if tensors_arch is not None else None
+        self._validate_actors(ac_sp, ac_arch)
         action_sp = self._rl_alg.step(*tensors_sp) if tensors_sp is not None else None
         action_arch = self._archive_rl_alg.step(*tensors_arch) if tensors_arch is not None else None
         action = self._cat_actions(action_sp, action_arch)
-        assert torch.allclose(torch.from_numpy(self._data.agent_id), self._cat_actions(tensors_sp[4], tensors_arch[4]))
+        assert torch.allclose(torch.from_numpy(self._data.agent_id), self._cat_actions(ac_sp, ac_arch))
 
         self._rate_matches()
         self._cleanup_matches()
@@ -121,10 +123,18 @@ class VariableSelfPlayTrainer:
         while self._frame < max_frames:
             self.step()
 
-    def _validate_actors(self, actors_sp: Tensor, actors_arch: Tensor):
-        for a in actors_sp.tolist():
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._env.close()
+
+    def _validate_actors(self, actors_sp: Optional[Tensor], actors_arch: Optional[Tensor]):
+        actors_sp = [] if actors_sp is None else actors_sp.tolist()
+        actors_arch = [] if actors_arch is None else actors_arch.tolist()
+        for a in actors_sp:
             self._actors_sp.add(a)
-        for a in actors_arch.tolist():
+        for a in actors_arch:
             self._actors_arch.add(a)
         if len(self._actors_sp) > 10000:
             self._actors_sp.clear()

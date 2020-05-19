@@ -26,3 +26,8 @@ class MergedVariableEnv(VariableEnv):
 
     def render(self):
         self.envs[0].render()
+
+    def close(self):
+        for e in self.envs:
+            e.close()
+        self.envs = None

@@ -4,7 +4,7 @@ from typing import Callable
 import torch
 
 from .variable_env import VariableVecEnv
-from .. import RLBase
+from ..rl_base import RLBase
 from ..tensorboard_env_logger import TensorboardEnvLogger
 
 

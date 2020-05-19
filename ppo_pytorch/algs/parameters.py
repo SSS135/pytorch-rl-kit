@@ -2,8 +2,9 @@ from functools import partial
 
 import torch.optim as optim
 
-from ..common import DecayLR, ValueDecay
-from ..actors import create_ppo_fc_actor, create_ppo_cnn_actor
+from ..common.value_decay import DecayLR, ValueDecay
+from ..actors.fc_actors import create_ppo_fc_actor
+from ..actors.cnn_actors import create_ppo_cnn_actor
 
 
 def create_ppo_kwargs(learning_decay_frames=None, **kwargs):

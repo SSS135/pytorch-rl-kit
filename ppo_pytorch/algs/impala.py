@@ -12,7 +12,7 @@ import torch
 import torch.autograd
 import torch.optim as optim
 from optfn.gradient_logger import log_gradients
-from ppo_pytorch.actors import FCFeatureExtractor
+from ppo_pytorch.actors.fc_actors import FCFeatureExtractor
 from ppo_pytorch.actors.fc_actors import squash
 from ppo_pytorch.algs.reward_weight_generator import RewardWeightGenerator
 from ppo_pytorch.common.probability_distributions import DiagGaussianPd, FixedStdGaussianPd
@@ -24,7 +24,8 @@ from .variable_step_collector import VariableStepCollector
 from .variable_replay_buffer import VariableReplayBuffer
 from .utils import RunningNorm, scaled_impala_loss
 from .utils import v_mpo_loss
-from ..actors import create_ppo_fc_actor, Actor
+from ..actors.fc_actors import create_ppo_fc_actor
+from ..actors.actors import Actor
 from ..common.activation_norm import activation_norm_loss
 from ..actors.utils import model_diff
 from ..algs.utils import lerp_module_
@@ -55,7 +56,6 @@ class IMPALA(RLBase):
                  optimizer_factory=partial(optim.Adam, lr=3e-4),
                  value_loss_scale=0.5,
                  q_loss_scale=1.0,
-                 loss_dpg_scale=0.5,
                  entropy_loss_scale=0.01,
                  cuda_eval=False,
                  cuda_train=False,
@@ -95,7 +95,6 @@ class IMPALA(RLBase):
         self.grad_clip_norm = grad_clip_norm
         self.value_loss_scale = value_loss_scale
         self.q_loss_scale = q_loss_scale
-        self.loss_dpg_scale = loss_dpg_scale
         self.model_factory = model_factory
         self.optimizer_factory = optimizer_factory
         self.reward_scale = reward_scale
@@ -147,7 +146,7 @@ class IMPALA(RLBase):
         self.loss_type = [LossType[c] for c in self.loss_type]
         assert len(set(self.loss_type) - set(c for c in LossType)) == 0
 
-        assert self.memory_burn_in_steps < self.train_horizon
+        assert not self._train_model.is_recurrent or self.memory_burn_in_steps < self.train_horizon
         # DataLoader limitation
         assert self.batch_size % self.train_horizon == 0, (self.batch_size, self.train_horizon)
 
@@ -155,7 +154,6 @@ class IMPALA(RLBase):
         self._step_collector = VariableStepCollector(
             self._eval_model, self._replay_buffer, self.device_eval, self._reward_weight_gen,
             self.reward_reweight_interval, self.disable_training)
-        self._new_frames = 0
         self._eval_no_copy_updates = 0
         self._adv_norm = RunningNorm(momentum=0.95, mean_norm=False)
         self._train_future: Optional[Future] = None
@@ -175,10 +173,8 @@ class IMPALA(RLBase):
         actions = self._step_collector.step(data)
 
         if not self.disable_training:
-            self._new_frames += len(data.actor_id)
-            if self._new_frames > self.train_interval_frames and self._replay_buffer.ready_for_sampling:
+            if self._replay_buffer.avail_new_samples >= self.train_interval_frames:
                 self._train()
-                self._new_frames = 0
 
         return self._eval_model.heads.logits.pd.postprocess_action(actions.cpu())
 
@@ -198,17 +194,20 @@ class IMPALA(RLBase):
             self._scheduler.step(self.frame_train)
 
     def _create_data(self) -> AttrDict:
+        roll_per_batch = self.batch_size // self.train_horizon
+
         def cat_replay(last, rand):
             # uniformly cat last and rand
-            num_chunks = max(1, min(rand.shape[1], last.shape[1]))
-            rand_chunks = rand.chunk(num_chunks, dim=1)
-            last_chunks = last.chunk(num_chunks, dim=1)
-            assert len(rand_chunks) == len(last_chunks)
+            rand_roll = list(reversed(rand.unbind(dim=1)))
+            last_roll = list(reversed(last.unbind(dim=1)))
             all = []
-            for l, r in zip(last_chunks, rand_chunks):
-                all.append(l)
-                all.append(r)
-            return torch.cat(all, 1)
+            while len(rand_roll) > 0 or len(last_roll) > 0:
+                if len(last_roll) > 0:
+                    all.append(last_roll.pop())
+                for _ in range(max(1, self.replay_ratio)):
+                    if len(rand_roll) > 0:
+                        all.append(rand_roll.pop())
+            return torch.stack(all, 1)
 
         enough_samples = self.replay_ratio != 0 and len(self._replay_buffer) >= \
                          max(2 * self.train_horizon * self.replay_ratio, self.min_replay_size)
@@ -217,7 +216,6 @@ class IMPALA(RLBase):
         # (H, B, *)
         last_samples = self._replay_buffer.get_new_samples()
         n_new_rollouts = last_samples['dones'].shape[1]
-        roll_per_batch = self.batch_size // self.train_horizon
         n_rand_rollouts = n_new_rollouts * replay_ratio
         n_rand_rollouts = math.ceil((n_rand_rollouts + n_new_rollouts) / roll_per_batch) * roll_per_batch - n_new_rollouts
         if n_rand_rollouts > 0:
@@ -329,14 +327,13 @@ class IMPALA(RLBase):
             if do_log:
                 batch.state_values = log_gradients(batch.state_values, self.logger, 'Values', self.frame_train)
                 batch.q_values = log_gradients(batch.q_values, self.logger, 'Q Values', self.frame_train)
-                batch.state_values_grad_act = log_gradients(batch.state_values_grad_act, self.logger, 'Values Grad Act', self.frame_train)
                 batch.logits = log_gradients(batch.logits, self.logger, 'Logits', self.frame_train)
 
             # get loss
             loss = self._get_impala_loss(batch, do_log)
             if loss is None:
                 return None
-            act_norm_loss = activation_norm_loss(self._train_model).cpu() if self.activation_norm_scale > 0 else 0
+            act_norm_loss = activation_norm_loss(self._train_model).cpu()
             loss = loss.mean() + self.activation_norm_scale * act_norm_loss
 
         if do_log:
@@ -365,16 +362,11 @@ class IMPALA(RLBase):
         actions_stack = torch.stack([actions_desired.detach(), actions_old], 0)
         values_stack = self._train_model.heads.state_values(actor_out.features_0, actions=actions_stack)
         state_values, q_values = values_stack.unbind(0)
-        state_values_grad_act = state_values.detach()
-        # state_values_grad_act = self._calc_actgrad_values(actions_desired, actor_out.features_0) \
-        #     if actions_desired.requires_grad else state_values.detach()
-        assert state_values.shape == state_values_grad_act.shape == (*states.shape[:2], 1), \
-            (state_values.shape, state_values_grad_act.shape, (*states.shape[:2], 1), states.shape)
+        assert state_values.shape == (*states.shape[:2], 1)
 
         return dict(
             logits=actor_out.logits,
             state_values=state_values.squeeze(-1),
-            state_values_grad_act=state_values_grad_act.squeeze(-1),
             q_values=q_values.squeeze(-1),
             logits_policy=actor_out_policy.logits,
             **(dict(features_raw=actor_out.features_raw_0) if hasattr(actor_out, 'features_raw_0') else {}),
@@ -398,35 +390,15 @@ class IMPALA(RLBase):
         actions_stack = torch.stack([actions_desired.detach(), actions_old], 0)
         values_stack = self._train_model.heads.state_values(features, actions=actions_stack)
         state_values, q_values = values_stack.unbind(0)
-        state_values_grad_act = state_values.detach()
-        # state_values_grad_act = self._calc_actgrad_values(actions_desired, features) \
-        #     if actions_desired.requires_grad else state_values.detach()
-        assert state_values.shape == state_values_grad_act.shape == (*states.shape[:-1], 1)
+        assert state_values.shape == (*states.shape[:-1], 1)
 
         return dict(
             logits=logits,
             state_values=state_values.squeeze(-1),
-            state_values_grad_act=state_values_grad_act.squeeze(-1),
             q_values=q_values.squeeze(-1),
             logits_policy=actor_out_policy.logits,
             features_raw=features_raw,
         )
-
-    # def _calc_actgrad_values(self, actions_desired, features):
-    #     assert actions_desired.requires_grad
-    #
-    #     head = self._train_model.heads.state_values
-    #
-    #     for p in head.parameters():
-    #         p.requires_grad = False
-    #
-    #     q_grad_act = head(features.detach(), actions=actions_desired)
-    #
-    #     for p in head.parameters():
-    #         p.requires_grad = True
-    #
-    #     assert q_grad_act.requires_grad
-    #     return q_grad_act
 
     def _get_impala_loss(self, data, do_log=False, pd=None, tag=''):
         """
@@ -479,19 +451,16 @@ class IMPALA(RLBase):
         loss_ent = self.entropy_loss_scale * -entropy.mean()
         loss_value = self.value_loss_scale * barron_loss(data.state_values, data.value_targets, *self.barron_alpha_c, reduce=False)
         loss_q = self.q_loss_scale * barron_loss(data.q_values, data.q_targets, *self.barron_alpha_c, reduce=False)
-        # loss_dpg = self.loss_dpg_scale * -data.state_values_grad_act
 
         assert loss_value.shape == data.state_values.shape, (loss_value.shape, data.state_values.shape)
-        assert loss_q.shape == loss_value.shape #== loss_dpg.shape
+        assert loss_q.shape == loss_value.shape
 
         loss_ent = loss_ent.mean()
         loss_value = loss_value.mean()
         loss_q = loss_q.mean()
-        # loss_world_model = loss_world_model.mean()
-        # loss_dpg = loss_dpg.mean()
 
         # sum all losses
-        total_loss = loss_policy + loss_value + loss_q + loss_ent + loss_world_model #+ loss_dpg
+        total_loss = loss_policy + loss_value + loss_q + loss_ent + loss_world_model
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_policy.mean().item(), loss_value.mean().item())
 
@@ -554,7 +523,7 @@ class IMPALA(RLBase):
 
         value_loss = barron_loss(pred_values.squeeze(-1), values, *self.barron_alpha_c)
         reward_loss = 2 * barron_loss(pred_rewards[1:].squeeze(-1), rewards[:-1], *self.barron_alpha_c)
-        done_loss = barron_loss(pred_dones.squeeze(-1), dones, *self.barron_alpha_c)
+        done_loss = barron_loss(pred_dones[1:].squeeze(-1), dones[:-1], *self.barron_alpha_c)
 
         with torch.no_grad():
             if do_log:

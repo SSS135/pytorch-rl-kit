@@ -5,7 +5,7 @@ import gym
 from torch.nn.utils import clip_grad_norm_
 from optfn.virtual_adversarial_training import get_vat_inputs
 
-from ..actors import create_ppo_cnn_actor
+from ..actors.cnn_actors import create_ppo_cnn_actor
 from .attr_dict import AttrDict
 from .data_loader import DataLoader
 

@@ -3,7 +3,7 @@ from itertools import count
 from typing import NamedTuple, List, Optional, Dict
 
 import torch
-from ppo_pytorch.actors import Actor
+from ppo_pytorch.actors.actors import Actor
 from ppo_pytorch.common.attr_dict import AttrDict
 from ppo_pytorch.common.rl_base import RLStepData
 

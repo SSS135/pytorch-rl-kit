@@ -11,7 +11,7 @@ import torch.autograd
 import torch.autograd
 import torch.nn.functional as F
 import torch.optim as optim
-from ppo_pytorch.actors import Actor
+from ppo_pytorch.actors.actors import Actor
 from ppo_pytorch.actors.fc_actors import create_sac_fc_actor
 from ppo_pytorch.algs.ppo import copy_state_dict
 from ppo_pytorch.common.gae import calc_vtrace
@@ -20,7 +20,7 @@ from torchvision.utils import make_grid
 
 from .replay_buffer import ReplayBuffer
 from .utils import lerp_module_
-from ..actors import ModularActor
+from ..actors.actors import ModularActor
 from ..actors.utils import model_diff
 from ..common.attr_dict import AttrDict
 from ..common.barron_loss import barron_loss

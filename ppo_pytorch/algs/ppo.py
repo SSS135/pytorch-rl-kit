@@ -16,7 +16,8 @@ from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 
 from .steps_processor import StepsProcessor
-from ..actors import create_ppo_fc_actor, Actor
+from ..actors.fc_actors import create_ppo_fc_actor
+from ..actors.actors import Actor
 from ..actors.utils import model_diff
 from ..common.attr_dict import AttrDict
 from ..common.barron_loss import barron_loss

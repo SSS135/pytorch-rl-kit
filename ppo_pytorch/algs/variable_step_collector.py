@@ -1,6 +1,7 @@
 import dataclasses
 import random
 from collections import defaultdict
+from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass
 from itertools import count
 from typing import NamedTuple, List, Optional, Dict, Tuple, Callable
@@ -10,7 +11,7 @@ from .reward_weight_generator import RewardWeightGenerator
 from torch import Tensor
 
 import torch
-from ..actors import Actor, ModularActor
+from ..actors.actors import Actor, ModularActor
 from .variable_replay_buffer import VariableReplayBuffer
 from ..common.attr_dict import AttrDict
 from ..common.rl_base import RLStepData
@@ -41,11 +42,16 @@ class VariableStepCollector:
         self._step_datas: Dict[int, StepData] = defaultdict(StepData)
         self._memory_shape = None
         self._reward_reweight_counter = 0
+        self._executor = ThreadPoolExecutor(max_workers=1, initializer=lambda: torch.set_num_threads(4))
+        self._future = None
         # self._save_obs = []
         # self._save_logits = []
 
     def step(self, data: RLStepData) -> Tensor:
         with torch.no_grad():
+            if self._future is not None:
+                self._future.result()
+
             self._reward_reweight_counter += 1
             if self._reward_reweight_counter >= self.reward_reweight_interval:
                 self._reward_reweight_counter = 0
@@ -63,17 +69,19 @@ class VariableStepCollector:
             actions = self.actor.heads.logits.pd.sample(logits)
             assert not torch.isnan(actions.sum())
 
-            self._push_to_buffer(data, logits, actions, reward_weights, memory_in, memory_out)
+            self._future = self._executor.submit(self._push_to_buffer, data, logits, actions, reward_weights, memory_in, memory_out)
             return actions
 
     def drop_collected_steps(self):
+        if self._future is not None:
+            self._future.result()
         self._step_datas.clear()
 
     def _run_model(self, data: RLStepData) -> Tuple[Tensor, Tensor, Tensor, Optional[Tensor], Optional[Tensor]]:
         obs = data.obs.to(self.device)
         reward_weights = self._get_data_field(data.actor_id, data.done,
                                               lambda x: x.reward_weights,
-                                              lambda: self.reward_weight_gen.generate(1, device=self.device)[0])
+                                              lambda: self.reward_weight_gen.generate(1)[0])
         if self.actor.is_recurrent:
             dones_t = data.done.unsqueeze(0).to(self.device)
             if self._memory_shape is None:
@@ -81,7 +89,7 @@ class VariableStepCollector:
                                                 goal=reward_weights.unsqueeze(0), evaluate_heads=['logits']).memory.shape[1:]
             input_memory = self._get_data_field(data.actor_id, data.done,
                                                 lambda x: x.output_memory,
-                                                lambda: torch.zeros(self._memory_shape, device=self.device))
+                                                lambda: torch.zeros(self._memory_shape))
             ac_out = self.actor(obs.unsqueeze(0), memory=input_memory, dones=dones_t,
                                 goal=reward_weights.unsqueeze(0), evaluate_heads=['logits'])
             ac_out.logits = ac_out.logits.squeeze(0)
@@ -94,14 +102,18 @@ class VariableStepCollector:
         return (ac_out.logits, reward_weights, *mem_tuple)
 
     def _push_to_buffer(self, data: RLStepData, logits, actions, reward_weights, memory_in, memory_out):
+        data_actor_id, data_done, data_rewards, data_obs, logits, actions, reward_weights, memory_in, memory_out = \
+            [x.cpu() if x is not None else None for x in
+             (data.actor_id, data.done, data.rewards, data.obs, logits, actions, reward_weights, memory_in, memory_out)]
+
         # write rewards and done to step data, extract complete steps
         full_step_datas = {}
-        for i, (aid, done) in enumerate(zip(data.actor_id.tolist(), data.done.tolist())):
+        for i, (aid, done) in enumerate(zip(data_actor_id.tolist(), data_done.tolist())):
             if aid not in self._step_datas:
                 continue
             step_data = self._step_datas[aid]
-            step_data.rewards = data.rewards[i]
-            step_data.done = data.done[i]
+            step_data.rewards = data_rewards[i]
+            step_data.done = data_done[i]
             full_step_datas[aid] = step_data
             if done:
                 del self._step_datas[aid]
@@ -129,11 +141,11 @@ class VariableStepCollector:
             self.replay_buffer.push(**buffer_data)
 
         # add new steps to _step_datas
-        for i, (aid, done) in enumerate(zip(data.actor_id.tolist(), data.done.tolist())):
+        for i, (aid, done) in enumerate(zip(data_actor_id.tolist(), data_done.tolist())):
             if done:
                 continue
             step_data = self._step_datas[aid]
-            step_data.obs = data.obs[i]
+            step_data.obs = data_obs[i]
             step_data.logits = logits[i]
             step_data.actions = actions[i]
             step_data.reward_weights = reward_weights[i]
@@ -154,7 +166,7 @@ class VariableStepCollector:
         return torch.stack(fields, 0).to(self.device)
 
     def _reweight_rewards(self):
-        reward_weights = self.reward_weight_gen.generate(len(self._step_datas), self.device)
+        reward_weights = self.reward_weight_gen.generate(len(self._step_datas))
         for (aid, data), rw in zip(self._step_datas.items(), reward_weights):
             data.reward_weights = rw
 

@@ -4,7 +4,7 @@ if __name__ == '__main__':
 
     num_envs = 4
     actors_per_env = 8 * 1
-    visual = True
+    visual = False
     exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuousVisual\DungeonAI'
     env_factory = partial(VariableUnityVecEnv, exe_path, num_envs=num_envs, visual_observations=visual, stacked_frames=4,
                           no_graphics_except_first=False)
@@ -47,10 +47,10 @@ if __name__ == '__main__':
         random_crop_obs=visual,
 
         optimizer_factory=partial(optim.Adam, lr=3e-4),
-        model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='normal'),
+        # model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
         # model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
-        # model_factory=partial(rl.actors.create_ppo_fc_actor, hidden_sizes=(256, 256, 256),
-        #                       activation=rl.actors.SiLU, split_policy_value_network=False),
+        model_factory=partial(rl.actors.create_ppo_fc_actor, hidden_sizes=(256, 256, 256),
+                              activation=rl.actors.SiLU, split_policy_value_network=False, use_imagination=True),
 
         # model_init_path=r'c:\Users\Alexander\sync-pc\Jupyter\tensorboard\IMPALA_SimpleArenaContinuous_2020-04-27_15-08-03_[vls1.0_advnorm0.99]_dlwu5k0o\model_0.pth',
         # disable_training=True,
@@ -58,7 +58,7 @@ if __name__ == '__main__':
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[cnn-normal_an0.003_rwkill]',
+        tag='[fc-imdone-mean-detach-unsquashLV-fixdone-floss]',
         log_root_path=log_path,
         log_interval=20000,
     )
