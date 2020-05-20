@@ -1,14 +1,14 @@
 import time
 from enum import Enum
 from multiprocessing.connection import Connection
-from typing import List, NamedTuple, Any, Optional
+from multiprocessing import Process, Pipe
+from typing import List, NamedTuple, Any, Optional, Callable
 
 import numpy as np
 
 from .variable_env import VariableEnv
 from .variable_env_merger import VariableEnvMerger
 from .variable_step_result import VariableStepResult
-import multiprocessing as mp
 
 
 class Command(Enum):
@@ -24,7 +24,7 @@ class Message(NamedTuple):
     payload: Any
 
 
-def process_entry(pipe: mp.connection.Connection, env_fn):
+def process_entry(pipe: Connection, env_fn):
     env = env_fn()
     env.reset()
     while True:
@@ -44,20 +44,24 @@ def process_entry(pipe: mp.connection.Connection, env_fn):
 
 
 class AsyncVariableEnv(VariableEnv):
-    def __init__(self, env_factory, num_envs, min_ready_envs=0.5):
-        self.min_ready_envs = max(1, round(num_envs * min_ready_envs))
+    def __init__(self, env_factories: List[Callable], min_ready_envs=0.5):
+        self.min_ready_envs = max(1, round(len(env_factories) * min_ready_envs))
         self._merger = VariableEnvMerger()
         self._waiting_for_actions = []
 
         self._pipes = []
         self._processes = []
-        for _ in range(num_envs):
-            parent_conn, child_conn = mp.Pipe()
+        for env_factory in env_factories:
+            parent_conn, child_conn = Pipe()
             self._pipes.append(parent_conn)
-            proc = mp.Process(target=process_entry, args=(child_conn, env_factory))
+            proc = Process(target=process_entry, args=(child_conn, env_factory))
             proc.start()
             self._processes.append(proc)
         self.observation_space, self.action_space, self.env_name = self._sync_rpc(Command.stats, pipes=[self._pipes[0]])[0]
+
+    @property
+    def num_envs(self):
+        return len(self._processes)
 
     def step(self, action: np.ndarray) -> VariableStepResult:
         self._submit_actions(action)
