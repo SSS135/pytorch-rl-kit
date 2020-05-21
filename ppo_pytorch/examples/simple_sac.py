@@ -1,32 +1,44 @@
+from ppo_pytorch.actors.fc_actors import create_sac_fc_actor
+from ppo_pytorch.actors.silu import SiLU
+
 if __name__ == '__main__':
     from .init_vars import *
+    from ..algs.parameters import create_sac_fc_kwargs
+    from ppo_pytorch.algs.sac import SAC
+    from ppo_pytorch.common.env_factory import SimpleVecEnv
+    import ppo_pytorch.common.cartpole_continuous
+    import pybullet_envs
 
-    env_factory = partial(rl.common.SimpleVecEnv, 'CartPoleContinuous-v1', parallel='dummy')
+    train_frames = 2e6
+    env_factory = partial(SimpleVecEnv, 'AntBulletEnv-v0', parallel='dummy')
 
-    alg_class = rl.algs.SAC
-    alg_params = rl.algs.create_sac_fc_kwargs(
-        5e5,
+    alg_class = SAC
+    alg_params = create_sac_fc_kwargs(
+        train_frames,
         cuda_eval=False,
         cuda_train=True,
         num_actors=8,
-        train_interval=64,
-        batch_size=128,
-        num_batches=64,
-        kl_pull=0.5,
+        train_interval=16,
+        batch_size=512,
+        num_batches=16,
+        kl_pull=0.1,
+        replay_buffer_size=128*1024,
+        replay_end_sampling_factor=0.05,
         reward_scale=0.1,
         rollout_length=32,
-        vtrace_kl_limit=0.2,
+        vtrace_kl_limit=0.5,
         actor_update_interval=2,
         entropy_scale=0.1,
-        actor_optimizer_factory=partial(optim.Adam, lr=1e-3),
-        critic_optimizer_factory=partial(optim.Adam, lr=1e-3),
+        actor_optimizer_factory=partial(optim.Adam, lr=5e-4),
+        critic_optimizer_factory=partial(optim.Adam, lr=5e-4),
+        model_factory=partial(create_sac_fc_actor, activation=SiLU),
     )
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[lr1e-3_hq_rand0.05_vt2_tanh_es0.1_vtrace32_rbs128_kl0.5_ui8]',
+        tag='[silu_lr5_randac0.05_kllim0.5_klpull0.1_bs512_resf0.05_ui8]',
         log_root_path=log_path,
         log_interval=10000,
     )
 
-    rl_alg_test(hparams, wrap_params, alg_class, alg_params, env_factory, num_processes=1, iters=1, frames=5e5)
+    rl_alg_test(hparams, wrap_params, alg_class, alg_params, env_factory, num_processes=1, iters=1, frames=train_frames)

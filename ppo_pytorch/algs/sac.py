@@ -14,6 +14,7 @@ import torch.optim as optim
 from ppo_pytorch.actors.actors import Actor
 from ppo_pytorch.actors.fc_actors import create_sac_fc_actor
 from ppo_pytorch.algs.ppo import copy_state_dict
+from ppo_pytorch.common.activation_norm import activation_norm_loss
 from ppo_pytorch.common.gae import calc_vtrace
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
@@ -37,11 +38,12 @@ class SAC(RLBase):
                  num_batches=16,
                  rollout_length=2,
                  replay_buffer_size=128*1024,
+                 replay_end_sampling_factor=1.0,
                  target_model_blend=0.005,
                  actor_update_interval=2,
                  random_policy_frames=10000,
                  entropy_scale=0.2,
-                 kl_pull=0.05,
+                 kl_pull=0.5,
                  model_factory=create_sac_fc_actor,
                  actor_optimizer_factory=partial(optim.Adam, lr=5e-4),
                  critic_optimizer_factory=partial(optim.Adam, lr=5e-4),
@@ -55,6 +57,7 @@ class SAC(RLBase):
                  # use_pop_art=False,
                  vtrace_max_ratio=1.0,
                  vtrace_kl_limit=0.2,
+                 act_norm_scale=0.003,
                  **kwargs):
         super().__init__(observation_space, action_space, **kwargs)
         self._init_args = locals()
@@ -64,6 +67,7 @@ class SAC(RLBase):
         self.num_batches = num_batches
         self.rollout_length = rollout_length
         self.replay_buffer_size = replay_buffer_size
+        self.replay_end_sampling_factor = replay_end_sampling_factor
         self.target_model_blend = target_model_blend
         self.actor_update_interval = actor_update_interval
         self.random_policy_frames = random_policy_frames
@@ -74,10 +78,9 @@ class SAC(RLBase):
         self.device_train = torch.device('cuda' if cuda_train else 'cpu')
         self.grad_clip_norm = grad_clip_norm
         self.reward_scale = reward_scale
-        # self.barron_alpha_c = barron_alpha_c
-        # self.use_pop_art = use_pop_art
         self.vtrace_max_ratio = vtrace_max_ratio
         self.vtrace_kl_limit = vtrace_kl_limit
+        self.act_norm_scale = act_norm_scale
 
         assert rollout_length >= 2
         assert batch_size % rollout_length == 0
@@ -104,9 +107,7 @@ class SAC(RLBase):
         self._actor_lr_scheduler = lr_scheduler_factory(self._actor_optimizer) if lr_scheduler_factory is not None else None
         self._critic_lr_scheduler = lr_scheduler_factory(self._critic_optimizer) if lr_scheduler_factory is not None else None
         self._entropy_decay = entropy_decay_factory() if entropy_decay_factory is not None else None
-        self._replay_buffer = ReplayBuffer(replay_buffer_size)
-        # self._pop_art = PopArt()
-        # self._train_executor = ThreadPoolExecutor(max_workers=1)
+        self._replay_buffer = ReplayBuffer(replay_buffer_size, replay_end_sampling_factor)
         self._eval_steps = 0
         self._prev_data = None
         self._last_model_save_frame = 0
@@ -155,9 +156,6 @@ class SAC(RLBase):
     def _train(self):
         data = self._create_data()
         self._do_train(data)
-        # if self._train_future is not None:
-        #     self._train_future.result()
-        # self._train_future = self._train_executor.submit(self._train_async, data)
 
     def _do_train(self, data):
         with torch.no_grad():
@@ -194,8 +192,6 @@ class SAC(RLBase):
             self.logger.add_scalar('Optimizer/Learning Rate', self._actor_optimizer.param_groups[0]['lr'], self.frame_train)
             if loss is not None:
                 self.logger.add_scalar('Losses/Total Loss', loss, self.frame_train)
-            # self.logger.add_scalar('Stability/KL Blend', kl_policy, self.frame_train)
-            # self.logger.add_scalar('Stability/KL Replay', kl_replay, self.frame_train)
             self.logger.add_scalar('Model Diff/Abs', model_diff(old_model, self._train_model), self.frame_train)
             self.logger.add_scalar('Model Diff/Max', model_diff(old_model, self._train_model, True), self.frame_train)
 
@@ -203,7 +199,7 @@ class SAC(RLBase):
 
     @property
     def _do_actor_update(self):
-        return self._update_iter % self.actor_update_interval == 0
+        return self._update_iter % self.actor_update_interval == self.actor_update_interval - 1
 
     def _batch_update(self, batch, do_log=False):
         self._train_model.zero_grad()
@@ -223,18 +219,6 @@ class SAC(RLBase):
         else:
             actor_loss = 0
 
-        # with torch.no_grad():
-        #     if do_log:
-        #         self._log_training_data(data)
-        #         ratio = (data.logp - data.logp_policy).exp() - 1
-        #         self.logger.add_scalar('Prob Ratio/Mean' + tag, ratio.mean(), self.frame_train)
-        #         self.logger.add_scalar('Prob Ratio/Abs Mean' + tag, ratio.abs().mean(), self.frame_train)
-        #         self.logger.add_scalar('Prob Ratio/Abs Max' + tag, ratio.abs().max(), self.frame_train)
-        #         self.logger.add_scalar('Stability/Entropy' + tag, entropy.mean(), self.frame_train)
-        #         self.logger.add_scalar('Losses/State Value' + tag, loss_value.mean(), self.frame_train)
-        #         self.logger.add_histogram('Losses/Value Hist' + tag, loss_value, self.frame_train)
-        #         self.logger.add_histogram('Losses/Ratio Hist' + tag, ratio, self.frame_train)
-
         return actor_loss + critc_loss
 
     def _critic_step(self, data: AttrDict, do_log):
@@ -244,32 +228,45 @@ class SAC(RLBase):
         actions = pd.sample(logits)
         logp = pd.logp(actions, logits)
 
-        ac_out = self._target_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions.tanh(), logits=logits)
-        q_values = torch.min(ac_out.q1, ac_out.q2).squeeze(-1) - self.entropy_scale * logp.mean(-1)
+        ac_out_target = self._target_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions.tanh())
+        q_values = torch.min(ac_out_target.q1, ac_out_target.q2).squeeze(-1) - self.entropy_scale * logp.mean(-1)
 
         probs_ratio = (pd.logp(data.actions, logits) - pd.logp(data.actions, data.logits_old)).exp()
         kl_replay = pd.kl(data.logits_old, logits)
 
-        vtrace_targets, _, _, _ = calc_vtrace(
-            data.rewards[1:-1], q_values[1:],
-            data.dones[1:-1], probs_ratio[1:-1].detach().mean(-1), kl_replay[1:-1].detach().mean(-1),
+        vtrace_targets, _, _ = calc_vtrace(
+            data.rewards[:-1], q_values,
+            data.dones[:-1], probs_ratio[:-1].detach().mean(-1), kl_replay[:-1].detach().mean(-1),
             self.reward_discount, self.vtrace_max_ratio, self.vtrace_kl_limit)
-        targets = data.rewards[:-2] + self.reward_discount * (1 - data.dones[:-2]) * vtrace_targets
+        targets = data.rewards[:-1] + self.reward_discount * (1 - data.dones[:-1]) * vtrace_targets[1:]
 
-        # for i in reversed(range(self.value_target_steps)):
-        #     targets = data.rewards[i] + self.reward_discount * (1 - data.dones[i]) * targets
-        # assert self.value_target_steps == 1 and data.states.shape[0] == 2
-        # targets = data.rewards[0] + self.reward_discount * (1 - data.dones[0]) * targets
-
-        assert (targets.shape[0] + 2, *targets.shape[1:]) == data.rewards.shape == logp.shape[:-1], (targets.shape, data.rewards.shape, logp.shape)
+        assert (targets.shape[0] + 1, *targets.shape[1:]) == data.rewards.shape == logp.shape[:-1], (targets.shape, data.rewards.shape, logp.shape)
 
         with torch.enable_grad():
-            ac = data.actions[:-2].tanh()
-            # ac = ac + torch.empty_like(ac).uniform_(-0.1, 0.1)
-            ac_out_first = self._train_model(data.states[:-2], evaluate_heads=['q1', 'q2'], actions=ac, logits=data.logits_old[:-2])
-            loss = (ac_out_first.q1.squeeze(-1) - targets) ** 2 + (ac_out_first.q2.squeeze(-1) - targets) ** 2
-            assert targets.shape == loss.shape
-            loss = loss.mean()
+            ac = data.actions[:-1].tanh()
+            ac = ac + torch.empty_like(ac).uniform_(-0.05, 0.05)
+            ac_out_first = self._train_model(data.states[:-1], evaluate_heads=['q1', 'q2'], actions=ac)
+            loss_value = (ac_out_first.q1.squeeze(-1) - targets) ** 2 + (ac_out_first.q2.squeeze(-1) - targets) ** 2
+            act_norm_loss = activation_norm_loss(self._train_model)
+            assert targets.shape == loss_value.shape
+            loss = loss_value.mean() + self.act_norm_scale * act_norm_loss
+
+        if do_log:
+            q1, q2 = ac_out_first.q1, ac_out_first.q2
+            q_targ_1step = data.rewards[:-1] + self.reward_discount * (1 - data.dones[:-1]) * q_values[1:]
+            self.logger.add_scalar('Stability/Entropy', pd.entropy(logits).mean(), self.frame_train)
+            self.logger.add_scalar('Losses/State Value', loss_value.mean(), self.frame_train)
+            self.logger.add_scalar('Values/Q1', q1.mean(), self.frame_train)
+            q12_min = torch.min(q1, q2)
+            q12t1t2_min = torch.stack([q1, q2, ac_out_target.q1[:-1], ac_out_target.q2[:-1]], 0).min(0)[0]
+            self.logger.add_scalar('Values/Q12 Min', q12_min.mean(), self.frame_train)
+            self.logger.add_scalar('Values/Q12T1T2 Min', q12t1t2_min.mean(), self.frame_train)
+            self.logger.add_scalar('Values/Q1 - Q12 Min', (q1 - q12_min).mean(), self.frame_train)
+            self.logger.add_scalar('Values/Q1 - Q12T1T2 Min', (q1 - q12t1t2_min).mean(), self.frame_train)
+            self.logger.add_scalar('Value Errors/RMSE 1 Step', (q1.squeeze(-1) - q_targ_1step).pow(2).mean().sqrt(), self.frame_train)
+            self.logger.add_scalar('Value Errors/RMSE', (q1.squeeze(-1) - targets).pow(2).mean().sqrt(), self.frame_train)
+            self.logger.add_scalar('Value Errors/Abs', (q1.squeeze(-1) - targets).abs().mean(), self.frame_train)
+            self.logger.add_scalar('Value Errors/Max', (q1.squeeze(-1) - targets).abs().max(), self.frame_train)
 
         return loss
 
@@ -282,48 +279,18 @@ class SAC(RLBase):
             actions = pd.sample(logits)
             logp = pd.logp(actions, logits).mean(-1)
 
-            ac_out = self._train_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions.tanh(), logits=logits)
+            ac_out = self._train_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions.tanh())
             q_target = torch.min(ac_out.q1, ac_out.q2).squeeze(-1)
             kl = pd.kl(logits_target, logits)
             loss = self.entropy_scale * logp - q_target + self.kl_pull * kl.mean(-1)
+            act_norm_loss = activation_norm_loss(self._train_model)
             assert logp.shape == data.rewards.shape == q_target.shape == loss.shape, (logp.shape, data.rewards.shape, q_target.shape, loss.shape)
-            return loss.mean()
+            loss = loss.mean() + self.act_norm_scale * act_norm_loss
+
+        if do_log:
+            self.logger.add_scalar('Stability/KL Blend', kl.mean(), self.frame_train)
+
+        return loss
 
     def drop_collected_steps(self):
         self._prev_data = None
-
-    def _log_training_data(self, data: AttrDict):
-        if self._do_log:
-            if data.states.dim() == 4:
-                if data.states.shape[1] in (1, 3):
-                    img = data.states[:4]
-                    nrow = 2
-                else:
-                    img = data.states[:4]
-                    img = img.view(-1, *img.shape[2:]).unsqueeze(1)
-                    nrow = data.states.shape[1]
-                if data.states.dtype == torch.uint8:
-                    img = img.float() / 255
-                img = make_grid(img, nrow=nrow, normalize=False)
-                self.logger.add_image('state', img, self.frame_train)
-            # vsize = data.value_targets.shape[-2] ** 0.5
-            # targets = data.value_targets.sum(-2) / vsize
-            # values = data.state_values.sum(-2) / vsize
-            # v_mean = values.mean(-1)
-            # t_mean = targets.mean(-1)
-            self.logger.add_histogram('rewards', data.rewards, self.frame_train)
-            # self.logger.add_histogram('value_targets', targets, self.frame)
-            # self.logger.add_histogram('advantages', data.advantages, self.frame)
-            # self.logger.add_histogram('values', values, self.frame)
-            # self.logger.add_scalar('value rmse', (v_mean - t_mean).pow(2).mean().sqrt(), self.frame)
-            # self.logger.add_scalar('value abs err', (v_mean - t_mean).abs().mean(), self.frame)
-            # self.logger.add_scalar('value max err', (v_mean - t_mean).abs().max(), self.frame)
-            if isinstance(self._train_model.heads.logits.pd, DiagGaussianPd):
-                mean, std = data.logits.chunk(2, dim=1)
-                self.logger.add_histogram('logits mean', mean, self.frame_train)
-                self.logger.add_histogram('logits std', std, self.frame_train)
-            elif isinstance(self._train_model.heads.logits.pd, CategoricalPd):
-                self.logger.add_histogram('logits log_softmax', F.log_softmax(data.logits, dim=-1), self.frame_train)
-            self.logger.add_histogram('logits', data.logits, self.frame_train)
-            for name, param in self._train_model.named_parameters():
-                self.logger.add_histogram(name, param, self.frame_train)

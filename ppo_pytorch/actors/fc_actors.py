@@ -272,18 +272,24 @@ class FCActionFeatureExtractor(FeatureExtractorBase):
         self.hidden_sizes = hidden_sizes
         self.activation = activation
         self.model = self._create_fc()
+        self.ac_encoder = nn.Sequential(
+            nn.Linear(pd.input_vector_len, 128),
+            activation(),
+            nn.Linear(128, 2 * sum(hidden_sizes))
+        )
 
     @property
     def output_size(self):
         return self.hidden_sizes[-1]
 
-    def forward(self, input: torch.Tensor, logger=None, cur_step=None, actions=None, logits=None, **kwargs):
+    def forward(self, input: torch.Tensor, logger=None, cur_step=None, actions=None, **kwargs):
         x = input.view(-1, input.shape[-1])
-        ac_inputs = self.pd.to_inputs(actions)
-        ac_inputs = (ac_inputs + 0.05 * torch.randn_like(ac_inputs)).view(-1, ac_inputs.shape[-1])
-        # ac_inputs = logits.detach().view(-1, logits.shape[-1])
-        for i, layer in enumerate(self.model):
-            x = layer(torch.cat([x, ac_inputs], -1))
+        ac_inputs = self.pd.to_inputs(actions).view(-1, actions.shape[-1])
+        ac_inputs = self.ac_encoder(ac_inputs).split(self.hidden_sizes * 2, -1)
+
+        for i, (layer, ac_mul, ac_add) in enumerate(zip(self.model, ac_inputs[:len(self.hidden_sizes)], ac_inputs[len(self.hidden_sizes):])):
+            x = layer(x)
+            x = x * ac_mul + ac_add
             if logger is not None:
                 logger.add_histogram(f'layer_{i}_output', x, cur_step)
         return x.view(*input.shape[:-1], x.shape[-1])
@@ -292,7 +298,7 @@ class FCActionFeatureExtractor(FeatureExtractorBase):
         norm = self.norm_factory
         seq = []
         for i in range(len(self.hidden_sizes)):
-            n_in = self.pd.input_vector_len + (self.input_size if i == 0 else self.hidden_sizes[i - 1])
+            n_in = self.input_size if i == 0 else self.hidden_sizes[i - 1]
             n_out = self.hidden_sizes[i]
             layer = [Linear(n_in, n_out, bias=norm is None or not norm.disable_bias)]
             if norm is not None and norm.allow_fc and (norm.allow_after_first_layer or i != 0):

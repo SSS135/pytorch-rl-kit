@@ -1,7 +1,7 @@
 import math
 from abc import abstractmethod, ABCMeta
 from functools import partial
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import torch.nn as nn
 import torch.nn.init as init
@@ -113,7 +113,28 @@ class ModularActor(Actor):
         self._fx_modules = nn.ModuleList(self.models.keys())
 
     def forward(self, input, memory=None, evaluate_heads: List[str] = None, **kwargs) -> AttrDict:
+        def need_head(name: str):
+            if evaluate_heads is None or name in evaluate_heads:
+                assert not self.is_recurrent
+                return True
+            return False
+
+        fx_heads = [(fx, [(hn, h) for hn, h in heads.items() if need_head(hn)]) for (fx, heads) in self.models.items()]
+        output = self.run_fx(input, memory, [fx if len(heads) > 0 else None for fx, heads in fx_heads], **kwargs)
+
+        for i, (fx, heads) in enumerate(fx_heads):
+            for name, head in heads:
+                if need_head(name):
+                    output[name] = head(output[f'features_{i}'], **kwargs)
+
+        return output
+
+    def run_fx(self, input, memory=None, fx_list: List[Optional[FeatureExtractorBase]] = None, **kwargs):
         output = AttrDict()
+
+        if fx_list is None:
+            fx_list = self.feature_extractors
+        assert len(fx_list) == len(self.feature_extractors)
 
         if memory is not None:
             memory_input = memory.chunk(len(self._fx_modules), dim=2)
@@ -122,10 +143,10 @@ class ModularActor(Actor):
 
         memory_output = []
 
-        for i, ((fx, heads), memory_input) in enumerate(zip(self.models.items(), memory_input)):
-            if evaluate_heads is not None and len(set(evaluate_heads) - set(heads.keys())) == len(evaluate_heads):
-                assert not self.is_recurrent
+        for i, (fx, memory_input) in enumerate(zip(fx_list, memory_input)):
+            if fx is None:
                 continue
+
             if self.is_recurrent:
                 features, memory = fx(input, memory=memory_input, **kwargs)
                 memory_output.append(memory)
@@ -135,13 +156,8 @@ class ModularActor(Actor):
             if isinstance(features, dict):
                 for k, v in features.items():
                     output[f'{k}_{i}'] = v
-                features = features['features']
             else:
                 output[f'features_{i}'] = features
-
-            for name, head in heads.items():
-                if evaluate_heads is None or name in evaluate_heads:
-                    output[name] = head(features, **kwargs)
 
         if self.is_recurrent:
             output.memory = torch.cat(memory_output, dim=2)

@@ -15,7 +15,7 @@ class ReplayBuffer:
         self._full_loop = False
         self._num_actors = None
         self._horizon_capacity = None
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()
 
     def push(self, **sample):
         with self._lock:

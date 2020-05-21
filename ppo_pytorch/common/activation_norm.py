@@ -17,6 +17,7 @@ class ActivationNorm(nn.Module):
             return input
         assert input.dim() > self.data_dims
         self._input.append(input.clone())
+        assert len(self._input) < 1000, 'maybe forgot to call get_loss?'
         return input
 
     def get_loss(self, clear=True) -> Optional[torch.Tensor]:
