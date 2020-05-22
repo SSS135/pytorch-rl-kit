@@ -146,6 +146,7 @@ class CategoricalPd(ProbabilityDistribution):
         return onehot
 
     def _process_logits(self, logits):
+        assert logits.shape[-1] == self.n, (logits.shape[-1], self.n)
         return make_logits_ordnial(logits) if self.ordinal else logits
 
 

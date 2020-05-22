@@ -1,29 +1,32 @@
 if __name__ == '__main__':
     from .init_vars import *
-    from rl_exp.unity.variable_unity_env import VariableUnityVecEnv
+    from rl_exp.unity.variable_unity_env import AsyncUnityVecEnv
+    from ..common.rl_alg_test import run_training
+    from ppo_pytorch.common.variable_env.variable_env_trainer import VariableEnvTrainer
+    from ..algs.impala import IMPALA
+    from ..algs.parameters import create_ppo_kwargs
+    from ..actors.fc_actors import create_ppo_fc_actor
+    from ..actors.silu import SiLU
 
-    num_envs = 4
+    train_frames = 20e6
+    num_envs = 16
     actors_per_env = 8 * 1
     visual = False
     exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuousVisual\DungeonAI'
-    env_factory = partial(VariableUnityVecEnv, exe_path, num_envs=num_envs, visual_observations=visual, stacked_frames=4,
-                          no_graphics_except_first=False)
+    env_factory = partial(AsyncUnityVecEnv, exe_path, num_envs=num_envs, visual_observations=visual, stacked_frames=4,
+                          no_graphics_except_first=False, min_ready_envs=0.5)
 
-    alg_class = rl.algs.IMPALA
-    alg_params = rl.algs.create_ppo_kwargs(
-        20e6,
+    alg_class = IMPALA
+    alg_params = create_ppo_kwargs(
+        train_frames,
 
         train_interval_frames=128 * num_envs * actors_per_env,
         train_horizon=128,
-        batch_size=512,
+        batch_size=128,
         value_loss_scale=2.0,
         q_loss_scale=2.0,
-        loss_dpg_scale=0.0,
         cuda_eval=True,
         cuda_train=True,
-
-        # reward_discount=0.997,
-        # reward_scale=1.0,
 
         replay_buf_size=512 * 1024,
         replay_end_sampling_factor=0.05,
@@ -36,7 +39,7 @@ if __name__ == '__main__':
         vtrace_kl_limit=1.0,
         kl_limit=0.2,
         loss_type='impala',
-        replay_ratio=7,
+        replay_ratio=3,
         upgo_scale=0.5,
         entropy_loss_scale=0.002,
         barron_alpha_c=(1.5, 1.0),
@@ -49,18 +52,19 @@ if __name__ == '__main__':
         optimizer_factory=partial(optim.Adam, lr=3e-4),
         # model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
         # model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
-        model_factory=partial(rl.actors.create_ppo_fc_actor, hidden_sizes=(256, 256, 256),
-                              activation=rl.actors.SiLU, split_policy_value_network=False, use_imagination=True),
+        model_factory=partial(create_ppo_fc_actor, hidden_sizes=(256, 256, 256), activation=SiLU,
+                              split_policy_value_network=False, use_imagination=False),
 
         # model_init_path=r'c:\Users\Alexander\sync-pc\Jupyter\tensorboard\IMPALA_SimpleArenaContinuous_2020-04-27_15-08-03_[vls1.0_advnorm0.99]_dlwu5k0o\model_0.pth',
         # disable_training=True,
     )
-    hparams = dict(
-    )
-    wrap_params = dict(
-        tag='[fc-imdone-mean-detach-unsquashLV-fixdone-floss]',
+    trainer_params = dict(
+        tag='[h128_r3_async_e16]',
         log_root_path=log_path,
         log_interval=20000,
+        rl_alg_factory=partial(alg_class, **alg_params),
+        env_factory=env_factory,
+        alg_name=alg_class.__name__,
     )
 
-    rl_alg_test(hparams, wrap_params, alg_class, alg_params, env_factory, variable_env=True, frames=20e6)
+    run_training(VariableEnvTrainer, trainer_params, alg_params, train_frames)

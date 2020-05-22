@@ -42,7 +42,7 @@ class BufferThread:
             self._init_data(sample)
         self._add_sample(sample)
 
-    def sample(self, cur_rollout, total_rollouts, _retry=0) -> Dict[str, Tensor]:
+    def sample(self, cur_rollout, total_rollouts) -> Dict[str, Tensor]:
         assert 0 <= cur_rollout < total_rollouts and total_rollouts > 0
         index = self._index
         buf_len = len(self)

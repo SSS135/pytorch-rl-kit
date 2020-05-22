@@ -11,6 +11,11 @@ from .variable_env_merger import VariableEnvMerger
 from .variable_step_result import VariableStepResult
 
 
+def recv(pipe: Pipe, timeout: float = 60):
+    assert pipe.poll(timeout)
+    return pipe.recv()
+
+
 class Command(Enum):
     shutdown = 0
     stats = 1
@@ -28,7 +33,7 @@ def process_entry(pipe: Connection, env_fn):
     env = env_fn()
     env.reset()
     while True:
-        msg: Message = pipe.recv()
+        msg: Message = recv(pipe)
         if msg.command == Command.stats:
             pipe.send((env.observation_space, env.action_space, env.env_name))
         elif msg.command == Command.reset:
@@ -71,7 +76,7 @@ class AsyncVariableEnv(VariableEnv):
 
     def reset(self) -> VariableStepResult:
         for pipe in self._waiting_for_actions:
-            pipe.recv()
+            recv(pipe)
         self._waiting_for_actions.clear()
         self._waiting_for_actions.extend(self._pipes)
         data = self._sync_rpc(Command.reset)
@@ -104,7 +109,7 @@ class AsyncVariableEnv(VariableEnv):
         for i, pipe in enumerate(self._pipes):
             if pipe.poll():
                 self._waiting_for_actions.append(pipe)
-                data.append(pipe.recv())
+                data.append(recv(pipe))
                 ids.append(i)
         assert len(data) > 0
         return self._merger.merge(data, ids)
@@ -116,4 +121,4 @@ class AsyncVariableEnv(VariableEnv):
             payload = len(pipes) * [None]
         for pipe, payload in zip(pipes, payload):
             pipe.send(Message(command, payload))
-        return [pipe.recv() for pipe in pipes]
+        return [recv(pipe) for pipe in pipes]

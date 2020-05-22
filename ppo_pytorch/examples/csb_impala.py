@@ -9,8 +9,8 @@ if __name__ == '__main__':
     from ..actors.silu import SiLU
 
     train_frames = 20e6
-    num_envs = 128
-    horizon = 32
+    num_envs = 32
+    horizon = 128
     actors_per_env = 4
     env_factory = partial(make_gold_env, pvp=True, num_pods=4, num_envs=num_envs, frame_stack=2, render_first_env=True)
 
@@ -21,7 +21,7 @@ if __name__ == '__main__':
         num_actors=num_envs,
         train_interval_frames=horizon * num_envs * actors_per_env,
         train_horizon=horizon,
-        batch_size=1024,
+        batch_size=512,
         value_loss_scale=2.0,
         q_loss_scale=2.0,
         cuda_eval=True,
@@ -52,7 +52,7 @@ if __name__ == '__main__':
         model_factory=partial(create_ppo_fc_actor, hidden_sizes=(256, 256, 256),
                               activation=SiLU, split_policy_value_network=False, use_imagination=False),
         # model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
-        optimizer_factory=partial(optim.Adam, lr=5e-4),
+        optimizer_factory=partial(optim.Adam, lr=3e-4),
 
         # model_init_path='tensorboard\IMPALA_CSBPvP_2020-05-15_12-19-42_[ne16_h128_w-randn_mp]_j15vto_z\model_0.pth',
         # disable_training=True,
@@ -61,13 +61,13 @@ if __name__ == '__main__':
         rl_alg_factory=partial(alg_class, **alg_params),
         env_factory=env_factory,
         alg_name=alg_class.__name__,
-        tag='[e128_bs1k_lr5_r3_rd0.99_rewcm_simplestate_noim_newac_sp0.5]',
+        tag='[r3_sp1]',
         log_root_path=log_path,
         log_interval=10000,
         num_archive_models=10,
         archive_save_interval=30_000,
         archive_switch_interval=250 * num_envs * actors_per_env,
-        selfplay_prob=0.5,
+        selfplay_prob=1.0,
     )
 
     run_training(VariableSelfPlayTrainer, trainer_params, alg_params, train_frames)

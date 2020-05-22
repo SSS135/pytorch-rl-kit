@@ -28,9 +28,9 @@ class EnvTrainer:
         """
         self._init_args = locals()
         self.rl_alg_factory = rl_alg_factory
-        self.frame = 0
+        self._frame = 0
         self._rewards = self._done = None
-        self.all_rewards = []
+        self._all_rewards = []
 
         assert log_root_path is not None
 
@@ -40,24 +40,24 @@ class EnvTrainer:
         print('Log dir:', log_dir)
         env.set_num_actors(self.rl_alg_factory.keywords['num_actors'])
         self._obs = env.reset()
-        self.env = env
+        self._env = env
 
-        self.rl_alg = rl_alg_factory(self.env.observation_space, self.env.action_space,
-                                     log_interval=log_interval, model_save_folder=log_dir)
+        self._rl_alg = rl_alg_factory(self._env.observation_space, self._env.action_space,
+                                      log_interval=log_interval, model_save_folder=log_dir)
 
         self.logger = TensorboardEnvLogger(alg_name, env_name, log_dir, log_interval, tag=tag)
         self.logger.add_text('EnvTrainer', pprint.pformat(self._init_args))
-        self.rl_alg.logger = self.logger
+        self._rl_alg.logger = self.logger
 
     def step(self, always_log=False):
         """Do single step of RL alg"""
 
-        self._obs = torch.as_tensor(np.asarray(self._obs, dtype=self.env.observation_space.dtype))
+        self._obs = torch.as_tensor(np.asarray(self._obs, dtype=self._env.observation_space.dtype))
         if self._rewards is None and self._done is None:
             self._rewards = self._done = torch.zeros(self._obs.shape[0])
 
-        action = self.rl_alg.step(self._obs, self._rewards, self._done, None, None)
-        self._obs, self._rewards, self._done, infos = self.env.step(action.numpy())
+        action = self._rl_alg.step(self._obs, self._rewards, self._done, None, None)
+        self._obs, self._rewards, self._done, infos = self._env.step(action.numpy())
 
         self._rewards, self._done = [torch.as_tensor(x, dtype=torch.float32)
                                      for x in (self._rewards, self._done)]
@@ -66,18 +66,25 @@ class EnvTrainer:
         for info in infos:
             ep_info = info.get('episode')
             if ep_info is not None:
-                self.all_rewards.append(ep_info)
+                self._all_rewards.append(ep_info)
 
-        self.frame += self.env.num_actors
+        self._frame += self._env.num_actors
         # logger step
         if self.logger is not None:
             self.logger.step(infos, always_log)
 
     def train(self, max_frames):
         """Train for specified number of frames and return episode info"""
-        self.all_rewards = []
-        while self.frame < max_frames:
+        self._all_rewards = []
+        while self._frame < max_frames:
             self.step()
-        return self.all_rewards
+        return self._all_rewards
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # self._env.close()
+        pass
 
 
