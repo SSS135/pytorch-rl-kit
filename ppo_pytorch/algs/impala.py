@@ -13,9 +13,7 @@ import torch.autograd
 import torch.optim as optim
 from optfn.gradient_logger import log_gradients
 from ppo_pytorch.actors.fc_actors import FCFeatureExtractor
-from ppo_pytorch.actors.fc_actors import squash
 from ppo_pytorch.algs.reward_weight_generator import RewardWeightGenerator
-from ppo_pytorch.common.probability_distributions import DiagGaussianPd, FixedStdGaussianPd
 
 from .ppo import SchedulerManager, copy_state_dict, log_training_data
 from torch.nn.utils import clip_grad_norm_
@@ -56,6 +54,8 @@ class IMPALA(RLBase):
                  optimizer_factory=partial(optim.Adam, lr=3e-4),
                  value_loss_scale=0.5,
                  q_loss_scale=1.0,
+                 dpg_loss_scale=0.0,
+                 pg_loss_scale=1.0,
                  entropy_loss_scale=0.01,
                  cuda_eval=False,
                  cuda_train=False,
@@ -95,6 +95,8 @@ class IMPALA(RLBase):
         self.grad_clip_norm = grad_clip_norm
         self.value_loss_scale = value_loss_scale
         self.q_loss_scale = q_loss_scale
+        self.dpg_loss_scale = dpg_loss_scale
+        self.pg_loss_scale = pg_loss_scale
         self.model_factory = model_factory
         self.optimizer_factory = optimizer_factory
         self.reward_scale = reward_scale
@@ -155,7 +157,7 @@ class IMPALA(RLBase):
             self._eval_model, self._replay_buffer, self.device_eval, self._reward_weight_gen,
             self.reward_reweight_interval, self.disable_training)
         self._eval_no_copy_updates = 0
-        self._adv_norm = RunningNorm(momentum=0.95, mean_norm=False)
+        self._adv_norm = RunningNorm(momentum=0.99, mean_norm=False)
         self._train_future: Optional[Future] = None
         self._data_future: Optional[Future] = None
         self._executor = ThreadPoolExecutor(max_workers=1, initializer=lambda: torch.set_num_threads(4))
@@ -232,8 +234,6 @@ class IMPALA(RLBase):
         num_rollouts = data.states.shape[1]
         assert num_samples > 0
 
-        data.rewards = self.reward_scale * data.rewards
-
         data = AttrDict(states=data.states, logits_replay=data.logits,
                         actions=data.actions, rewards=data.rewards, dones=data.dones,
                         **(dict(memory=data.memory) if self._train_model.is_recurrent else dict()))
@@ -257,7 +257,7 @@ class IMPALA(RLBase):
                 loss = self._impala_step(batch, self._do_log and batch_index == num_batches - 1)
                 kls_target.append(batch.kl_target.mean().item())
                 kls_replay.append(batch.kl_replay.mean().item())
-                value_target_list.append(batch.value_targets.detach())
+                value_target_list.append(batch.state_value_targets.detach())
 
         kl_target = np.mean(kls_target)
         kl_replay = np.mean(kls_replay)
@@ -326,7 +326,8 @@ class IMPALA(RLBase):
 
             if do_log:
                 batch.state_values = log_gradients(batch.state_values, self.logger, 'Values', self.frame_train)
-                batch.q_values = log_gradients(batch.q_values, self.logger, 'Q Values', self.frame_train)
+                batch.action_advantages = log_gradients(batch.action_advantages, self.logger, 'Q Values', self.frame_train)
+                batch.dpg_values = log_gradients(batch.dpg_values, self.logger, 'Values Grad Act', self.frame_train)
                 batch.logits = log_gradients(batch.logits, self.logger, 'Logits', self.frame_train)
 
             # get loss
@@ -358,16 +359,21 @@ class IMPALA(RLBase):
         with torch.no_grad():
             ac_out_target = self._target_model(states, goal=reward_weights, evaluate_heads=['logits'])
 
+        state_values = self._train_model.heads.state_values(ac_out_train.features_0)
+        action_advantages = self._train_model.heads.action_values(ac_out_train.features_0, actions=actions_replay)
+
         actions_desired = self._train_model.heads.logits.pd.sample(ac_out_train.logits)
-        actions_stack = torch.stack([actions_desired.detach(), actions_replay], 0)
-        values_stack = self._train_model.heads.state_values(ac_out_train.features_0, actions=actions_stack)
-        state_values, q_values = values_stack.unbind(0)
-        assert state_values.shape == (*states.shape[:2], 1)
+        dpg_values = self._calc_dpg(actions_desired, ac_out_train.features_0) \
+            if self.dpg_loss_scale != 0 else state_values.detach()
+
+        assert state_values.shape == dpg_values.shape == (*states.shape[:2], 1), \
+            (state_values.shape, dpg_values.shape, (*states.shape[:2], 1), states.shape)
 
         return dict(
             logits=ac_out_train.logits,
             state_values=state_values.squeeze(-1),
-            q_values=q_values.squeeze(-1),
+            dpg_values=dpg_values.squeeze(-1),
+            action_advantages=action_advantages.squeeze(-1),
             logits_target=ac_out_target.logits,
             **(dict(features_raw=ac_out_train.features_raw_0) if hasattr(ac_out_train, 'features_raw_0') else {}),
         )
@@ -386,26 +392,46 @@ class IMPALA(RLBase):
         logits = torch.cat([actor_out_burn_in.logits, actor_out.logits], 0)
         features = torch.cat([actor_out_burn_in.features_0, actor_out.features_0], 0)
         features_raw = torch.cat([actor_out_burn_in.features_raw_0, actor_out.features_raw_0], 0)
+
+        state_values = self._train_model.heads.state_values(features)
+        action_advantages = self._train_model.heads.action_values(features, actions=actions_replay)
+
         actions_desired = self._train_model.heads.logits.pd.sample(logits)
-        actions_stack = torch.stack([actions_desired.detach(), actions_replay], 0)
-        values_stack = self._train_model.heads.state_values(features, actions=actions_stack)
-        state_values, q_values = values_stack.unbind(0)
-        assert state_values.shape == (*states.shape[:-1], 1)
+        dpg_values = self._calc_dpg(actions_desired, features) \
+            if self.dpg_loss_scale != 0 else state_values.detach()
+        assert state_values.shape == dpg_values.shape == (*states.shape[:-1], 1)
 
         return dict(
             logits=logits,
             state_values=state_values.squeeze(-1),
-            q_values=q_values.squeeze(-1),
+            dpg_values=dpg_values.squeeze(-1),
+            action_advantages=action_advantages.squeeze(-1),
             logits_target=actor_out_target.logits,
             features_raw=features_raw,
         )
 
+    def _calc_dpg(self, actions, features):
+        assert actions.requires_grad
+
+        head = self._train_model.heads.action_values
+
+        for p in head.parameters():
+            p.requires_grad = False
+
+        action_advantages = head(features.detach(), actions=actions)
+
+        for p in head.parameters():
+            p.requires_grad = True
+
+        assert action_advantages.requires_grad
+        return action_advantages
+
     def _get_impala_loss(self, data, do_log=False, tag=''):
         pd = self._train_model.heads.logits.pd
 
-        state_values, q_values = data.state_values, data.q_values
+        state_values, action_advantages = data.state_values, data.action_advantages
         data.update({k: v[:-1] for k, v in data.items()})
-        data.state_values, data.q_values = state_values, q_values
+        data.state_values, data.action_advantages = state_values, action_advantages
 
         # action probability ratio
         data.logp_replay = pd.logp(data.actions, data.logits_replay)
@@ -413,50 +439,52 @@ class IMPALA(RLBase):
         data.logp = pd.logp(data.actions, data.logits)
         data.probs_ratio = (data.logp.detach() - data.logp_replay).exp()
         data.kl_replay = pd.kl(data.logits_replay, data.logits)
+        data.kl_target = pd.kl(data.logits_target, data.logits)
 
         with torch.no_grad():
             self._process_rewards(data, do_log)
         data.state_values = data.state_values[:-1]
-        data.q_values = data.q_values[:-1]
+        data.action_advantages = data.action_advantages[:-1]
 
         loss_world_model = self._get_world_model_loss(data, do_log)
 
         for k, v in data.items():
             data[k] = v.flatten(end_dim=1)
 
-        data.kl_target = pd.kl(data.logits_target, data.logits)
         if LossType.v_mpo in self.loss_type:
             losses = v_mpo_loss(
-                data.kl_target, data.logp, data.advantages, data.advantages_upgo, data.vtrace_p, self.kl_pull)
+                data.kl_target, data.logp, data.advantages, self.kl_pull)
             if losses is None:
                 return None
             loss_target, loss_kl = losses
-            loss_target = loss_target + loss_kl
         elif LossType.impala in self.loss_type:
             losses = scaled_impala_loss(
-                data.kl_target, data.logp, data.advantages, data.advantages_upgo,
-                data.vtrace_p, self.kl_pull, self.kl_limit)
+                data.kl_target, data.logp, data.advantages, self.kl_pull, self.kl_limit)
             if losses is None:
                 return None
             loss_target, loss_kl = losses
-            loss_target = loss_target + loss_kl
 
         entropy = pd.entropy(data.logits)
         loss_ent = self.entropy_loss_scale * -entropy.mean()
-        loss_value = self.value_loss_scale * barron_loss(data.state_values, data.value_targets, *self.barron_alpha_c, reduce=False)
-        loss_q = self.q_loss_scale * barron_loss(data.q_values, data.q_targets, *self.barron_alpha_c, reduce=False)
+        loss_state_value = self.value_loss_scale * barron_loss(data.state_values, data.state_value_targets, *self.barron_alpha_c, reduce=False)
+        loss_action_advantage = self.q_loss_scale * barron_loss(data.action_advantages, data.action_advantage_targets, *self.barron_alpha_c, reduce=False)
 
-        assert loss_value.shape == data.state_values.shape, (loss_value.shape, data.state_values.shape)
-        assert loss_q.shape == loss_value.shape
+        # kl_mask = (data.kl_target.detach().mean(-1) <= self.kl_limit).float()
+        # assert kl_mask.shape == data.dpg_values.shape
+        loss_dpg = self.dpg_loss_scale * -data.dpg_values #* kl_mask
 
+        assert loss_state_value.shape == data.state_values.shape, (loss_state_value.shape, data.state_values.shape)
+        assert loss_action_advantage.shape == loss_dpg.shape == loss_state_value.shape
+
+        loss_dpg = loss_dpg.mean()
         loss_ent = loss_ent.mean()
-        loss_value = loss_value.mean()
-        loss_q = loss_q.mean()
+        loss_state_value = loss_state_value.mean()
+        loss_action_advantage = loss_action_advantage.mean()
 
         # sum all losses
-        total_loss = loss_target + loss_value + loss_q + loss_ent + loss_world_model
+        total_loss = loss_target + loss_kl + loss_state_value + loss_action_advantage + loss_dpg + loss_world_model + loss_ent
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
-            (loss_target.mean().item(), loss_value.mean().item())
+            (loss_target.mean().item(), loss_state_value.mean().item())
 
         with torch.no_grad():
             if do_log:
@@ -464,7 +492,7 @@ class IMPALA(RLBase):
                     pa_mean, pa_std = self._pop_art.statistics
                     data = AttrDict(**data)
                     data.state_values = data.state_values * pa_std + pa_mean
-                    data.value_targets = data.value_targets * pa_std + pa_mean
+                    data.state_value_targets = data.state_value_targets * pa_std + pa_mean
                 log_training_data(self._do_log, self.logger, self.frame_train, self._train_model, data)
                 ratio = (data.logp - data.logp_target).exp() - 1
                 self.logger.add_scalar('Prob Ratio/Mean' + tag, ratio.mean(), self.frame_train)
@@ -473,11 +501,11 @@ class IMPALA(RLBase):
                 self.logger.add_scalar('VTrace P/Mean', data.vtrace_p.mean(), self.frame_train)
                 self.logger.add_scalar('VTrace P/Above 0.25 Fraction', (data.vtrace_p > 0.25).float().mean(), self.frame_train)
                 self.logger.add_scalar('Stability/Entropy' + tag, entropy.mean(), self.frame_train)
-                self.logger.add_scalar('Losses/State Value' + tag, loss_value.mean(), self.frame_train)
-                self.logger.add_scalar('Losses/Q Value' + tag, loss_q.mean(), self.frame_train)
+                self.logger.add_scalar('Losses/State Value' + tag, loss_state_value.mean(), self.frame_train)
+                self.logger.add_scalar('Losses/Q Value' + tag, loss_action_advantage.mean(), self.frame_train)
                 if LossType.v_mpo is self.loss_type:
                     self.logger.add_scalar('Losses/KL Blend' + tag, loss_kl, self.frame_train)
-                self.logger.add_histogram('Losses/Value Hist' + tag, loss_value, self.frame_train)
+                self.logger.add_histogram('Losses/Value Hist' + tag, loss_state_value, self.frame_train)
                 self.logger.add_histogram('Losses/Ratio Hist' + tag, ratio, self.frame_train)
 
         return total_loss
@@ -488,7 +516,7 @@ class IMPALA(RLBase):
             return 0
 
         data_values, data_rewards, data_logits, data_actions, data_dones = \
-            [x.to(self.device_train) for x in (data.value_targets, data.rewards, data.logits, data.actions, data.dones)]
+            [x.to(self.device_train) for x in (data.state_value_targets, data.rewards, data.logits, data.actions, data.dones)]
 
         sim_depth = fx.sim_depth
         assert data_rewards.ndim >= 2
@@ -532,44 +560,52 @@ class IMPALA(RLBase):
         if self.use_pop_art:
             pa_mean, pa_std = self._pop_art.statistics
 
+        data.rewards = self.reward_scale * data.rewards
+
         state_values = data.state_values.detach() * pa_std + pa_mean if self.use_pop_art else data.state_values.detach()
-        q_values = data.q_values.detach() * pa_std + pa_mean if self.use_pop_art else data.q_values.detach()
+        kl = torch.max(data.kl_replay.mean(-1), data.kl_target.mean(-1))
         # calculate value targets and advantages
-        value_targets, advantages, p = calc_vtrace(
-            data.rewards, state_values,
-            data.dones, data.probs_ratio.detach().mean(-1), data.kl_replay.detach().mean(-1),
+        state_value_targets, advantages, data.vtrace_p = calc_vtrace(
+            data.rewards, state_values, data.dones, data.probs_ratio.mean(-1), kl,
             self.reward_discount, self.vtrace_max_ratio, self.vtrace_kl_limit)
-        advantages_upgo = calc_upgo(data.rewards, state_values, data.dones, self.reward_discount,
-                                    gae_lambda=0.95, q_values=q_values) - state_values[:-1]
-        q_targets = data.rewards + self.reward_discount * (1 - data.dones) * value_targets[1:]
-        value_targets = value_targets[:-1]
+
+        action_values = data.action_advantages + state_values
+        if self.use_pop_art:
+            action_values = action_values * pa_std + pa_mean
+        advantages_upgo = calc_upgo(data.rewards, state_values,
+                                    data.dones, self.reward_discount,
+                                    gae_lambda=1.0, action_values=action_values) - state_values[:-1]
+        action_advantage_targets = data.rewards + self.reward_discount * (1 - data.dones) * state_value_targets[1:] - state_values[:-1]
+        state_value_targets = state_value_targets[:-1]
 
         if do_log:
             self.logger.add_scalar('Advantages/Mean', advantages.mean(), self.frame_train)
             self.logger.add_scalar('Advantages/RMS', advantages.pow(2).mean().sqrt(), self.frame_train)
+            self.logger.add_scalar('Advantages/UPGO Mean', advantages_upgo.mean(), self.frame_train)
+            self.logger.add_scalar('Advantages/UPGO RMS', advantages_upgo.pow(2).mean().sqrt(), self.frame_train)
+            self.logger.add_scalar('Advantages/Act Adv Mean', action_advantage_targets.mean(), self.frame_train)
+            self.logger.add_scalar('Advantages/Act Adv RMS', action_advantage_targets.pow(2).mean().sqrt(), self.frame_train)
             self.logger.add_scalar('Advantages/Std', advantages.std(), self.frame_train)
             self.logger.add_scalar('Values/Values', state_values.mean(), self.frame_train)
             self.logger.add_scalar('Values/Values RMS', state_values.pow(2).mean().sqrt(), self.frame_train)
             self.logger.add_scalar('Values/Values Std', state_values.std(), self.frame_train)
-            self.logger.add_scalar('Values/Value Targets', value_targets.mean(), self.frame_train)
+            self.logger.add_scalar('Values/Value Targets', state_value_targets.mean(), self.frame_train)
 
         if self.use_pop_art:
-            q_targets = (q_targets - pa_mean) / pa_std
-            value_targets = (value_targets - pa_mean) / pa_std
+            action_advantage_targets = action_advantage_targets / pa_std
+            state_value_targets = (state_value_targets - pa_mean) / pa_std
             if LossType.impala is self.loss_type:
                 advantages /= pa_std
                 advantages_upgo /= pa_std
             if do_log:
                 self.logger.add_scalar('Values/Values PopArt', data.state_values.mean(), self.frame_train)
-                self.logger.add_scalar('Values/Value Targets PopArt', value_targets.mean(), self.frame_train)
+                self.logger.add_scalar('Values/Value Targets PopArt', state_value_targets.mean(), self.frame_train)
 
-        # if LossType.impala is self.loss_type:
-        advantages = self._adv_norm(advantages)
-        advantages_upgo = self.upgo_scale * self._adv_norm(advantages_upgo, update_stats=False)
+        assert data.vtrace_p.shape == advantages_upgo.shape
+        advantages = self._adv_norm(self.pg_loss_scale * advantages + self.upgo_scale * data.vtrace_p * advantages_upgo)
 
-        data.vtrace_p, data.advantages_upgo = p, advantages_upgo
-        data.value_targets, data.advantages = value_targets, advantages
-        data.q_targets = q_targets
+        data.state_value_targets, data.advantages = state_value_targets, advantages
+        data.action_advantage_targets = action_advantage_targets
 
     def drop_collected_steps(self):
         self._step_collector.drop_collected_steps()

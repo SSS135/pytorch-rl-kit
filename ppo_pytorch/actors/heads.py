@@ -1,6 +1,7 @@
 import torch.nn as nn
 import torch
 import torch.jit
+from ppo_pytorch.actors.silu import SiLU
 
 from .utils import normalized_columns_initializer_
 from ..common.probability_distributions import ProbabilityDistribution, CategoricalPd, BetaPd, DiagGaussianPd
@@ -76,7 +77,12 @@ class ActionValueHead(HeadBase):
         self.pd = pd
         self.num_out = num_out
         self.linear = Linear(in_features, num_out)
-        self.action_enc = nn.Sequential(nn.Linear(pd.input_vector_len, in_features), nn.Sigmoid())
+        self.action_enc = nn.Sequential(
+            nn.Linear(pd.input_vector_len, 128),
+            SiLU(),
+            nn.Linear(128, in_features),
+            nn.Sigmoid(),
+        )
 
     def forward(self, x, actions=None, **kwargs):
         actions = self.pd.to_inputs(actions)

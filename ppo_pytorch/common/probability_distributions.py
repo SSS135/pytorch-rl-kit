@@ -254,12 +254,11 @@ class DiagGaussianPd(ProbabilityDistribution):
     LOG_STD_MAX = 2
     LOG_STD_MIN = -20
 
-    def __init__(self, d, tanh_correction=True, max_norm=1.0, eps=1e-6):
+    def __init__(self, d, tanh_correction=True, max_norm=1.0):
         super().__init__(locals())
         self.d = d
         self.tanh_correction = tanh_correction
         self.max_norm = max_norm
-        self.eps = eps
 
     @property
     def prob_vector_len(self):
@@ -278,40 +277,39 @@ class DiagGaussianPd(ProbabilityDistribution):
         return torch.float
 
     def logp(self, x, prob):
-        mean, logstd = self.split_probs(prob)
+        mean, logstd = self._split_probs(prob)
         std = logstd.exp()
         logp = -0.5 * (
             ((x - mean) / (std + 1e-6)) ** 2
             + 2 * logstd
             + np.log(2 * np.pi)
         )
-        if self.tanh_correction and x.requires_grad:
+        if self.tanh_correction:
             logp = logp - 2 * (math.log(2) - x - F.softplus(-2 * x))
         return logp
 
     def kl(self, prob1, prob2):
-        mean1, logstd1 = self.split_probs(prob1)
-        mean2, logstd2 = self.split_probs(prob2)
+        mean1, logstd1 = self._split_probs(prob1)
+        mean2, logstd2 = self._split_probs(prob2)
         std1, std2 = logstd1.exp(), logstd2.exp()
         dist1 = Normal(mean1, std1)
         dist2 = Normal(mean2, std2)
         return kl_divergence(dist1, dist2)
 
     def entropy(self, prob):
-        mean, logstd = self.split_probs(prob)
+        mean, logstd = self._split_probs(prob)
         return 0.5 * (
             math.log(2 * np.pi * np.e) + 2 * logstd
         )
 
     def sample(self, prob):
-        mean, logstd = self.split_probs(prob)
+        mean, logstd = self._split_probs(prob)
         std = logstd.exp()
         return mean + std * torch.randn_like(mean)
 
-    def split_probs(self, probs):
+    def _split_probs(self, probs):
         mean, logstd = probs.chunk(2, -1)
-        return limit_action_length(mean, maxlen=self.max_norm), \
-               limit_action_length(logstd, maxlen=self.max_norm).clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)
+        return limit_abs_mean(mean, self.max_norm), limit_abs_mean(logstd, self.max_norm).clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)
 
     def postprocess_action(self, action):
         return action.tanh()
@@ -482,9 +480,15 @@ class FixedStdGaussianPd(ProbabilityDistribution):
 
 
 @torch.jit.script
-def limit_action_length(v: torch.Tensor, maxlen: float):
-    len = v.abs().mean(-1, keepdim=True).clamp(min=maxlen)
-    return v * (maxlen / len)
+def limit_abs_mean(v: torch.Tensor, limit: float):
+    len = v.abs().mean(-1, keepdim=True).clamp(min=limit)
+    return v * (limit / len)
+
+
+@torch.jit.script
+def limit_abs_max(v: torch.Tensor, limit: float):
+    len = v.abs().max(-1, keepdim=True)[0].clamp(min=limit)
+    return v * (limit / len)
 
 
 class DiscretizedCategoricalPd(ProbabilityDistribution):

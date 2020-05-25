@@ -5,7 +5,7 @@ import torch.nn as nn
 from .silu import SiLU, silu
 from ..common.activation_norm import ActivationNorm
 
-from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor
+from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor, create_impala_actor
 from .heads import PolicyHead, StateValueHead, ActionValueHead
 from .norm_factory import NormFactory
 from ..common.probability_distributions import ProbabilityDistribution, make_pd, DiagGaussianPd
@@ -272,6 +272,23 @@ def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128)
         def fx_factory(): return FCFeatureExtractor(**fx_kwargs)
 
     return create_ppo_actor(action_space, fx_factory, split_policy_value_network, num_out=num_values)
+
+
+def create_impala_fc_actor(observation_space, action_space, hidden_sizes=(128, 128),
+                           activation=nn.Tanh, norm_factory: NormFactory=None,
+                           num_values=1, goal_size=None, use_imagination=False):
+    assert len(observation_space.shape) == 1
+
+    fx_kwargs = dict(input_size=observation_space.shape[0], hidden_sizes=hidden_sizes, activation=activation,
+                     norm_factory=norm_factory, goal_size=goal_size)
+
+    if use_imagination:
+        pd = make_pd(action_space)
+        def fx_factory(): return FCImaginationFeatureExtractor(**fx_kwargs, pd=pd)
+    else:
+        def fx_factory(): return FCFeatureExtractor(**fx_kwargs)
+
+    return create_impala_actor(action_space, fx_factory, num_out=num_values)
 
 
 def create_sac_fc_actor(observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU,

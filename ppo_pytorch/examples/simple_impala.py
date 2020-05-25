@@ -48,16 +48,16 @@ if __name__ == '__main__':
         loss_type='impala',
         replay_ratio=3,
         upgo_scale=0.5,
-        entropy_loss_scale=0.0,
+        entropy_loss_scale=0.005,
         barron_alpha_c=(1.5, 1.0),
         memory_burn_in_steps=32,
-        activation_norm_scale=0.003,
+        activation_norm_scale=0.0,
         reward_reweight_interval=40,
 
         model_factory=partial(create_ppo_fc_actor, hidden_sizes=(256, 256, 256), activation=SiLU,
                               split_policy_value_network=False, use_imagination=False),
         # model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
-        optimizer_factory=partial(optim.Adam, lr=5e-4),
+        optimizer_factory=partial(optim.Adam, lr=1e-3),
 
         # model_init_path='tensorboard\IMPALA_CSBPvP_2020-05-15_12-19-42_[ne16_h128_w-randn_mp]_j15vto_z\model_0.pth',
         # disable_training=True,
@@ -66,7 +66,7 @@ if __name__ == '__main__':
         rl_alg_factory=partial(alg_class, **alg_params),
         env_factory=env_factory,
         alg_name=alg_class.__name__,
-        tag='[fs2]',
+        tag='[ent005_lr10_an0_fs2]',
         log_root_path=log_path,
         log_interval=10000,
     )

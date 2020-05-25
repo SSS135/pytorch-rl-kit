@@ -1,5 +1,6 @@
 import math
 from abc import abstractmethod, ABCMeta
+from collections import OrderedDict
 from functools import partial
 from typing import Dict, List, Optional
 
@@ -23,12 +24,24 @@ def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, 
     else:
         fx_policy = fx_value = fx_factory()
 
-    value_head = ActionValueHead(fx_value.output_size, pd=pd, num_out=num_out)
+    value_head = StateValueHead(fx_value.output_size, pd=pd, num_out=num_out)
     policy_head = PolicyHead(fx_policy.output_size, pd=pd)
     if split_policy_value_network:
-        models = {fx_policy: dict(logits=policy_head), fx_value: dict(state_values=value_head)}
+        models = OrderedDict([(fx_policy, dict(logits=policy_head)), (fx_value, dict(state_values=value_head))])
     else:
-        models = {fx_policy: dict(logits=policy_head, state_values=value_head)}
+        models = OrderedDict([(fx_policy, dict(logits=policy_head, state_values=value_head))])
+    return ModularActor(models, is_recurrent)
+
+
+def create_impala_actor(action_space, fx_factory, num_out=1, is_recurrent=False):
+    pd = make_pd(action_space)
+
+    fx = fx_factory()
+
+    action_value_head = ActionValueHead(fx.output_size, pd=pd, num_out=num_out)
+    state_value_head = StateValueHead(fx.output_size, pd=pd, num_out=num_out)
+    policy_head = PolicyHead(fx.output_size, pd=pd)
+    models = OrderedDict([(fx, dict(logits=policy_head, state_values=state_value_head, action_values=action_value_head))])
     return ModularActor(models, is_recurrent)
 
 
@@ -174,3 +187,12 @@ class ModularActor(Actor):
                     yield from h.parameters()
                 yield from fx.parameters()
         assert match_found
+
+    def head_fx_index(self, head_name):
+        for fx, heads in self.models.items():
+            if head_name in heads:
+                return fx
+        raise KeyError
+
+    def head_features(self, head_name, outputs):
+        return outputs[f'features_{self.head_fx_index(head_name)}']

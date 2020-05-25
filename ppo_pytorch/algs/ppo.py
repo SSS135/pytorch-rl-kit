@@ -77,7 +77,7 @@ def log_training_data(do_log, logger, frame_train, train_model, data: AttrDict):
                 img = img.float() / 255
             img = make_grid(img, nrow=nrow, normalize=False)
             logger.add_image('state', img, frame_train)
-        targets = data.value_targets
+        targets = data.state_value_targets
         values = data.state_values
         logger.add_histogram('Rewards', data.rewards, frame_train)
         logger.add_histogram('Value Targets', targets, frame_train)
