@@ -2,7 +2,7 @@ from ppo_pytorch.actors.silu import silu
 from ppo_pytorch.common.activation_norm import ActivationNorm
 from ppo_pytorch.common.attr_dict import AttrDict
 
-from .actors import FeatureExtractorBase, create_ppo_actor
+from .actors import FeatureExtractorBase, create_ppo_actor, create_impala_actor
 import torch
 from torch import nn
 from ..common.qrnn import DenseQRNN, QRNN
@@ -17,6 +17,14 @@ def create_ppo_rnn_actor(observation_space, action_space, hidden_size=128, num_l
     def fx_factory(): return RNNFeatureExtractor(
         observation_space.shape[0], hidden_size, num_layers, goal_size=goal_size)
     return create_ppo_actor(action_space, fx_factory, split_policy_value_network, is_recurrent=True)
+
+
+def create_impala_rnn_actor(observation_space, action_space, hidden_size=128, num_layers=2, goal_size=0):
+    assert len(observation_space.shape) == 1
+
+    def fx_factory(): return RNNFeatureExtractor(
+        observation_space.shape[0], hidden_size, num_layers, goal_size=goal_size)
+    return create_impala_actor(action_space, fx_factory, is_recurrent=True)
 
 
 class RNNFeatureExtractor(FeatureExtractorBase):

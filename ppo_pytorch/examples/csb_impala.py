@@ -68,6 +68,7 @@ if __name__ == '__main__':
         archive_save_interval=30_000,
         archive_switch_interval=250 * num_envs * actors_per_env,
         selfplay_prob=1.0,
+        rate_agents=True,
     )
 
     run_training(VariableSelfPlayTrainer, trainer_params, alg_params, train_frames)

@@ -127,13 +127,12 @@ class ModularActor(Actor):
 
     def forward(self, input, memory=None, evaluate_heads: List[str] = None, **kwargs) -> AttrDict:
         def need_head(name: str):
-            if evaluate_heads is None or name in evaluate_heads:
-                assert not self.is_recurrent
-                return True
-            return False
+            return evaluate_heads is None or name in evaluate_heads
 
         fx_heads = [(fx, [(hn, h) for hn, h in heads.items() if need_head(hn)]) for (fx, heads) in self.models.items()]
-        output = self.run_fx(input, memory, [fx if len(heads) > 0 else None for fx, heads in fx_heads], **kwargs)
+        needed_fx = [fx if len(heads) > 0 else None for fx, heads in fx_heads]
+        assert not self.is_recurrent or len(needed_fx) == len(fx_heads)
+        output = self.run_fx(input, memory, needed_fx, **kwargs)
 
         for i, (fx, heads) in enumerate(fx_heads):
             for name, head in heads:

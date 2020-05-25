@@ -391,7 +391,7 @@ class IMPALA(RLBase):
 
         logits = torch.cat([actor_out_burn_in.logits, actor_out.logits], 0)
         features = torch.cat([actor_out_burn_in.features_0, actor_out.features_0], 0)
-        features_raw = torch.cat([actor_out_burn_in.features_raw_0, actor_out.features_raw_0], 0)
+        # features_raw = torch.cat([actor_out_burn_in.features_raw_0, actor_out.features_raw_0], 0)
 
         state_values = self._train_model.heads.state_values(features)
         action_advantages = self._train_model.heads.action_values(features, actions=actions_replay)
@@ -407,7 +407,7 @@ class IMPALA(RLBase):
             dpg_values=dpg_values.squeeze(-1),
             action_advantages=action_advantages.squeeze(-1),
             logits_target=actor_out_target.logits,
-            features_raw=features_raw,
+            # features_raw=features_raw,
         )
 
     def _calc_dpg(self, actions, features):

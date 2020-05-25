@@ -1,20 +1,18 @@
-import dataclasses
 import pprint
 import random
+from collections import OrderedDict
 from collections import deque
 from dataclasses import dataclass
-from typing import Callable, Tuple, Optional, List, Dict, Set, Deque
+from typing import Callable, Tuple, Optional, Dict, Set, Deque
 
+import numpy as np
 import torch
 from torch import Tensor
-from ppo_pytorch.common.variable_env.variable_step_result import VariableStepResult
+from trueskill import Rating, rate_1vs1
 
 from .variable_env import VariableVecEnv
 from ..rl_base import RLBase
 from ..tensorboard_env_logger import TensorboardEnvLogger
-import numpy as np
-from trueskill import Rating, rate_1vs1
-from collections import OrderedDict
 
 
 @dataclass
@@ -43,6 +41,7 @@ class VariableSelfPlayTrainer:
                  archive_save_interval: int,
                  archive_switch_interval: int,
                  selfplay_prob: float,
+                 rate_agents: bool,
                  log_root_path: str,
                  log_interval: int = 10000,
                  alg_name: str = 'RL',
@@ -53,6 +52,7 @@ class VariableSelfPlayTrainer:
         self.archive_save_interval = archive_save_interval
         self.archive_switch_interval = archive_switch_interval
         self.selfplay_prob = selfplay_prob
+        self.rate_agents = rate_agents
         self.log_interval = log_interval
         self.alg_name = alg_name
         self.tag = tag
@@ -107,17 +107,10 @@ class VariableSelfPlayTrainer:
         self._data = self._env.step(action.numpy())
 
         self._frame += len(self._data.obs)
-        # self._cleanup_agent_ids()
 
         if self.logger is not None:
             self.logger.step(self._data, False)
-            if self._last_log_frame + self.log_interval < self._frame:
-                self._last_log_frame = self._frame
-                self.logger.add_scalar('Rating/TrueSkill Mu', self._main_rating.mu, self._frame)
-                self.logger.add_scalar('Rating/TrueSkill Mu3Sigma', self._main_rating.mu - 3 * self._main_rating.sigma, self._frame)
-                if len(self._matches_wr) > 0:
-                    self.logger.add_scalar('Rating/Win Rate', np.mean(self._matches_wr), self._frame)
-                    self._matches_wr.clear()
+            self._log_rating()
 
     def train(self, max_frames):
         while self._frame < max_frames:
@@ -139,7 +132,7 @@ class VariableSelfPlayTrainer:
         if len(self._actors_sp) > 10000:
             self._actors_sp.clear()
             self._actors_arch.clear()
-        assert len(self._actors_arch & self._actors_sp) == 0
+        assert len(self._actors_arch & self._actors_sp) == 0, self._actors_arch & self._actors_sp
 
     def _separate_data(self):
         data_sp, data_arch = [], []
@@ -163,6 +156,7 @@ class VariableSelfPlayTrainer:
             assert allow_create
             selfplay = True
             match = self._matches[m_id] = Match(m_id, {})
+            # print('create match', m_id)
         else:
             selfplay = random.random() < self.selfplay_prob
 
@@ -170,11 +164,19 @@ class VariableSelfPlayTrainer:
         if team is None:
             assert allow_create
             team = match.teams[t_id] = Team(t_id, selfplay, set())
-        team.agents.add(a_id)
+            # print('create team', t_id, 'match', m_id)
+
+        if a_id not in team.agents:
+            team.agents.add(a_id)
+            assert all(t == team or a_id not in t.agents for m in self._matches.values() for t in m.teams.values()), \
+                (m_id, t_id, a_id, self._matches)
+            # print('create agent', a_id, 'team', t_id, 'match', m_id)
 
         return match, team
 
     def _rate_matches(self):
+        if not self.rate_agents:
+            return
         for_var = enumerate(zip(self._data.match_id.tolist(), self._data.team_id.tolist(), self._data.agent_id.tolist(), self._data.done.tolist()))
         ended_matches = set()
         for i, (m_id, t_id, a_id, done) in for_var:
@@ -198,16 +200,29 @@ class VariableSelfPlayTrainer:
             else:
                 self._current_model.rating, self._main_rating = rate_1vs1(self._current_model.rating, self._main_rating, drawn=draw)
 
+    def _log_rating(self):
+        if not self.rate_agents or self._last_log_frame + self.log_interval > self._frame:
+            return
+        self._last_log_frame = self._frame
+        self.logger.add_scalar('Rating/TrueSkill Mu', self._main_rating.mu, self._frame)
+        self.logger.add_scalar('Rating/TrueSkill Mu3Sigma', self._main_rating.mu - 3 * self._main_rating.sigma, self._frame)
+        if len(self._matches_wr) > 0:
+            self.logger.add_scalar('Rating/Win Rate', np.mean(self._matches_wr), self._frame)
+            self._matches_wr.clear()
+
     def _cleanup_matches(self):
         for_var = enumerate(zip(self._data.match_id.tolist(), self._data.team_id.tolist(), self._data.agent_id.tolist(), self._data.done.tolist()))
         for i, (m_id, t_id, a_id, done) in for_var:
             if not done:
                 continue
             match, team = self._get_match_and_team(m_id, t_id, a_id, allow_create=False)
+            # print('del agent', a_id)
             team.agents.remove(a_id)
             if len(team.agents) == 0:
+                # print('del team', t_id)
                 del match.teams[t_id]
             if len(match.teams) == 0:
+                # print('del match', m_id)
                 del self._matches[m_id]
 
     def _save_archive_model(self):

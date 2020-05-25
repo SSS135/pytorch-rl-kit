@@ -2,18 +2,19 @@ if __name__ == '__main__':
     from .init_vars import *
     from rl_exp.unity.variable_unity_env import AsyncUnityVecEnv
     from ..common.rl_alg_test import run_training
-    from ppo_pytorch.common.variable_env.variable_env_trainer import VariableEnvTrainer
+    from ppo_pytorch.common.variable_env.variable_self_play_trainer import VariableSelfPlayTrainer
     from ..algs.impala import IMPALA
     from ..algs.parameters import create_ppo_kwargs
     from ..actors.fc_actors import create_impala_fc_actor
     from ..actors.silu import SiLU
+    from ppo_pytorch.actors.rnn_actors import create_impala_rnn_actor
 
     train_frames = 20e6
-    num_envs = 8
-    actors_per_env = 8 * 1
+    num_envs = 2
+    actors_per_env = 2 * 16
     visual = False
     horizon = 64
-    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuousVisual\DungeonAI'
+    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuousR\DungeonAI'
     env_factory = partial(AsyncUnityVecEnv, exe_path, num_envs=num_envs, visual_observations=visual, stacked_frames=4,
                           no_graphics_except_first=False, min_ready_envs=0.5)
 
@@ -54,7 +55,7 @@ if __name__ == '__main__':
 
         optimizer_factory=partial(optim.AdamW, lr=3e-4, eps=1e-5),
         # model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
-        # model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
+        # model_factory=partial(create_impala_rnn_actor, hidden_size=256, num_layers=3),
         model_factory=partial(create_impala_fc_actor, hidden_sizes=(256, 256, 256),
                               activation=SiLU, use_imagination=False),
 
@@ -62,7 +63,12 @@ if __name__ == '__main__':
         # disable_training=True,
     )
     trainer_params = dict(
-        tag='[vt-maxkl_qls0_upgo0_dpg0_mse_pg1_kl0.3_h64_r3_b512_e8]',
+        num_archive_models=10,
+        archive_save_interval=50_000,
+        archive_switch_interval=250,
+        selfplay_prob=0.5,
+        rate_agents=False,
+        tag='[slimes_h64_r3_b512_e8]',
         log_root_path=log_path,
         log_interval=20000,
         rl_alg_factory=partial(alg_class, **alg_params),
@@ -70,4 +76,4 @@ if __name__ == '__main__':
         alg_name=alg_class.__name__,
     )
 
-    run_training(VariableEnvTrainer, trainer_params, alg_params, train_frames)
+    run_training(VariableSelfPlayTrainer, trainer_params, alg_params, train_frames)

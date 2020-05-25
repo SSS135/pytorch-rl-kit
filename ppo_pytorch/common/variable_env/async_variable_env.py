@@ -1,7 +1,7 @@
 import time
 from enum import Enum
-from multiprocessing.connection import Connection
 from multiprocessing import Process, Pipe
+from multiprocessing.connection import Connection
 from typing import List, NamedTuple, Any, Optional, Callable
 
 import numpy as np
@@ -98,7 +98,7 @@ class AsyncVariableEnv(VariableEnv):
 
     def _submit_actions(self, actions: np.ndarray) -> None:
         actions = self._merger.split_actions(actions)
-        assert len(self._waiting_for_actions) == len(actions)
+        assert len(self._waiting_for_actions) == len(actions), (len(self._waiting_for_actions), actions)
         for pipe, ac in zip(self._waiting_for_actions, actions):
             pipe.send(Message(Command.step, ac))
         self._waiting_for_actions.clear()
