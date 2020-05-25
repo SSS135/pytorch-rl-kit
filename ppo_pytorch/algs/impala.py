@@ -439,7 +439,6 @@ class IMPALA(RLBase):
         data.logp = pd.logp(data.actions, data.logits)
         data.probs_ratio = (data.logp.detach() - data.logp_replay).exp()
         data.kl_replay = pd.kl(data.logits_replay, data.logits)
-        data.kl_target = pd.kl(data.logits_target, data.logits)
 
         with torch.no_grad():
             self._process_rewards(data, do_log)
@@ -451,6 +450,7 @@ class IMPALA(RLBase):
         for k, v in data.items():
             data[k] = v.flatten(end_dim=1)
 
+        data.kl_target = pd.kl(data.logits_target, data.logits)
         if LossType.v_mpo in self.loss_type:
             losses = v_mpo_loss(
                 data.kl_target, data.logp, data.advantages, self.kl_pull)
@@ -563,13 +563,13 @@ class IMPALA(RLBase):
         data.rewards = self.reward_scale * data.rewards
 
         state_values = data.state_values.detach() * pa_std + pa_mean if self.use_pop_art else data.state_values.detach()
-        kl = torch.max(data.kl_replay.mean(-1), data.kl_target.mean(-1))
         # calculate value targets and advantages
         state_value_targets, advantages, data.vtrace_p = calc_vtrace(
-            data.rewards, state_values, data.dones, data.probs_ratio.mean(-1), kl,
+            data.rewards, state_values,
+            data.dones, data.probs_ratio.detach().mean(-1), data.kl_replay.detach().mean(-1),
             self.reward_discount, self.vtrace_max_ratio, self.vtrace_kl_limit)
 
-        action_values = data.action_advantages + state_values
+        action_values = data.action_advantages.detach() + state_values
         if self.use_pop_art:
             action_values = action_values * pa_std + pa_mean
         advantages_upgo = calc_upgo(data.rewards, state_values,
