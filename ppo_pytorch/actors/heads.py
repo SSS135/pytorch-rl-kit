@@ -106,7 +106,7 @@ class PolicyHead(HeadBase):
     Actor-critic head. Used in PPO / A3C.
     """
 
-    def __init__(self, in_features, pd: ProbabilityDistribution):
+    def __init__(self, in_features, pd: ProbabilityDistribution, layer_norm=False):
         """
         Args:
             in_features: Input feature vector width.
@@ -114,14 +114,21 @@ class PolicyHead(HeadBase):
         """
         super().__init__(in_features)
         self.pd = pd
+        self.layer_norm = layer_norm
         self.linear = Linear(in_features, self.pd.prob_vector_len)
+        self.ln = nn.LayerNorm(in_features)
         self.reset_weights()
 
-    # def reset_weights(self):
-    #     normalized_columns_initializer_(self.linear.weight.data, self.pd.init_column_norm)
-    #     self.linear.bias.data.fill_(0)
+    def reset_weights(self):
+        if self.layer_norm:
+            normalized_columns_initializer_(self.linear.weight.data, 1.0)
+            self.linear.bias.data.fill_(0)
+        else:
+            super().reset_weights()
 
     def forward(self, x, **kwargs):
+        if self.layer_norm:
+            x = self.ln(x)
         return self.linear(x)
 
 

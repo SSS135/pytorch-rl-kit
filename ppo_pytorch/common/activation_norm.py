@@ -25,12 +25,16 @@ class ActivationNorm(nn.Module):
             return None
         losses = []
         for x in self._input:
-            var, mean = torch.var_mean(x, dim=tuple(range(x.ndim - self.data_dims)))
-            var = var + self.eps
-            losses.append(0.5 * (var.mean() + mean.pow(2).mean() - var.log().mean()))
+            losses.append(calc_act_norm_loss(x, self.data_dims, self.eps))
         if clear:
             self._input.clear()
         return torch.stack(losses).mean()
+
+
+def calc_act_norm_loss(x, data_dims, eps=1e-5):
+    var, mean = torch.var_mean(x, dim=tuple(range(x.ndim - data_dims)))
+    var = var + eps
+    return 0.5 * (var.mean() + mean.pow(2).mean() - var.log().mean())
 
 
 # class ActivationNormFunction(torch.autograd.Function):

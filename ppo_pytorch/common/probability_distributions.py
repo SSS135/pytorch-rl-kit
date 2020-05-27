@@ -23,9 +23,9 @@ def make_pd(space: gym.Space):
         # return LinearTanhPd(space.shape[0])
         # return FixedStdGaussianPd(space.shape[0], 1.0)
         # return BetaPd(space.shape[0], 1)
-        return DiagGaussianPd(space.shape[0], max_norm=2.0)
+        # return DiagGaussianPd(space.shape[0], max_norm=2.0)
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
-        # return PointCloudPd(space.shape[0])
+        return PointCloudPd(space.shape[0], max_norm=2.0)
         # return DiscretizedCategoricalPd(space.shape[0], 11, ordinal=True)
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
@@ -254,10 +254,10 @@ class DiagGaussianPd(ProbabilityDistribution):
     LOG_STD_MAX = 2
     LOG_STD_MIN = -20
 
-    def __init__(self, d, tanh_correction=True, max_norm=1.0):
+    def __init__(self, d, apply_tanh=True, max_norm=1.0):
         super().__init__(locals())
         self.d = d
-        self.tanh_correction = tanh_correction
+        self.apply_tanh = apply_tanh
         self.max_norm = max_norm
 
     @property
@@ -284,7 +284,7 @@ class DiagGaussianPd(ProbabilityDistribution):
             + 2 * logstd
             + np.log(2 * np.pi)
         )
-        if self.tanh_correction:
+        if self.apply_tanh:
             logp = logp - 2 * (math.log(2) - x - F.softplus(-2 * x))
         return logp
 
@@ -312,18 +312,20 @@ class DiagGaussianPd(ProbabilityDistribution):
         return limit_abs_mean(mean, self.max_norm), limit_abs_mean(logstd, self.max_norm).clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)
 
     def postprocess_action(self, action):
-        return action.tanh()
+        return action.tanh() if self.apply_tanh else action
 
 
 class PointCloudPd(ProbabilityDistribution):
-    def __init__(self, d, num_points=32):
+    def __init__(self, d, cloud_size=32, apply_tanh=True, max_norm=1.0):
         super().__init__(locals())
         self.d = d
-        self.num_points = num_points
+        self.cloud_size = cloud_size
+        self.apply_tanh = apply_tanh
+        self.max_norm = max_norm
 
     @property
     def prob_vector_len(self):
-        return self.d * self.num_points
+        return self.d * self.cloud_size
 
     @property
     def action_vector_len(self):
@@ -340,12 +342,14 @@ class PointCloudPd(ProbabilityDistribution):
     def logp(self, x, prob):
         mean, std = self._get_mean_std(prob)
         logstd = std.log()
-        return -0.5 * (
+        logp = -0.5 * (
             ((x - mean) / (std + 1e-6)) ** 2
             + 2 * logstd
             + np.log(2 * np.pi)
         )
-        # return -0.5 * ((x - mean) / std).pow(2) - logstd - math.log(math.sqrt(2 * math.pi))
+        if self.apply_tanh:
+            logp = logp - 2 * (math.log(2) - x - F.softplus(-2 * x))
+        return logp
 
     def kl(self, prob1, prob2):
         mean1, std1 = self._get_mean_std(prob1)
@@ -353,34 +357,34 @@ class PointCloudPd(ProbabilityDistribution):
         dist1 = Normal(mean1, std1)
         dist2 = Normal(mean2, std2)
         return kl_divergence(dist1, dist2)
-        # logstd1, logstd2 = std1.log(), std2.log()
-        # kl = logstd2 - logstd1 + (std1 ** 2 + (mean1 - mean2) ** 2) / (2.0 * std2 ** 2) - 0.5
-        # return kl
 
     def entropy(self, prob):
-        prob = self._split_prob(prob)
-        std = prob.std(-1)
+        mean, std = self._get_mean_std(prob)
         return 0.5 * (
             math.log(2 * np.pi * np.e) + 2 * std.log()
         )
-        # return 0.5 + 0.5 * math.log(2 * math.pi) + torch.log(std)
 
     def sample(self, prob):
-        prob = self._split_prob(prob)
-        idx = torch.randint(0, self.num_points, (prob.shape[0],), device=prob.device)
-        p = prob.gather(-1, torch.zeros((*prob.shape[:-1], 1), dtype=idx.dtype, device=prob.device) + idx.unsqueeze(-1).unsqueeze(-1)).squeeze(-1)
-        return p
-        # mean, std = self._get_mean_std(prob)
-        # return mean + std * torch.randn_like(std)
+        prob = self._split_probs(prob)
+        idx = torch.randint(0, self.cloud_size, prob.shape[:-2], device=prob.device)
+        idx = torch.zeros((*prob.shape[:-1], 1), dtype=idx.dtype, device=prob.device) + idx.unsqueeze(-1).unsqueeze(-1)
+        action = prob.gather(-1, idx).squeeze(-1)
+        return action
 
-    def _split_prob(self, prob):
-        return prob.reshape(*prob.shape[:-1], self.d, self.num_points)
+    def _split_probs(self, probs):
+        # probs = probs / probs.pow(2).mean(-1, keepdim=True).add(1e-7).sqrt()
+        probs = probs.reshape(*probs.shape[:-1], self.d, self.cloud_size)
+        probs = limit_abs_mean(probs, self.max_norm, dim=-2)
+        return probs
 
     def _get_mean_std(self, prob):
-        prob = self._split_prob(prob)
+        prob = self._split_probs(prob)
         mean = prob.mean(-1)
         std = prob.std(-1)
         return mean, std
+
+    def postprocess_action(self, action):
+        return action.tanh() if self.apply_tanh else action
 
 
 class BetaPd(ProbabilityDistribution):
@@ -480,14 +484,14 @@ class FixedStdGaussianPd(ProbabilityDistribution):
 
 
 @torch.jit.script
-def limit_abs_mean(v: torch.Tensor, limit: float):
-    len = v.abs().mean(-1, keepdim=True).clamp(min=limit)
+def limit_abs_mean(v: torch.Tensor, limit: float, dim: int = -1):
+    len = v.abs().mean(dim, keepdim=True).clamp(min=limit)
     return v * (limit / len)
 
 
 @torch.jit.script
-def limit_abs_max(v: torch.Tensor, limit: float):
-    len = v.abs().max(-1, keepdim=True)[0].clamp(min=limit)
+def limit_abs_max(v: torch.Tensor, limit: float, dim: int = -1):
+    len = v.abs().max(dim, keepdim=True)[0].clamp(min=limit)
     return v * (limit / len)
 
 

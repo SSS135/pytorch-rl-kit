@@ -11,7 +11,7 @@ from .kaiming_trunc_normal import kaiming_trunc_normal_
 from .heads import HeadBase, StateValueHead, PolicyHead, ActionValueHead
 from .norm_factory import NormFactory
 from .utils import weights_init
-from ..common.probability_distributions import make_pd
+from ..common.probability_distributions import make_pd, PointCloudPd
 from ..common.attr_dict import AttrDict
 import torch
 
@@ -40,7 +40,7 @@ def create_impala_actor(action_space, fx_factory, num_out=1, is_recurrent=False)
 
     action_value_head = ActionValueHead(fx.output_size, pd=pd, num_out=num_out)
     state_value_head = StateValueHead(fx.output_size, pd=pd, num_out=num_out)
-    policy_head = PolicyHead(fx.output_size, pd=pd)
+    policy_head = PolicyHead(fx.output_size, pd=pd, layer_norm=isinstance(pd, PointCloudPd))
     models = OrderedDict([(fx, dict(logits=policy_head, state_values=state_value_head, action_values=action_value_head))])
     return ModularActor(models, is_recurrent)
 

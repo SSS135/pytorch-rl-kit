@@ -8,13 +8,16 @@ if __name__ == '__main__':
     from ..actors.fc_actors import create_impala_fc_actor
     from ..actors.silu import SiLU
     from ppo_pytorch.actors.rnn_actors import create_impala_rnn_actor
+    from ppo_pytorch.actors.cnn_actors import create_impala_cnn_actor
+    from ppo_pytorch.actors.norm_factory import BatchNormFactory
+    from ppo_pytorch.common.variable_env.variable_env_trainer import VariableEnvTrainer
 
     train_frames = 20e6
-    num_envs = 2
-    actors_per_env = 2 * 16
+    num_envs = 4
+    actors_per_env = 2 * 8
     visual = False
     horizon = 64
-    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuousR\DungeonAI'
+    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuousR3\DungeonAI'
     env_factory = partial(AsyncUnityVecEnv, exe_path, num_envs=num_envs, visual_observations=visual, stacked_frames=4,
                           no_graphics_except_first=False, min_ready_envs=0.5)
 
@@ -24,7 +27,7 @@ if __name__ == '__main__':
 
         train_interval_frames=horizon * num_envs * actors_per_env,
         train_horizon=horizon,
-        batch_size=512,
+        batch_size=2 * 1024,
         value_loss_scale=2.0,
         q_loss_scale=0.0,
         dpg_loss_scale=0.0,
@@ -45,16 +48,16 @@ if __name__ == '__main__':
         loss_type='impala',
         replay_ratio=3,
         upgo_scale=0.0,
-        entropy_loss_scale=0.002,
+        entropy_loss_scale=0.0,
         barron_alpha_c=(2.0, 1.0),
         memory_burn_in_steps=32,
-        activation_norm_scale=0.003,
+        activation_norm_scale=0.0,
         num_rewards=3,
         reward_reweight_interval=40,
-        random_crop_obs=visual,
+        random_crop_obs=False,
 
         optimizer_factory=partial(optim.AdamW, lr=3e-4, eps=1e-5),
-        # model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
+        # model_factory=partial(create_impala_cnn_actor, cnn_kind='normal'),
         # model_factory=partial(create_impala_rnn_actor, hidden_size=256, num_layers=3),
         model_factory=partial(create_impala_fc_actor, hidden_sizes=(256, 256, 256),
                               activation=SiLU, use_imagination=False),
@@ -63,12 +66,12 @@ if __name__ == '__main__':
         # disable_training=True,
     )
     trainer_params = dict(
-        num_archive_models=10,
-        archive_save_interval=50_000,
-        archive_switch_interval=250,
-        selfplay_prob=0.5,
-        rate_agents=False,
-        tag='[slimes_h64_r3_b512_e8]',
+        # num_archive_models=10,
+        # archive_save_interval=50_000,
+        # archive_switch_interval=250,
+        # selfplay_prob=0.5,
+        # rate_agents=False,
+        tag='[polln-affine_cloud-lim]',
         log_root_path=log_path,
         log_interval=20000,
         rl_alg_factory=partial(alg_class, **alg_params),
@@ -76,4 +79,4 @@ if __name__ == '__main__':
         alg_name=alg_class.__name__,
     )
 
-    run_training(VariableSelfPlayTrainer, trainer_params, alg_params, train_frames)
+    run_training(VariableEnvTrainer, trainer_params, alg_params, train_frames)

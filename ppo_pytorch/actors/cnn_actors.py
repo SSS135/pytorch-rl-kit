@@ -7,7 +7,7 @@ from optfn.skip_connections import ResidualBlock
 from torch import autograd
 from torch.autograd import Variable
 
-from .actors import FeatureExtractorBase, create_ppo_actor
+from .actors import FeatureExtractorBase, create_ppo_actor, create_impala_actor
 from .norm_factory import NormFactory
 from .utils import make_conv_heatmap, image_to_float
 from ..common.make_grid import make_grid
@@ -282,3 +282,14 @@ def create_ppo_cnn_actor(observation_space, action_space, cnn_kind='normal',
         observation_space.shape, cnn_kind, cnn_activation, fc_activation, norm_factory=norm_factory,
         add_positional_features=add_positional_features, normalize_input=normalize_input)
     return create_ppo_actor(action_space, fx_factory, split_policy_value_network, num_out=num_out)
+
+
+def create_impala_cnn_actor(observation_space, action_space, cnn_kind='normal',
+                            cnn_activation=nn.ReLU, fc_activation=nn.ReLU, norm_factory: NormFactory=None, num_out=1,
+                            add_positional_features=False, normalize_input=False, goal_size=None):
+    assert len(observation_space.shape) == 3
+
+    def fx_factory(): return CNNFeatureExtractor(
+        observation_space.shape, cnn_kind, cnn_activation, fc_activation, norm_factory=norm_factory,
+        add_positional_features=add_positional_features, normalize_input=normalize_input)
+    return create_impala_actor(action_space, fx_factory, num_out=num_out)
