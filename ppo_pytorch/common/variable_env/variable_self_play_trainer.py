@@ -3,7 +3,7 @@ import random
 from collections import OrderedDict
 from collections import deque
 from dataclasses import dataclass
-from typing import Callable, Tuple, Optional, Dict, Set, Deque
+from typing import Callable, Tuple, Optional, Dict, Set, Deque, List
 
 import numpy as np
 import torch
@@ -18,8 +18,8 @@ from ..tensorboard_env_logger import TensorboardEnvLogger
 @dataclass
 class Team:
     id: int
-    selfplay: bool
-    agents: Set[int]
+    selfplay: List[bool]
+    agents: List[int]
 
 @dataclass
 class Match:
@@ -139,7 +139,7 @@ class VariableSelfPlayTrainer:
         for i, (m_id, t_id, a_id) in enumerate(zip(self._data.match_id.tolist(), self._data.team_id.tolist(), self._data.agent_id.tolist())):
             match, team = self._get_match_and_team(m_id, t_id, a_id)
             sample = [x[i] for x in (self._data.obs, self._data.rewards, self._data.done, self._data.true_reward, self._data.agent_id)]
-            (data_sp if team.selfplay else data_arch).append(sample)
+            (data_sp if team.selfplay[team.agents.index(a_id)] else data_arch).append(sample)
         return [[torch.from_numpy(np.stack(x, 0)) for x in zip(*data)] if len(data) > 0 else None for data in (data_sp, data_arch)]
 
     def _cat_actions(self, actions_sp: Optional[Tensor], actions_arch: Optional[Tensor]) -> Tensor:
@@ -147,27 +147,25 @@ class VariableSelfPlayTrainer:
         actions = []
         for m_id, t_id, a_id in zip(self._data.match_id.tolist(), self._data.team_id.tolist(), self._data.agent_id.tolist()):
             match, team = self._get_match_and_team(m_id, t_id, a_id)
-            actions.append((actions_sp if team.selfplay else actions_arch).pop(0))
+            actions.append((actions_sp if team.selfplay[team.agents.index(a_id)] else actions_arch).pop(0))
         return torch.stack(actions, 0)
 
     def _get_match_and_team(self, m_id: int, t_id: int, a_id: int, allow_create=True) -> Tuple[Match, Team]:
         match = self._matches.get(m_id)
         if match is None:
             assert allow_create
-            selfplay = True
             match = self._matches[m_id] = Match(m_id, {})
             # print('create match', m_id)
-        else:
-            selfplay = random.random() < self.selfplay_prob
 
         team = match.teams.get(t_id)
         if team is None:
             assert allow_create
-            team = match.teams[t_id] = Team(t_id, selfplay, set())
+            team = match.teams[t_id] = Team(t_id, [], [])
             # print('create team', t_id, 'match', m_id)
 
         if a_id not in team.agents:
-            team.agents.add(a_id)
+            team.agents.append(a_id)
+            team.selfplay.append(random.random() < self.selfplay_prob)
             assert all(t == team or a_id not in t.agents for m in self._matches.values() for t in m.teams.values()), \
                 (m_id, t_id, a_id, self._matches)
             # print('create agent', a_id, 'team', t_id, 'match', m_id)
@@ -187,13 +185,14 @@ class VariableSelfPlayTrainer:
             ended_matches.add(m_id)
 
             teams = self._matches[m_id].teams
-            selfplay_all = all(t.selfplay for t in teams.values())
+            selfplay_all = all(s for t in teams.values() for s in t.selfplay)
             if selfplay_all:
                 continue
 
             win = np.sign(self._data.true_reward[i].item())
             draw = win == 0
-            selfplay_cur = teams[t_id].selfplay
+            team = teams[t_id]
+            selfplay_cur = team.selfplay[team.agents.index(a_id)]
             self._matches_wr.append(float(0.5 if draw else win == selfplay_cur))
             if win == selfplay_cur:
                 self._main_rating, self._current_model.rating = rate_1vs1(self._main_rating, self._current_model.rating, drawn=draw)
@@ -217,6 +216,7 @@ class VariableSelfPlayTrainer:
                 continue
             match, team = self._get_match_and_team(m_id, t_id, a_id, allow_create=False)
             # print('del agent', a_id)
+            team.selfplay.pop(team.agents.index(a_id))
             team.agents.remove(a_id)
             if len(team.agents) == 0:
                 # print('del team', t_id)

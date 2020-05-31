@@ -84,6 +84,10 @@ class ActionValueHead(HeadBase):
             nn.Sigmoid(),
         )
 
+    def reset_weights(self):
+        normalized_columns_initializer_(self.linear.weight.data, 0.1)
+        self.linear.bias.data.fill_(0)
+
     def forward(self, x, actions=None, **kwargs):
         actions = self.pd.to_inputs(actions)
         q = self.linear(x * 2 * self.action_enc(actions))
@@ -149,9 +153,9 @@ class StateValueHead(HeadBase):
         self.linear = Linear(in_features, num_out)
         self.reset_weights()
 
-    # def reset_weights(self):
-    #     normalized_columns_initializer_(self.linear.weight.data, 1.0)
-    #     self.linear.bias.data.fill_(0)
+    def reset_weights(self):
+        normalized_columns_initializer_(self.linear.weight.data, 0.1)
+        self.linear.bias.data.fill_(0)
 
     def forward(self, x, **kwargs):
         # (*xd, bins, 1)

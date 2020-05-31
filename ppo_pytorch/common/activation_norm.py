@@ -1,21 +1,23 @@
+import numbers
 import random
-from typing import Optional
+from typing import Optional, Union, List
 
 import torch
 import torch.nn as nn
 
 
 class ActivationNorm(nn.Module):
-    def __init__(self, data_dims, eps=1e-5):
+    def __init__(self, dim, eps=1e-6):
         super().__init__()
-        self.data_dims = data_dims
+        if isinstance(dim, numbers.Integral):
+            dim = (dim,)
+        self.dim = dim
         self.eps = eps
         self._input = []
 
     def forward(self, input: torch.Tensor, always_run=False):
         if not always_run and not input.requires_grad:
             return input
-        assert input.dim() > self.data_dims
         self._input.append(input.clone())
         assert len(self._input) < 1000, 'maybe forgot to call get_loss?'
         return input
@@ -25,14 +27,19 @@ class ActivationNorm(nn.Module):
             return None
         losses = []
         for x in self._input:
-            losses.append(calc_act_norm_loss(x, self.data_dims, self.eps))
+            losses.append(calc_act_norm_loss(x, self.dim, self.eps))
+            # losses.append(calc_act_norm_loss(x, reverse_dim(self.dim, x.ndim), self.eps))
         if clear:
             self._input.clear()
         return torch.stack(losses).mean()
 
 
-def calc_act_norm_loss(x, data_dims, eps=1e-5):
-    var, mean = torch.var_mean(x, dim=tuple(range(x.ndim - data_dims)))
+def reverse_dim(dim, ndim):
+    return [i for i in range(ndim) if i not in dim and i - ndim not in dim]
+
+
+def calc_act_norm_loss(x, dim: List[int] = -1, eps: float = 1e-6):
+    var, mean = torch.var_mean(x, dim=reverse_dim(dim, x.ndim))
     var = var + eps
     return 0.5 * (var.mean() + mean.pow(2).mean() - var.log().mean())
 

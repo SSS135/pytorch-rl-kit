@@ -2,6 +2,8 @@ import math
 from typing import List, Callable
 
 import torch.nn as nn
+from ppo_pytorch.actors.transformer import TrPriorFirstLayer, SimpleTrLayer
+
 from .silu import SiLU, silu
 from ..common.activation_norm import ActivationNorm
 
@@ -108,6 +110,91 @@ class FCFeatureExtractor(FeatureExtractorBase):
                 logger.add_histogram(f'layer_{i}_output', x, cur_step)
         if self.goal_size is not None:
             x = x * 2 * self.out_embedding(goal).sigmoid()
+        return x
+
+
+class BatchNormLast(nn.BatchNorm1d):
+    def __init__(self, num_features, eps=1e-5, momentum=0.01, affine=True,
+                 track_running_stats=True):
+        super().__init__(num_features, eps, momentum, affine, track_running_stats)
+
+    def forward(self, input):
+        return super().forward(input.reshape(-1, input.shape[-1])).reshape(input.shape)
+
+
+class GroupNormLast(nn.GroupNorm):
+    def forward(self, input):
+        return super().forward(input.reshape(-1, input.shape[-1])).reshape(input.shape)
+
+
+class FCAttentionFeatureExtractor(FeatureExtractorBase):
+    def __init__(self, input_size: int, num_units: int, unit_size: int,
+                 hidden_size=256, activation=SiLU, goal_size=None,
+                 num_full_layers=0, num_simple_layers=2, **kwargs):
+        super().__init__(**kwargs)
+        self.input_size = input_size
+        self.num_units = num_units
+        self.unit_size = unit_size
+        self.hidden_size = hidden_size
+        self.activation = activation
+        self.goal_size = goal_size
+        self.num_full_layers = num_full_layers
+        self.num_simple_layers = num_simple_layers
+
+        self.personal_fc = nn.Sequential(
+            nn.Linear(input_size - num_units * unit_size, hidden_size),
+            activation(),
+            nn.Linear(hidden_size, hidden_size),
+            activation(),
+        )
+        self.unit_fc = nn.Sequential(
+            nn.Linear(unit_size, hidden_size),
+            activation(),
+            nn.Linear(hidden_size, hidden_size),
+            activation(),
+        )
+        self.end_fc = nn.Sequential(
+            nn.LayerNorm(hidden_size),
+            nn.Linear(hidden_size, hidden_size),
+            activation(),
+        )
+        self.full_tr_layers = nn.ModuleList([TrPriorFirstLayer(256, 32, 256 // 32) for _ in range(self.num_full_layers)])
+        self.simple_tr_layers = nn.ModuleList([SimpleTrLayer(256, 32, 256 // 32) for _ in range(self.num_simple_layers)])
+        self.out_embedding = nn.Linear(goal_size, hidden_size) if goal_size is not None else None
+
+    @property
+    def output_size(self):
+        return self.hidden_size
+
+    def forward(self, input: torch.Tensor, logger=None, cur_step=None, goal=None, **kwargs):
+        x = input.reshape(-1, input.shape[-1])
+        if self.goal_size is not None:
+            goal = goal.reshape(-1, goal.shape[-1])
+        NU, US = self.num_units, self.unit_size
+        units, x = x[..., :NU * US].reshape(*x.shape[:-1], NU, US), x[..., NU * US:]
+        x = self._extract_features(x, units, goal, logger, cur_step)
+        return x.reshape(*input.shape[:-1], -1)
+
+    def _extract_features(self, personal, units, goal, logger, cur_step):
+        units = self.unit_fc(units)
+        x = self.personal_fc(personal)
+
+        B, NU, H = units.shape
+        assert x.shape == (B, H)
+
+        if self.num_full_layers > 0:
+            x = torch.cat([x.unsqueeze(1), units], 1)
+            for layer in self.full_tr_layers:
+                x = layer(x)
+
+        if self.num_simple_layers > 0 and self.num_full_layers > 0:
+            x, units = x[:, 0, :], x[:, 1:, :]
+        for layer in self.simple_tr_layers:
+            x = layer(x, units)
+
+        x = self.end_fc(x)
+        # if self.goal_size is not None:
+        #     x = x * 2 * self.out_embedding(goal).sigmoid()
         return x
 
 
@@ -287,6 +374,17 @@ def create_impala_fc_actor(observation_space, action_space, hidden_sizes=(128, 1
         def fx_factory(): return FCImaginationFeatureExtractor(**fx_kwargs, pd=pd)
     else:
         def fx_factory(): return FCFeatureExtractor(**fx_kwargs)
+
+    return create_impala_actor(action_space, fx_factory, num_out=num_values)
+
+
+def create_impala_attention_actor(observation_space, action_space, num_units, unit_size, hidden_size=256,
+                                  activation=SiLU, num_values=1, goal_size=None):
+    assert len(observation_space.shape) == 1
+
+    def fx_factory(): return FCAttentionFeatureExtractor(
+        observation_space.shape[0], num_units, unit_size,
+        hidden_size=hidden_size, activation=activation, goal_size=goal_size)
 
     return create_impala_actor(action_space, fx_factory, num_out=num_values)
 

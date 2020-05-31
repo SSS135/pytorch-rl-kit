@@ -574,7 +574,7 @@ class IMPALA(RLBase):
             action_values = action_values * pa_std + pa_mean
         advantages_upgo = calc_upgo(data.rewards, state_values,
                                     data.dones, self.reward_discount,
-                                    gae_lambda=1.0, action_values=action_values) - state_values[:-1]
+                                    gae_lambda=1.0, action_values=action_values if self.q_loss_scale > 0 else None) - state_values[:-1]
         action_advantage_targets = data.rewards + self.reward_discount * (1 - data.dones) * state_value_targets[1:] - state_values[:-1]
         state_value_targets = state_value_targets[:-1]
 
