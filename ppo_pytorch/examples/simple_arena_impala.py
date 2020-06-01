@@ -17,7 +17,7 @@ if __name__ == '__main__':
     actors_per_env = 2 * 8
     visual = False
     horizon = 64
-    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuousR3\DungeonAI'
+    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuousR\DungeonAI'
     env_factory = partial(AsyncUnityVecEnv, exe_path, num_envs=num_envs, visual_observations=visual, stacked_frames=1,
                           no_graphics_except_first=False, min_ready_envs=0.5)
 
@@ -63,16 +63,15 @@ if __name__ == '__main__':
         # model_factory=partial(create_impala_fc_actor, hidden_sizes=(256, 256, 256),
         #                       activation=SiLU, use_imagination=False),
 
-        model_init_path=r'tensorboard\IMPALA_SimpleArenaContinuousR2_2020-05-31_07-58-40_[sp_ord7_tr-f0s2-pu2l_ln]_s8_amgjl\model_0.pth',
+        # model_init_path=r'tensorboard\IMPALA_SimpleArenaContinuousR2_2020-05-31_07-58-40_[sp_ord7_tr-f0s2-pu2l_ln]_s8_amgjl\model_0.pth',
         # disable_training=True,
     )
     trainer_params = dict(
         num_archive_models=10,
-        archive_save_interval=50_000,
+        archive_save_interval=100_000,
         archive_switch_interval=250,
-        selfplay_prob=0.75,
-        rate_agents=False,
-        tag='[sp_ord7_tr-f0s2-pu2l_ln]',
+        selfplay_prob=0.5,
+        tag='[new_rtk0.5_sp_ord7_tr-f0s2-pu2l_ln]',
         log_root_path=log_path,
         log_interval=20000,
         rl_alg_factory=partial(alg_class, **alg_params),

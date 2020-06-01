@@ -19,12 +19,19 @@ from ..tensorboard_env_logger import TensorboardEnvLogger
 class Team:
     id: int
     selfplay: List[bool]
+    done: List[bool]
+    returns: List[float]
     agents: List[int]
+
 
 @dataclass
 class Match:
     id: int
     teams: Dict[int, Team]
+
+    @property
+    def done(self):
+        return all(d for t in self.teams.values() for d in t.done)
 
 
 @dataclass
@@ -41,7 +48,6 @@ class VariableSelfPlayTrainer:
                  archive_save_interval: int,
                  archive_switch_interval: int,
                  selfplay_prob: float,
-                 rate_agents: bool,
                  log_root_path: str,
                  log_interval: int = 10000,
                  alg_name: str = 'RL',
@@ -52,7 +58,6 @@ class VariableSelfPlayTrainer:
         self.archive_save_interval = archive_save_interval
         self.archive_switch_interval = archive_switch_interval
         self.selfplay_prob = selfplay_prob
-        self.rate_agents = rate_agents
         self.log_interval = log_interval
         self.alg_name = alg_name
         self.tag = tag
@@ -102,6 +107,8 @@ class VariableSelfPlayTrainer:
         action = self._cat_actions(action_sp, action_arch)
         assert torch.allclose(torch.from_numpy(self._data.agent_id), self._cat_actions(ac_sp, ac_arch))
 
+        self._update_returns()
+        self._set_done_flags()
         self._rate_matches()
         self._cleanup_matches()
         self._data = self._env.step(action.numpy())
@@ -137,7 +144,7 @@ class VariableSelfPlayTrainer:
     def _separate_data(self):
         data_sp, data_arch = [], []
         for i, (m_id, t_id, a_id) in enumerate(zip(self._data.match_id.tolist(), self._data.team_id.tolist(), self._data.agent_id.tolist())):
-            match, team = self._get_match_and_team(m_id, t_id, a_id)
+            match, team = self._get_match_and_team(m_id, t_id, a_id, allow_create=True)
             sample = [x[i] for x in (self._data.obs, self._data.rewards, self._data.done, self._data.true_reward, self._data.agent_id)]
             (data_sp if team.selfplay[team.agents.index(a_id)] else data_arch).append(sample)
         return [[torch.from_numpy(np.stack(x, 0)) for x in zip(*data)] if len(data) > 0 else None for data in (data_sp, data_arch)]
@@ -150,7 +157,7 @@ class VariableSelfPlayTrainer:
             actions.append((actions_sp if team.selfplay[team.agents.index(a_id)] else actions_arch).pop(0))
         return torch.stack(actions, 0)
 
-    def _get_match_and_team(self, m_id: int, t_id: int, a_id: int, allow_create=True) -> Tuple[Match, Team]:
+    def _get_match_and_team(self, m_id: int, t_id: int, a_id: int, allow_create=False) -> Tuple[Match, Team]:
         match = self._matches.get(m_id)
         if match is None:
             assert allow_create
@@ -160,12 +167,14 @@ class VariableSelfPlayTrainer:
         team = match.teams.get(t_id)
         if team is None:
             assert allow_create
-            team = match.teams[t_id] = Team(t_id, [], [])
+            team = match.teams[t_id] = Team(t_id, [], [], [], [])
             # print('create team', t_id, 'match', m_id)
 
         if a_id not in team.agents:
             team.agents.append(a_id)
             team.selfplay.append(random.random() < self.selfplay_prob)
+            team.done.append(False)
+            team.returns.append(0)
             assert all(t == team or a_id not in t.agents for m in self._matches.values() for t in m.teams.values()), \
                 (m_id, t_id, a_id, self._matches)
             # print('create agent', a_id, 'team', t_id, 'match', m_id)
@@ -173,34 +182,31 @@ class VariableSelfPlayTrainer:
         return match, team
 
     def _rate_matches(self):
-        if not self.rate_agents:
-            return
-        for_var = enumerate(zip(self._data.match_id.tolist(), self._data.team_id.tolist(), self._data.agent_id.tolist(), self._data.done.tolist()))
-        ended_matches = set()
-        for i, (m_id, t_id, a_id, done) in for_var:
-            if not done:
+        for m_id in self._data.match_id.tolist():
+            if m_id not in self._matches:
                 continue
-            if m_id in ended_matches:
-                continue
-            ended_matches.add(m_id)
-
-            teams = self._matches[m_id].teams
-            selfplay_all = all(s for t in teams.values() for s in t.selfplay)
-            if selfplay_all:
+            teams = self._matches[m_id].teams.values()
+            if not all(done for team in teams for done in team.done):
                 continue
 
-            win = np.sign(self._data.true_reward[i].item())
-            draw = win == 0
-            team = teams[t_id]
-            selfplay_cur = team.selfplay[team.agents.index(a_id)]
-            self._matches_wr.append(float(0.5 if draw else win == selfplay_cur))
-            if win == selfplay_cur:
+            selfplay_all = all(s for t in teams for s in t.selfplay)
+            archive_all = all(not s for t in teams for s in t.selfplay)
+            if selfplay_all or archive_all:
+                continue
+
+            r_selfplay = np.mean([r for t in teams for (r, selfplay) in zip(t.returns, t.selfplay) if selfplay])
+            r_archive = np.mean([r for t in teams for (r, selfplay) in zip(t.returns, t.selfplay) if not selfplay])
+            win = r_selfplay > r_archive
+            draw = r_selfplay == r_archive
+
+            self._matches_wr.append(float(0.5 if draw else win))
+            if win:
                 self._main_rating, self._current_model.rating = rate_1vs1(self._main_rating, self._current_model.rating, drawn=draw)
             else:
                 self._current_model.rating, self._main_rating = rate_1vs1(self._current_model.rating, self._main_rating, drawn=draw)
 
     def _log_rating(self):
-        if not self.rate_agents or self._last_log_frame + self.log_interval > self._frame:
+        if self._last_log_frame + self.log_interval > self._frame:
             return
         self._last_log_frame = self._frame
         self.logger.add_scalar('Rating/TrueSkill Mu', self._main_rating.mu, self._frame)
@@ -209,21 +215,25 @@ class VariableSelfPlayTrainer:
             self.logger.add_scalar('Rating/Win Rate', np.mean(self._matches_wr), self._frame)
             self._matches_wr.clear()
 
-    def _cleanup_matches(self):
+    def _set_done_flags(self):
         for_var = enumerate(zip(self._data.match_id.tolist(), self._data.team_id.tolist(), self._data.agent_id.tolist(), self._data.done.tolist()))
         for i, (m_id, t_id, a_id, done) in for_var:
             if not done:
                 continue
-            match, team = self._get_match_and_team(m_id, t_id, a_id, allow_create=False)
-            # print('del agent', a_id)
-            team.selfplay.pop(team.agents.index(a_id))
-            team.agents.remove(a_id)
-            if len(team.agents) == 0:
-                # print('del team', t_id)
-                del match.teams[t_id]
-            if len(match.teams) == 0:
-                # print('del match', m_id)
+            match, team = self._get_match_and_team(m_id, t_id, a_id)
+            team.done[team.agents.index(a_id)] = True
+
+    def _update_returns(self):
+        for_var = zip(self._data.match_id.tolist(), self._data.team_id.tolist(), self._data.agent_id.tolist(), self._data.true_reward.tolist())
+        for m_id, t_id, a_id, r in for_var:
+            match, team = self._get_match_and_team(m_id, t_id, a_id)
+            team.returns[team.agents.index(a_id)] += r
+
+    def _cleanup_matches(self):
+        for m_id in self._data.match_id.tolist():
+            if m_id in self._matches and all(d for t in self._matches[m_id].teams.values() for d in t.done):
                 del self._matches[m_id]
+                # print('del match', m_id)
 
     def _save_archive_model(self):
         if len(self._archive) == 0 or self._last_save_frame + self.archive_save_interval < self._frame:
