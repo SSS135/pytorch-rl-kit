@@ -88,7 +88,7 @@ class VariableSelfPlayTrainer:
         self._last_switch_frame = 0
         self._matches: Dict[int, Match] = {}
         self._matches_wr = []
-        self._main_rating = Rating()
+        self._main_rating = Rating(25, 1)
         self._cpu = torch.device('cpu')
         self._last_log_frame = 0
         self._actors_sp = set()
