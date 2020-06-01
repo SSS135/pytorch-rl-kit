@@ -12,12 +12,12 @@ if __name__ == '__main__':
     from ppo_pytorch.actors.norm_factory import BatchNormFactory
     from ppo_pytorch.common.variable_env.variable_env_trainer import VariableEnvTrainer
 
-    train_frames = 20e6
+    train_frames = 100e6
     num_envs = 4
     actors_per_env = 2 * 8
     visual = False
     horizon = 64
-    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuousR2\DungeonAI'
+    exe_path = r'c:\Users\Alexander\Projects\DungeonAI\Build\SimpleArenaContinuousR3\DungeonAI'
     env_factory = partial(AsyncUnityVecEnv, exe_path, num_envs=num_envs, visual_observations=visual, stacked_frames=1,
                           no_graphics_except_first=False, min_ready_envs=0.5)
 
@@ -52,7 +52,6 @@ if __name__ == '__main__':
         barron_alpha_c=(2.0, 1.0),
         memory_burn_in_steps=32,
         activation_norm_scale=0.0,
-        num_rewards=3,
         reward_reweight_interval=40,
         random_crop_obs=False,
 
@@ -64,14 +63,14 @@ if __name__ == '__main__':
         # model_factory=partial(create_impala_fc_actor, hidden_sizes=(256, 256, 256),
         #                       activation=SiLU, use_imagination=False),
 
-        # model_init_path=r'c:\Users\Alexander\sync-pc\Jupyter\tensorboard\IMPALA_SimpleArenaContinuous_2020-04-27_15-08-03_[vls1.0_advnorm0.99]_dlwu5k0o\model_0.pth',
+        model_init_path=r'tensorboard\IMPALA_SimpleArenaContinuousR2_2020-05-31_07-58-40_[sp_ord7_tr-f0s2-pu2l_ln]_s8_amgjl\model_0.pth',
         # disable_training=True,
     )
     trainer_params = dict(
         num_archive_models=10,
         archive_save_interval=50_000,
         archive_switch_interval=250,
-        selfplay_prob=0.5,
+        selfplay_prob=0.75,
         rate_agents=False,
         tag='[sp_ord7_tr-f0s2-pu2l_ln]',
         log_root_path=log_path,

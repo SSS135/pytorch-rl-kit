@@ -60,7 +60,7 @@ class BufferThread:
     def get_new_samples(self) -> Dict[str, Tensor]:
         index = self._index
         num_samples = self.avail_new_samples
-        assert num_samples > 0
+        assert 0 < num_samples < self.capacity
         self._num_new_samples = max(0, self._num_new_samples - num_samples)
 
         start = index - num_samples - self._num_new_samples
@@ -68,7 +68,7 @@ class BufferThread:
         if start < -num_samples:
             start += self.capacity
             end += self.capacity
-        if end >= self.capacity:
+        if end > self.capacity:
             start -= self.capacity
             end -= self.capacity
 
