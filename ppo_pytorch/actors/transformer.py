@@ -25,10 +25,19 @@ class SimpleTrLayer(nn.Module):
             nn.Linear(hidden_size, hidden_size),
             SiLU(),
         )
+        self.gru = nn.ModuleList([nn.GRUCell(hidden_size, hidden_size), nn.GRUCell(hidden_size, hidden_size)])
+
+    def reset_weights(self):
+        with torch.no_grad():
+            for gru in self.gru:
+                gru.reset_parameters()
+                gru.bias_hh.fill_(0)
+                gru.bias_ih.fill_(0)
+                gru.bias_hh[self.hidden_size:2 * self.hidden_size] += 1
 
     def forward(self, main, seq):
-        main = main + self._attention(main, seq)
-        main = main + self.mlp(main)
+        main = self.gru[0](self._attention(main, seq), main)
+        main = self.gru[1](self.mlp(main), main)
         return main
 
     def _attention(self, main, seq):
