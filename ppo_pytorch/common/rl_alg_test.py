@@ -18,6 +18,8 @@ from pstats import SortKey
 
 
 def run_training(trainer_cls, trainer_params, alg_params, train_frames, profile=False):
+    set_low_priority()
+
     if is_running_on_windows():
         os.system(f'title {trainer_params["tag"]}')
 
