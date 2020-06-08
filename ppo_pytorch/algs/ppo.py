@@ -11,6 +11,7 @@ import torch
 import torch.autograd
 import torch.nn.functional as F
 import torch.optim as optim
+from ppo_pytorch.common.activation_norm import activation_norm_loss
 from rl_exp.noisy_linear import NoisyLinear
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
@@ -126,6 +127,7 @@ class PPO(RLBase):
                  entropy_decay_factory=None,
                  spu_dis_agg_lam=(0.01, 0.01 / 1.3, 1.0),
                  use_pop_art=False,
+                 activation_norm_scale=0.0,
                  **kwargs):
         """
         Single threaded implementation of Proximal Policy Optimization Algorithms
@@ -216,6 +218,7 @@ class PPO(RLBase):
         self.spu_dis_agg_lam = spu_dis_agg_lam
         self.use_pop_art = use_pop_art
         self.lr_scheduler_factory = lr_scheduler_factory
+        self.activation_norm_scale = activation_norm_scale
 
         assert isinstance(constraint, str) or isinstance(constraint, list) or isinstance(constraint, tuple)
         self.constraint = (constraint,) if isinstance(constraint, str) else constraint
@@ -299,7 +302,7 @@ class PPO(RLBase):
         self._apply_pop_art(data)
 
         data = AttrDict(states=data.states, logits_old=data.logits, state_values_old=data.state_values,
-                        actions=data.actions, advantages=data.advantages, value_targets=data.value_targets)
+                        actions=data.actions, advantages=data.advantages, state_value_targets=data.state_value_targets)
 
         # if self._has_constraint(Constraint.target):
         #     data.logits_target = self._calc_target_logits(
@@ -332,13 +335,13 @@ class PPO(RLBase):
         kl = np.mean(kl_list)
 
         if self._do_log:
-            self.logger.add_scalar('learning_rate', self._learning_rate, self.frame_train)
-            self.logger.add_scalar('clip_mult', self._clip_mult, self.frame_train)
-            self.logger.add_scalar('total_loss', loss, self.frame_train)
-            self.logger.add_scalar('kl', kl, self.frame_train)
-            self.logger.add_scalar('kl_scale', self.kl_scale, self.frame_train)
-            self.logger.add_scalar('model_abs_diff', model_diff(old_model, self._train_model), self.frame_train)
-            self.logger.add_scalar('model_max_diff', model_diff(old_model, self._train_model, True), self.frame_train)
+            self.logger.add_scalar('Optimizer/Learning Rate', self._learning_rate, self.frame_train)
+            self.logger.add_scalar('Optimizer/Clip Mult', self._clip_mult, self.frame_train)
+            self.logger.add_scalar('Losses/Total Loss', loss, self.frame_train)
+            self.logger.add_scalar('Stability/KL Replay', kl, self.frame_train)
+            # self.logger.add_scalar('Stability/KL Scale', self.kl_scale, self.frame_train)
+            self.logger.add_scalar('Model Diff/Abs', model_diff(old_model, self._train_model), self.frame_train)
+            self.logger.add_scalar('Model Diff/Max', model_diff(old_model, self._train_model, True), self.frame_train)
 
         self._unapply_pop_art()
         # self._adjust_kl_scale(kl)
@@ -349,17 +352,17 @@ class PPO(RLBase):
 
     def _apply_pop_art(self, data):
         if self.use_pop_art:
-            self._pop_art.update_statistics(data.value_targets)
+            self._pop_art.update_statistics(data.state_value_targets)
             pa_mean, pa_std = self._pop_art.statistics
             if self._first_pop_art_update:
                 self._first_pop_art_update = False
             else:
                 self._train_model.heads.state_values.normalize(pa_mean, pa_std)
             data.state_values = (data.state_values - pa_mean) / pa_std
-            data.value_targets = (data.value_targets - pa_mean) / pa_std
+            data.state_value_targets = (data.state_value_targets - pa_mean) / pa_std
             if self._do_log:
-                self.logger.add_scalar('pop_art_mean', pa_mean, self.frame_train)
-                self.logger.add_scalar('pop_art_std', pa_std, self.frame_train)
+                self.logger.add_scalar('PopArt/Mean', pa_mean, self.frame_train)
+                self.logger.add_scalar('PopArt/Std', pa_std, self.frame_train)
 
     def _unapply_pop_art(self):
         if self.use_pop_art:
@@ -381,7 +384,8 @@ class PPO(RLBase):
                 batch[k] = v if k == 'states' else v.cpu()
 
             loss, kl = self._get_ppo_loss(batch, do_log=do_log)
-            loss = loss.mean()
+            act_norm_loss = activation_norm_loss(self._train_model).cpu()
+            loss = loss.mean() + self.activation_norm_scale * act_norm_loss
 
         kl = kl.item()
         if (not self._has_constraint(Constraint.spu) or kl < self.spu_dis_agg_lam[1] * self._clip_mult) and \
@@ -393,17 +397,15 @@ class PPO(RLBase):
             self._optimizer.step()
             self._optimizer.zero_grad()
 
+        if do_log:
+            self.logger.add_scalar('Losses/Activation Norm', act_norm_loss, self.frame_train)
+
         return loss, kl
 
     def _get_ppo_loss(self, batch, pd=None, do_log=False, tag=''):
-        """
-        Single iteration of PPO algorithm.
-        value_targets: Total loss and KL divergence.
-        """
-
         logits, logits_old = batch.logits, batch.logits_old
         values, values_old = batch.state_values, batch.state_values_old
-        value_targets = batch.value_targets
+        state_value_targets = batch.state_value_targets
         actions = batch.actions
         advantages = batch.advantages
 
@@ -455,12 +457,12 @@ class PPO(RLBase):
                 v_pred_clipped = values_old + torch.min(torch.max(values - values_old, -vclip), vclip)
             else:
                 v_pred_clipped = values_old + (values - values_old).clamp(-value_clip, value_clip)
-            vf_clip_loss = barron_loss(v_pred_clipped, value_targets, *self.barron_alpha_c, reduce=False)
-            vf_nonclip_loss = barron_loss(values, value_targets, *self.barron_alpha_c, reduce=False)
+            vf_clip_loss = barron_loss(v_pred_clipped, state_value_targets, *self.barron_alpha_c, reduce=False)
+            vf_nonclip_loss = barron_loss(values, state_value_targets, *self.barron_alpha_c, reduce=False)
             loss_value = self.value_loss_scale * torch.max(vf_nonclip_loss, vf_clip_loss)
             assert loss_value.shape == values.shape
         else:
-            loss_value = self.value_loss_scale * barron_loss(values, value_targets, *self.barron_alpha_c, reduce=False)
+            loss_value = self.value_loss_scale * barron_loss(values, state_value_targets, *self.barron_alpha_c, reduce=False)
 
         # assert loss_clip.shape == loss_value.shape, (loss_clip.shape, loss_value.shape)
         # assert loss_value.shape == loss_ent.shape, (loss_value.shape, loss_ent.shape)
@@ -478,13 +480,11 @@ class PPO(RLBase):
 
         if do_log and tag is not None:
             with torch.no_grad():
-                self.logger.add_scalar('entropy' + tag, entropy.mean(), self.frame_train)
-                self.logger.add_scalar('loss_entropy' + tag, loss_ent.mean(), self.frame_train)
-                self.logger.add_scalar('loss_state_value' + tag, loss_value.mean(), self.frame_train)
-                self.logger.add_scalar('ratio_mean' + tag, ratio.mean(), self.frame_train)
-                self.logger.add_scalar('ratio_abs_mean' + tag, ratio.abs().mean(), self.frame_train)
-                self.logger.add_scalar('ratio_abs_max' + tag, ratio.abs().max(), self.frame_train)
-                self.logger.add_scalar('loss_policy' + tag, loss_clip.mean(), self.frame_train)
+                self.logger.add_scalar('Stability/Entropy' + tag, entropy.mean(), self.frame_train)
+                self.logger.add_scalar('Losses/State Value' + tag, loss_value.mean(), self.frame_train)
+                self.logger.add_scalar('Prob Ratio/Mean' + tag, ratio.mean(), self.frame_train)
+                self.logger.add_scalar('Prob Ratio/Abs Mean' + tag, ratio.abs().mean(), self.frame_train)
+                self.logger.add_scalar('Prob Ratio/Abs Max' + tag, ratio.abs().max(), self.frame_train)
 
         return total_loss, kl.mean()
 

@@ -6,7 +6,7 @@ if __name__ == '__main__':
     from ..algs.impala import IMPALA
     from ..algs.parameters import create_ppo_kwargs
     from ..actors.fc_actors import create_ppo_fc_actor
-    from ..actors.silu import SiLU
+    from ppo_pytorch.common.silu import SiLU
 
     train_frames = 20e6
     num_envs = 32

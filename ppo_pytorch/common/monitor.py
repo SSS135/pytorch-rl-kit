@@ -3,8 +3,6 @@ from typing import List
 
 import gym
 
-from .multiplayer_env import MultiplayerEnv
-
 
 class DefaultAttrDict(defaultdict):
     def __getattr__(self, key):
@@ -26,8 +24,7 @@ class Monitor(gym.Wrapper):
     """
     def __init__(self, env):
         super().__init__(env)
-        pnum = self.env.num_players if isinstance(self.env, MultiplayerEnv) else 1
-        self._data = [DefaultAttrDict(int) for _ in range(pnum)]
+        self._data = DefaultAttrDict(int)
 
     def reset(self, **kwargs):
         return self.env.reset(**kwargs)
@@ -35,17 +32,10 @@ class Monitor(gym.Wrapper):
     def step(self, action):
         state, reward, done, info = self.env.step(action)
 
-        if isinstance(self.env, MultiplayerEnv):
-            for i in range(self.env.num_players):
-                self._add_step_info(self._data[i], info[i], reward[i])
-                if done[i] if isinstance(done, Iterable) else done:
-                    self._add_episode_info(info[i], self._data[i])
-                    self._data[i] = DefaultAttrDict(int)
-        else:
-            self._add_step_info(self._data[0], info, reward)
-            if done:
-                self._add_episode_info(info, self._data[0])
-                self._data[0] = DefaultAttrDict(int)
+        self._add_step_info(self._data, info, reward)
+        if done:
+            self._add_episode_info(info, self._data)
+            self._data = DefaultAttrDict(int)
 
         return state, reward, done, info
 

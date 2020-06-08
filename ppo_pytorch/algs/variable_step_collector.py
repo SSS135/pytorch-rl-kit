@@ -32,7 +32,6 @@ class StepData:
 class VariableStepCollector:
     def __init__(self, actor: ModularActor, replay_buffer: VariableReplayBuffer, device: torch.device,
                  reward_weight_gen: RewardWeightGenerator, reward_reweight_interval: int, disable_training=False):
-        assert len(actor.feature_extractors) == 1
         self.actor = actor
         self.replay_buffer = replay_buffer
         self.device = device
@@ -86,12 +85,12 @@ class VariableStepCollector:
             dones_t = data.done.unsqueeze(0).to(self.device)
             if self._memory_shape is None:
                 self._memory_shape = self.actor(obs.unsqueeze(0), memory=None, dones=dones_t,
-                                                goal=reward_weights.unsqueeze(0), evaluate_heads=['logits']).memory.shape[1:]
+                                                goal=reward_weights.unsqueeze(0)).memory.shape[1:]
             input_memory = self._get_data_field(data.actor_id, data.done,
                                                 lambda x: x.output_memory,
                                                 lambda: torch.zeros(self._memory_shape))
             ac_out = self.actor(obs.unsqueeze(0), memory=input_memory, dones=dones_t,
-                                goal=reward_weights.unsqueeze(0), evaluate_heads=['logits'])
+                                goal=reward_weights.unsqueeze(0))
             ac_out.logits = ac_out.logits.squeeze(0)
         else:
             ac_out = self.actor(obs, goal=reward_weights, evaluate_heads=['logits'])

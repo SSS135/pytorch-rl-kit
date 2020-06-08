@@ -1,13 +1,9 @@
-from ppo_pytorch.actors.fc_actors import create_sac_fc_actor
-from ppo_pytorch.actors.silu import SiLU
-
 if __name__ == '__main__':
     from .init_vars import *
     from ..algs.parameters import create_sac_fc_kwargs
     from ppo_pytorch.algs.sac import SAC
     from ppo_pytorch.common.env_factory import SimpleVecEnv
     import ppo_pytorch.common.cartpole_continuous
-    import pybullet_envs
 
     train_frames = 2e6
     env_factory = partial(SimpleVecEnv, 'AntBulletEnv-v0', parallel='dummy', frame_skip=4)

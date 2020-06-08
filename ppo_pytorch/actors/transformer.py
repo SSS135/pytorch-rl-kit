@@ -1,5 +1,5 @@
 import torch
-from ppo_pytorch.actors.silu import SiLU, silu
+from ppo_pytorch.common.silu import SiLU, silu
 from torch import nn
 
 

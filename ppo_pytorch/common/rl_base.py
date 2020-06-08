@@ -102,15 +102,15 @@ class RLBase:
         assert obs.shape == (num_actors, *self.observation_space.shape), f'{obs.shape} {self.observation_space.shape}'
         assert obs.dtype == torch.float32 or obs.dtype == torch.uint8, obs.dtype
         assert rewards.shape == (num_actors, rewards.shape[1]), f'wrong reward {rewards} shape {rewards.shape}'
-        assert rewards.dtype == torch.float32, rewards.dtype
         assert true_reward.shape == (num_actors,)
-        assert true_reward.dtype == torch.float32, true_reward.dtype
         assert done.shape == (num_actors,)
         assert actor_id.shape == (num_actors,)
         assert actor_id.dtype == torch.long or actor_id.dtype == torch.int, actor_id.dtype
         aid_list = actor_id.tolist()
         assert len(aid_list) == len(set(aid_list)), aid_list
 
+        rewards = rewards.float()
+        true_reward = true_reward.float()
         done = done.float()
         actor_id = actor_id.long()
 

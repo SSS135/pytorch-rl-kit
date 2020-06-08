@@ -8,5 +8,5 @@ if __name__ == '__main__':
 # from . import actors
 # from . import algs
 
-from .common.procgen_easy import register_environments
-register_environments()
+# from .common.procgen_easy import register_environments
+# register_environments()

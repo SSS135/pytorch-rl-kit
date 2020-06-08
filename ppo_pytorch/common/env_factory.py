@@ -126,15 +126,14 @@ class FrameSkipEnv(gym.Wrapper):
 
     def step(self, action):
         """Repeat action, sum reward, and max over last observations."""
-        total_reward = 0.0
+        total_reward = 0
         done = None
         for i in range(self.skip):
             obs, reward, done, info = self.env.step(action)
             total_reward += reward
             if done:
                 break
-
-        return obs, total_reward, done, info
+        return obs, np.asarray(total_reward).astype(np.float32), done, info
 
     def reset(self, **kwargs):
         return self.env.reset(**kwargs)

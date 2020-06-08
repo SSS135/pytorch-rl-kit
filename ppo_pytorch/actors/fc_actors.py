@@ -1,16 +1,15 @@
-import math
 from typing import List, Callable
 
 import torch.nn as nn
 from ppo_pytorch.actors.transformer import TrPriorFirstLayer, SimpleTrLayer
 
-from .silu import SiLU, silu
+from ppo_pytorch.common.silu import SiLU, silu
 from ..common.activation_norm import ActivationNorm
 
 from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor, create_impala_actor
-from .heads import PolicyHead, StateValueHead, ActionValueHead
+from .heads import PolicyHead, StateValueHead
 from .norm_factory import NormFactory
-from ..common.probability_distributions import ProbabilityDistribution, make_pd, DiagGaussianPd
+from ..common.probability_distributions import ProbabilityDistribution, make_pd
 import torch
 from ..config import Linear
 from optfn.skip_connections import ResidualBlock
@@ -361,9 +360,9 @@ def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128)
     return create_ppo_actor(action_space, fx_factory, split_policy_value_network, num_out=num_values)
 
 
-def create_impala_fc_actor(observation_space, action_space, hidden_sizes=(128, 128),
-                           activation=nn.Tanh, norm_factory: NormFactory=None,
-                           num_values=1, goal_size=None, use_imagination=False):
+def create_impala_fc_actor(observation_space, action_space, hidden_sizes=(128, 128), activation=nn.Tanh,
+                           norm_factory: NormFactory=None, num_values=1, goal_size=None, use_imagination=False,
+                           split_policy_value_network=True):
     assert len(observation_space.shape) == 1
 
     fx_kwargs = dict(input_size=observation_space.shape[0], hidden_sizes=hidden_sizes, activation=activation,
@@ -375,18 +374,18 @@ def create_impala_fc_actor(observation_space, action_space, hidden_sizes=(128, 1
     else:
         def fx_factory(): return FCFeatureExtractor(**fx_kwargs)
 
-    return create_impala_actor(action_space, fx_factory, num_out=num_values)
+    return create_impala_actor(action_space, fx_factory, split_policy_value_network, num_values, False)
 
 
 def create_impala_attention_actor(observation_space, action_space, num_units, unit_size, hidden_size=256,
-                                  activation=SiLU, num_values=1, goal_size=None):
+                                  activation=SiLU, num_values=1, goal_size=None, split_policy_value_network=True):
     assert len(observation_space.shape) == 1
 
     def fx_factory(): return FCAttentionFeatureExtractor(
         observation_space.shape[0], num_units, unit_size,
         hidden_size=hidden_size, activation=activation, goal_size=goal_size)
 
-    return create_impala_actor(action_space, fx_factory, num_out=num_values)
+    return create_impala_actor(action_space, fx_factory, split_policy_value_network, num_values, False)
 
 
 def create_sac_fc_actor(observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU,

@@ -41,7 +41,7 @@ class StepsProcessor:
 
         self.data.rewards += self._get_entropy_rewards()
 
-        self.data.rewards, self.data.value_targets, self.data.advantages = \
+        self.data.rewards, self.data.state_value_targets, self.data.advantages = \
             self._process_rewards(self.data.rewards, self.data.state_values, self.data.dones)
 
         self._drop_excess_data()
@@ -71,13 +71,13 @@ class StepsProcessor:
     def _process_rewards(self, rewards, values, dones, barron_scale=True):
         norm_rewards = self.reward_scale * rewards
 
-        # calculate value_targets and advantages
-        value_targets = calc_value_targets(norm_rewards, values, dones, self.reward_discount, self.reward_discount)
+        # calculate state_value_targets and advantages
+        state_value_targets = calc_value_targets(norm_rewards, values, dones, self.reward_discount, self.reward_discount)
         advantages = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
 
         advantages = self._normalize_advantages(advantages, barron_scale)
 
-        return norm_rewards, value_targets, advantages
+        return norm_rewards, state_value_targets, advantages
 
     def _normalize_advantages(self, advantages, barron_scale):
         return (advantages - advantages.mean()) / max(advantages.std(), 1e-4)

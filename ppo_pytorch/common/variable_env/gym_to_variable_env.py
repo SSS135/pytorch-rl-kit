@@ -1,24 +1,25 @@
-from collections import Callable
 from functools import partial
 
 import gym
 import numpy as np
-from ppo_pytorch.common.env_factory import FrameSkipEnv
+from ppo_pytorch.common.env_factory import FrameSkipEnv, ChannelTranspose
 from ppo_pytorch.common.variable_env.async_variable_env import AsyncVariableEnv
 from ppo_pytorch.common.variable_env.variable_env import VariableEnv
 from ppo_pytorch.common.variable_env.variable_frame_stack import VariableFrameStack
 from ppo_pytorch.common.variable_env.variable_step_result import VariableStepResult
 
 
-def env_factory(env_name: str, frame_skip: int):
+def env_factory(env_name: str, frame_skip: int, channel_transpose: bool):
     env = gym.make(env_name)
+    if channel_transpose:
+        env = ChannelTranspose(env)
     if frame_skip > 1:
         env = FrameSkipEnv(env, frame_skip)
     return GymToVariableEnv(env, env_name)
 
 
-def make_simple_env(env_name: str, num_envs: int, frame_skip=1, frame_stack=1, min_ready_envs=0.5):
-    env = AsyncVariableEnv([partial(env_factory, env_name, frame_skip)] * num_envs, min_ready_envs)
+def make_async_env(env_name: str, num_envs: int, frame_skip=1, frame_stack=1, min_ready_envs=0.5, channel_transpose=False):
+    env = AsyncVariableEnv([partial(env_factory, env_name, frame_skip, channel_transpose)] * num_envs, min_ready_envs)
     if frame_stack > 1:
         env = VariableFrameStack(env, k=frame_stack)
     return env
@@ -34,7 +35,7 @@ class GymToVariableEnv(VariableEnv):
 
     def step(self, action: np.ndarray) -> VariableStepResult:
         state, reward, done, info = self.env.step(action[0])
-        state, reward, done = [np.asarray([x], dtype=np.float32) for x in (state, reward, done)]
+        state, reward, done = [np.asarray([x]) for x in (state, reward, done)]
         res = VariableStepResult(
             obs=state,
             rewards=np.expand_dims(reward, axis=-1),
@@ -52,7 +53,7 @@ class GymToVariableEnv(VariableEnv):
     def reset(self) -> VariableStepResult:
         self._actor_id += 1
         state = self.env.reset()
-        state = np.asarray([state], dtype=np.float32)
+        state = np.asarray([state])
         return VariableStepResult(
             obs=state,
             rewards=np.zeros((1, 1), dtype=np.float32),

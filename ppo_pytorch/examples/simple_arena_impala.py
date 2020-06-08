@@ -5,12 +5,8 @@ if __name__ == '__main__':
     from ppo_pytorch.common.variable_env.variable_self_play_trainer import VariableSelfPlayTrainer
     from ..algs.impala import IMPALA
     from ..algs.parameters import create_ppo_kwargs
-    from ..actors.fc_actors import create_impala_fc_actor, create_impala_attention_actor
-    from ..actors.silu import SiLU
-    from ppo_pytorch.actors.rnn_actors import create_impala_rnn_actor
-    from ppo_pytorch.actors.cnn_actors import create_impala_cnn_actor
-    from ppo_pytorch.actors.norm_factory import BatchNormFactory
-    from ppo_pytorch.common.variable_env.variable_env_trainer import VariableEnvTrainer
+    from ..actors.fc_actors import create_impala_attention_actor
+    from ppo_pytorch.common.silu import SiLU
 
     train_frames = 100e6
     num_envs = 4
@@ -59,7 +55,7 @@ if __name__ == '__main__':
         # model_factory=partial(create_impala_cnn_actor, cnn_kind='normal'),
         # model_factory=partial(create_impala_rnn_actor, hidden_size=256, num_layers=3),
         model_factory=partial(create_impala_attention_actor, num_units=9, unit_size=7,
-                              hidden_size=256, activation=SiLU),
+                              hidden_size=256, activation=SiLU, split_policy_value_network=True),
         # model_factory=partial(create_impala_fc_actor, hidden_sizes=(256, 256, 256),
         #                       activation=SiLU, use_imagination=False),
 
@@ -68,10 +64,10 @@ if __name__ == '__main__':
     )
     trainer_params = dict(
         num_archive_models=10,
-        archive_save_interval=100_000,
+        archive_save_interval=200_000,
         archive_switch_interval=250,
         selfplay_prob=0.5,
-        tag='[new_rtk0.5_sp_ord7_tr-f0s2-pu2l_ln]',
+        tag='[split]',
         log_root_path=log_path,
         log_interval=20000,
         rl_alg_factory=partial(alg_class, **alg_params),

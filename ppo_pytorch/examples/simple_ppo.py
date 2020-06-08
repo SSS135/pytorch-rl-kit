@@ -1,10 +1,14 @@
+from ppo_pytorch.algs.parameters import create_fc_kwargs
+from ppo_pytorch.algs.ppo import PPO
+from ppo_pytorch.common.env_factory import SimpleVecEnv
+
 if __name__ == '__main__':
     from .init_vars import *
 
-    env_factory = partial(rl.common.SimpleVecEnv, 'CartPole-v1', parallel='dummy')
+    env_factory = partial(SimpleVecEnv, 'CartPole-v1', parallel='dummy')
 
-    alg_class = rl.algs.PPO
-    alg_params = rl.algs.create_fc_kwargs(
+    alg_class = PPO
+    alg_params = create_fc_kwargs(
         5e5,
 
         num_actors=8,

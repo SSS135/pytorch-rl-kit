@@ -137,10 +137,7 @@ class IMPALA(RLBase):
 
         self._optimizer = optimizer_factory(self._train_model.parameters())
         self._scheduler = SchedulerManager(self._optimizer, lr_scheduler_factory, clip_decay_factory, entropy_decay_factory)
-        self._last_model_save_frame = 0
         self._pop_art = PopArt()
-        self._first_pop_art_update = True
-        self._target_step = 0
         self._no_blend_batches = 0
 
         assert isinstance(loss_type, str) or isinstance(loss_type, list) or isinstance(loss_type, tuple)
@@ -282,11 +279,9 @@ class IMPALA(RLBase):
     def _unapply_pop_art(self, value_target_list: List[Tensor]):
         if self.use_pop_art:
             pa_mean, pa_std = self._pop_art.statistics
-            if len(value_target_list) != 0:
-                value_targets = torch.cat(value_target_list, 0) * pa_std + pa_mean
             self._train_model.heads.state_values.unnormalize(pa_mean, pa_std)
-            if len(value_target_list) != 0:
-                self._pop_art.update_statistics(value_targets)
+            for vtarg in value_target_list:
+                self._pop_art.update_statistics(vtarg * pa_std + pa_mean)
             if self._do_log:
                 self.logger.add_scalar('PopArt/Mean', pa_mean, self.frame_train)
                 self.logger.add_scalar('PopArt/Std', pa_std, self.frame_train)
@@ -427,18 +422,18 @@ class IMPALA(RLBase):
         return action_advantages
 
     def _get_impala_loss(self, data, do_log=False, tag=''):
-        pd = self._train_model.heads.logits.pd
-
         state_values, action_advantages = data.state_values, data.action_advantages
         data.update({k: v[:-1] for k, v in data.items()})
         data.state_values, data.action_advantages = state_values, action_advantages
 
-        # action probability ratio
+        pd = self._train_model.heads.logits.pd
         data.logp_replay = pd.logp(data.actions, data.logits_replay)
         data.logp_target = pd.logp(data.actions, data.logits_target)
         data.logp = pd.logp(data.actions, data.logits)
         data.probs_ratio = (data.logp.detach() - data.logp_replay).exp()
         data.kl_replay = pd.kl(data.logits_replay, data.logits)
+        data.kl_target = pd.kl(data.logits_target, data.logits)
+        data.entropy = pd.entropy(data.logits)
 
         with torch.no_grad():
             self._process_rewards(data, do_log)
@@ -450,7 +445,6 @@ class IMPALA(RLBase):
         for k, v in data.items():
             data[k] = v.flatten(end_dim=1)
 
-        data.kl_target = pd.kl(data.logits_target, data.logits)
         if LossType.v_mpo in self.loss_type:
             losses = v_mpo_loss(
                 data.kl_target, data.logp, data.advantages, self.kl_pull)
@@ -464,8 +458,7 @@ class IMPALA(RLBase):
                 return None
             loss_target, loss_kl = losses
 
-        entropy = pd.entropy(data.logits)
-        loss_ent = self.entropy_loss_scale * -entropy.mean()
+        loss_ent = self.entropy_loss_scale * -data.entropy.mean()
         loss_state_value = self.value_loss_scale * barron_loss(data.state_values, data.state_value_targets, *self.barron_alpha_c, reduce=False)
         loss_action_advantage = self.q_loss_scale * barron_loss(data.action_advantages, data.action_advantage_targets, *self.barron_alpha_c, reduce=False)
 
@@ -500,7 +493,7 @@ class IMPALA(RLBase):
                 self.logger.add_scalar('Prob Ratio/Abs Max' + tag, ratio.abs().max(), self.frame_train)
                 self.logger.add_scalar('VTrace P/Mean', data.vtrace_p.mean(), self.frame_train)
                 self.logger.add_scalar('VTrace P/Above 0.25 Fraction', (data.vtrace_p > 0.25).float().mean(), self.frame_train)
-                self.logger.add_scalar('Stability/Entropy' + tag, entropy.mean(), self.frame_train)
+                self.logger.add_scalar('Stability/Entropy' + tag, data.entropy.mean(), self.frame_train)
                 self.logger.add_scalar('Losses/State Value' + tag, loss_state_value.mean(), self.frame_train)
                 self.logger.add_scalar('Losses/Q Value' + tag, loss_action_advantage.mean(), self.frame_train)
                 if LossType.v_mpo is self.loss_type:

@@ -1,13 +1,8 @@
-from ppo_pytorch.actors.silu import silu
-from ppo_pytorch.common.activation_norm import ActivationNorm
-from ppo_pytorch.common.attr_dict import AttrDict
-
 from .actors import FeatureExtractorBase, create_ppo_actor, create_impala_actor
 import torch
 from torch import nn
 from ..common.qrnn import DenseQRNN, QRNN
 import sru
-import torch.nn.functional as F
 
 
 def create_ppo_rnn_actor(observation_space, action_space, hidden_size=128, num_layers=2,

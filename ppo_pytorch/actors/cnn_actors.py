@@ -292,4 +292,4 @@ def create_impala_cnn_actor(observation_space, action_space, cnn_kind='normal',
     def fx_factory(): return CNNFeatureExtractor(
         observation_space.shape, cnn_kind, cnn_activation, fc_activation, norm_factory=norm_factory,
         add_positional_features=add_positional_features, normalize_input=normalize_input)
-    return create_impala_actor(action_space, fx_factory, num_out=num_out)
+    return create_impala_actor(action_space, fx_factory, False, num_out, False)

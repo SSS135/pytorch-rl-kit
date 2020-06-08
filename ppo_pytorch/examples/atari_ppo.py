@@ -1,10 +1,14 @@
 if __name__ == '__main__':
     from .init_vars import *
+    from ppo_pytorch.actors.cnn_actors import create_ppo_cnn_actor
+    from ppo_pytorch.algs.parameters import create_atari_kwargs
+    from ppo_pytorch.algs.ppo import PPO
+    from ppo_pytorch.common.env_factory import AtariVecEnv
 
-    env_factory = partial(rl.common.AtariVecEnv, 'BreakoutNoFrameskip-v4', parallel='process')
+    env_factory = partial(AtariVecEnv, 'BreakoutNoFrameskip-v4', parallel='process')
 
-    alg_class = rl.algs.PPO
-    alg_params = rl.algs.create_atari_kwargs(
+    alg_class = PPO
+    alg_params = create_atari_kwargs(
         10e6,
 
         num_actors=8,
@@ -26,12 +30,12 @@ if __name__ == '__main__':
         advantage_scaled_clip=False,
 
         optimizer_factory=partial(optim.Adam, lr=3e-4),
-        model_factory=partial(rl.actors.create_ppo_cnn_actor, cnn_kind='large'),
+        model_factory=partial(create_ppo_cnn_actor, cnn_kind='normal'),
     )
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[newhp]',
+        tag='[normal_newhp]',
         log_root_path=log_path,
         log_interval=20000,
     )
