@@ -76,7 +76,7 @@ def orthogonal_(tensor, gain=math.sqrt(2), mode='fan_in'):
 
 class FeatureExtractorBase(nn.Module, metaclass=ABCMeta):
     def __init__(self, norm_factory: NormFactory=None,
-                 weight_init_fn=kaiming_trunc_normal_):
+                 weight_init_fn=orthogonal_):
         super().__init__()
         self.norm_factory = norm_factory
         self.weight_init_fn = weight_init_fn

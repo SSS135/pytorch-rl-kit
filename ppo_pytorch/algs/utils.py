@@ -19,46 +19,35 @@ def lerp_module_(start, end, factor):
 
 
 @torch.jit.script
-def v_mpo_loss(kl_target: torch.Tensor, logp: torch.Tensor, advantages: torch.Tensor, advantages_upgo: torch.Tensor,
-               vtrace_p: torch.Tensor, kl_pull: float) \
-        -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
-    assert advantages.shape == vtrace_p.shape == advantages_upgo.shape and advantages.dim() == 1
+def v_mpo_loss(logp: torch.Tensor, advantages: torch.Tensor, kl_target: torch.Tensor, kl_limit: float) \
+        -> Optional[torch.Tensor]:
     assert kl_target.shape == logp.shape and kl_target.dim() == 2
 
-    advantages = (advantages + advantages_upgo).mul(vtrace_p)
-
-    mask = vtrace_p > 0.1
+    mask = kl_target.mean(-1) <= kl_limit
     if mask.float().mean().item() < 0.2:
         return None
 
     softmax = advantages[mask].softmax(0)
     softmax = softmax.sub(softmax.median()).mul_(softmax.numel())
     logp_masked = logp[mask.unsqueeze(-1).expand_as(logp)].view(-1, logp.shape[1])
-    loss_policy = softmax.mul_(vtrace_p[mask]).clamp_(-5, 5).unsqueeze_(-1).detach_().mul(-logp_masked)
-    loss_kl = kl_pull * kl_target
+    loss_policy = softmax.detach().clamp(-5, 5).unsqueeze(-1).mul(-logp_masked)
 
-    # assert loss_policy.shape[:-1] == advantages.shape, (loss_policy.shape, advantages.shape)
-    assert loss_kl.shape == kl_target.shape, (loss_kl.shape, kl_target.shape)
     assert loss_policy.ndim == 2, loss_policy.shape
 
-    return loss_policy.mean(), loss_kl.mean()
+    return loss_policy.mean()
 
 
 @torch.jit.script
-def scaled_impala_loss(kl_target: torch.Tensor, logp: torch.Tensor, advantages: torch.Tensor,
-                       kl_pull: float, kl_limit: float) \
-        -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+def impala_loss(logp: torch.Tensor, advantages: torch.Tensor, kl_target: torch.Tensor, kl_limit: float) -> torch.Tensor:
     assert advantages.dim() == 1
     assert kl_target.shape == logp.shape and kl_target.dim() == 2
 
     kl_mask = (kl_target <= kl_limit).float()
     loss_policy = advantages.clamp(-5, 5).unsqueeze_(-1).detach_().mul(-logp).mul_(kl_mask)
-    loss_kl = kl_pull * kl_target
 
     assert loss_policy.shape[:-1] == advantages.shape, (loss_policy.shape, advantages.shape)
-    assert loss_kl.shape == kl_target.shape, (loss_kl.shape, kl_target.shape)
 
-    return loss_policy.mean(), loss_kl.mean()
+    return loss_policy.mean()
 
 
 class RunningNorm:

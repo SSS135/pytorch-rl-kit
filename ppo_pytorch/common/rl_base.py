@@ -98,9 +98,11 @@ class RLBase:
             actor_id = torch.arange(num_actors, dtype=torch.long)
         if not self.has_variable_actor_count_support:
             assert torch.allclose(actor_id, torch.arange(self.num_actors, dtype=torch.long))
+        if obs.dtype == torch.float64:
+            obs = obs.float()
 
         assert obs.shape == (num_actors, *self.observation_space.shape), f'{obs.shape} {self.observation_space.shape}'
-        assert obs.dtype == torch.float32 or obs.dtype == torch.uint8, obs.dtype
+        assert obs.dtype in (torch.float32, torch.uint8), obs.dtype
         assert rewards.shape == (num_actors, rewards.shape[1]), f'wrong reward {rewards} shape {rewards.shape}'
         assert true_reward.shape == (num_actors,)
         assert done.shape == (num_actors,)

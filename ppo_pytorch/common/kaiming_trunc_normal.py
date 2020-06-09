@@ -61,7 +61,7 @@ def trunc_normal_(tensor, mean=0., std=1., a=-2., b=2.):
     return _no_grad_trunc_normal_(tensor, mean, std, a, b)
 
 
-def kaiming_trunc_normal_(tensor, a=0, mode='fan_in', nonlinearity='linear'):
+def kaiming_trunc_normal_(tensor, a=0, mode='fan_in', nonlinearity='relu'):
     fan = init._calculate_correct_fan(tensor, mode)
     gain = init.calculate_gain(nonlinearity, a)
     std = gain / math.sqrt(fan) / .87962566103423978

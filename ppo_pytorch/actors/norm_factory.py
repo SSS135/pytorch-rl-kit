@@ -67,7 +67,7 @@ class LayerNormFactory(NormFactory):
 
 
 class BatchNormFactory(NormFactory):
-    def __init__(self, *args, momentum=0.001, **kwargs):
+    def __init__(self, *args, momentum=0.01, **kwargs):
         super().__init__(*args, **kwargs)
         self.momentum = momentum
 

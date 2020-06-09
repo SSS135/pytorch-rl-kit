@@ -14,13 +14,14 @@ import torch.optim as optim
 from optfn.gradient_logger import log_gradients
 from ppo_pytorch.actors.fc_actors import FCFeatureExtractor
 from ppo_pytorch.algs.reward_weight_generator import RewardWeightGenerator
+from rl_exp.noisy_linear import NoisyLinear
 
 from .ppo import SchedulerManager, copy_state_dict, log_training_data
 from torch.nn.utils import clip_grad_norm_
 
 from .variable_step_collector import VariableStepCollector
 from .variable_replay_buffer import VariableReplayBuffer
-from .utils import RunningNorm, scaled_impala_loss
+from .utils import RunningNorm, impala_loss
 from .utils import v_mpo_loss
 from ..actors.fc_actors import create_ppo_fc_actor
 from ..actors.actors import Actor
@@ -79,7 +80,7 @@ class IMPALA(RLBase):
                  loss_type='impala',
                  eval_model_blend=0.1,
                  memory_burn_in_steps=16,
-                 activation_norm_scale=0.003,
+                 activation_norm_scale=0.0,
                  reward_reweight_interval=40,
                  num_rewards=1,
 
@@ -132,7 +133,7 @@ class IMPALA(RLBase):
         copy_state_dict(self._train_model, self._eval_model)
         copy_state_dict(self._train_model, self._target_model)
         self._train_model = self._train_model.train().to(self.device_train, non_blocking=True)
-        self._eval_model = self._eval_model.eval().to(self.device_eval, non_blocking=True)
+        self._eval_model = self._eval_model.train().to(self.device_eval, non_blocking=True)
         self._target_model = self._target_model.train().to(self.device_train, non_blocking=True)
 
         self._optimizer = optimizer_factory(self._train_model.parameters())
@@ -261,8 +262,7 @@ class IMPALA(RLBase):
 
         if self._do_log:
             self.logger.add_scalar('Optimizer/Learning Rate', self._learning_rate, self.frame_train)
-            if loss is not None:
-                self.logger.add_scalar('Losses/Total Loss', loss, self.frame_train)
+            self.logger.add_scalar('Losses/Total Loss', loss, self.frame_train)
             self.logger.add_scalar('Stability/KL Blend', kl_target, self.frame_train)
             self.logger.add_scalar('Stability/KL Replay', kl_replay, self.frame_train)
             self.logger.add_scalar('Model Diff/Abs', model_diff(old_model, self._train_model), self.frame_train)
@@ -271,6 +271,9 @@ class IMPALA(RLBase):
         self._unapply_pop_art(value_target_list)
 
         copy_state_dict(self._train_model, self._eval_model)
+        if self._eval_model.training:
+            self._eval_model = self._eval_model.eval()
+        NoisyLinear.randomize_network(self._eval_model)
 
     def _apply_pop_art(self):
         if self.use_pop_art:
@@ -327,13 +330,7 @@ class IMPALA(RLBase):
 
             # get loss
             loss = self._get_impala_loss(batch, do_log)
-            if loss is None:
-                return None
-            act_norm_loss = activation_norm_loss(self._train_model).cpu()
-            loss = loss.mean() + self.activation_norm_scale * act_norm_loss
-
-        if do_log:
-            self.logger.add_scalar('Losses/Activation Norm', act_norm_loss, self.frame_train)
+            loss = loss.mean()
 
         # optimize
         loss.backward()
@@ -430,7 +427,7 @@ class IMPALA(RLBase):
         data.logp_replay = pd.logp(data.actions, data.logits_replay)
         data.logp_target = pd.logp(data.actions, data.logits_target)
         data.logp = pd.logp(data.actions, data.logits)
-        data.probs_ratio = (data.logp.detach() - data.logp_replay).exp()
+        data.probs_ratio = (data.logp.detach() - data.logp_replay).mean(-1, keepdim=True).exp()
         data.kl_replay = pd.kl(data.logits_replay, data.logits)
         data.kl_target = pd.kl(data.logits_target, data.logits)
         data.entropy = pd.entropy(data.logits)
@@ -446,18 +443,13 @@ class IMPALA(RLBase):
             data[k] = v.flatten(end_dim=1)
 
         if LossType.v_mpo in self.loss_type:
-            losses = v_mpo_loss(
-                data.kl_target, data.logp, data.advantages, self.kl_pull)
-            if losses is None:
-                return None
-            loss_target, loss_kl = losses
+            loss_pg = v_mpo_loss(data.logp, data.advantages, data.kl_target, self.kl_limit)
+            if loss_pg is None:
+                loss_pg = 0
         elif LossType.impala in self.loss_type:
-            losses = scaled_impala_loss(
-                data.kl_target, data.logp, data.advantages, self.kl_pull, self.kl_limit)
-            if losses is None:
-                return None
-            loss_target, loss_kl = losses
+            loss_pg = impala_loss(data.logp, data.advantages, data.kl_target, self.kl_limit)
 
+        loss_kl = self.kl_pull * data.kl_target.mean()
         loss_ent = self.entropy_loss_scale * -data.entropy.mean()
         loss_state_value = self.value_loss_scale * barron_loss(data.state_values, data.state_value_targets, *self.barron_alpha_c, reduce=False)
         loss_action_advantage = self.q_loss_scale * barron_loss(data.action_advantages, data.action_advantage_targets, *self.barron_alpha_c, reduce=False)
@@ -465,6 +457,12 @@ class IMPALA(RLBase):
         # kl_mask = (data.kl_target.detach().mean(-1) <= self.kl_limit).float()
         # assert kl_mask.shape == data.dpg_values.shape
         loss_dpg = self.dpg_loss_scale * -data.dpg_values #* kl_mask
+
+        act_norm = activation_norm_loss(self._train_model).cpu().mean()
+        if self.activation_norm_scale == 0:
+            loss_act_norm = 0
+        else:
+            loss_act_norm = act_norm * max(self.activation_norm_scale, 1 - self.frame_train / 100_000)
 
         assert loss_state_value.shape == data.state_values.shape, (loss_state_value.shape, data.state_values.shape)
         assert loss_action_advantage.shape == loss_dpg.shape == loss_state_value.shape
@@ -475,9 +473,10 @@ class IMPALA(RLBase):
         loss_action_advantage = loss_action_advantage.mean()
 
         # sum all losses
-        total_loss = loss_target + loss_kl + loss_state_value + loss_action_advantage + loss_dpg + loss_world_model + loss_ent
+        total_loss = loss_pg + loss_kl + loss_state_value + loss_action_advantage + loss_dpg + loss_world_model + \
+                     loss_ent + loss_act_norm
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
-            (loss_target.mean().item(), loss_state_value.mean().item())
+            (loss_pg.mean().item(), loss_state_value.mean().item())
 
         with torch.no_grad():
             if do_log:
@@ -500,6 +499,7 @@ class IMPALA(RLBase):
                     self.logger.add_scalar('Losses/KL Blend' + tag, loss_kl, self.frame_train)
                 self.logger.add_histogram('Losses/Value Hist' + tag, loss_state_value, self.frame_train)
                 self.logger.add_histogram('Losses/Ratio Hist' + tag, ratio, self.frame_train)
+                self.logger.add_scalar('Losses/Activation Norm', act_norm, self.frame_train)
 
         return total_loss
 
@@ -587,9 +587,6 @@ class IMPALA(RLBase):
         if self.use_pop_art:
             action_advantage_targets = action_advantage_targets / pa_std
             state_value_targets = (state_value_targets - pa_mean) / pa_std
-            if LossType.impala is self.loss_type:
-                advantages /= pa_std
-                advantages_upgo /= pa_std
             if do_log:
                 self.logger.add_scalar('Values/Values PopArt', data.state_values.mean(), self.frame_train)
                 self.logger.add_scalar('Values/Value Targets PopArt', state_value_targets.mean(), self.frame_train)

@@ -1,10 +1,8 @@
 import torch.nn as nn
-import torch
-import torch.jit
-from ppo_pytorch.actors.silu import SiLU
+from ppo_pytorch.common.silu import SiLU
 
 from .utils import normalized_columns_initializer_
-from ..common.probability_distributions import ProbabilityDistribution, CategoricalPd, BetaPd, DiagGaussianPd
+from ..common.probability_distributions import ProbabilityDistribution, CategoricalPd
 from ..config import Linear
 
 
@@ -85,7 +83,7 @@ class ActionValueHead(HeadBase):
         )
 
     def reset_weights(self):
-        normalized_columns_initializer_(self.linear.weight.data, 0.1)
+        normalized_columns_initializer_(self.linear.weight.data, 1.0)
         self.linear.bias.data.fill_(0)
 
     def forward(self, x, actions=None, **kwargs):
@@ -128,7 +126,8 @@ class PolicyHead(HeadBase):
             normalized_columns_initializer_(self.linear.weight.data, 1.0)
             self.linear.bias.data.fill_(0)
         else:
-            super().reset_weights()
+            normalized_columns_initializer_(self.linear.weight.data, 0.1)
+            self.linear.bias.data.fill_(0)
 
     def forward(self, x, **kwargs):
         if self.layer_norm:
@@ -154,7 +153,7 @@ class StateValueHead(HeadBase):
         self.reset_weights()
 
     def reset_weights(self):
-        normalized_columns_initializer_(self.linear.weight.data, 0.1)
+        normalized_columns_initializer_(self.linear.weight.data, 1.0)
         self.linear.bias.data.fill_(0)
 
     def forward(self, x, **kwargs):

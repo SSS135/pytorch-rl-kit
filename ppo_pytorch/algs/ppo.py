@@ -338,7 +338,7 @@ class PPO(RLBase):
             self.logger.add_scalar('Optimizer/Learning Rate', self._learning_rate, self.frame_train)
             self.logger.add_scalar('Optimizer/Clip Mult', self._clip_mult, self.frame_train)
             self.logger.add_scalar('Losses/Total Loss', loss, self.frame_train)
-            self.logger.add_scalar('Stability/KL Replay', kl, self.frame_train)
+            self.logger.add_scalar('Stability/KL Blend', kl, self.frame_train)
             # self.logger.add_scalar('Stability/KL Scale', self.kl_scale, self.frame_train)
             self.logger.add_scalar('Model Diff/Abs', model_diff(old_model, self._train_model), self.frame_train)
             self.logger.add_scalar('Model Diff/Max', model_diff(old_model, self._train_model, True), self.frame_train)

@@ -7,11 +7,9 @@ import torch.nn as nn
 
 
 class ActivationNorm(nn.Module):
-    def __init__(self, dim, eps=1e-6):
+    def __init__(self, num_dims, eps=1e-6):
         super().__init__()
-        if isinstance(dim, numbers.Integral):
-            dim = (dim,)
-        self.dim = dim
+        self.dim = [-d - 1 for d in reversed(range(num_dims))]
         self.eps = eps
         self._input = []
 
@@ -38,7 +36,7 @@ def reverse_dim(dim, ndim):
     return [i for i in range(ndim) if i not in dim and i - ndim not in dim]
 
 
-def calc_act_norm_loss(x, dim: List[int] = -1, eps: float = 1e-6):
+def calc_act_norm_loss(x, dim: List[int] = (-1,), eps: float = 1e-6):
     var, mean = torch.var_mean(x, dim=reverse_dim(dim, x.ndim))
     var = var + eps
     return 0.5 * (var.mean() + mean.pow(2).mean() - var.log().mean())
