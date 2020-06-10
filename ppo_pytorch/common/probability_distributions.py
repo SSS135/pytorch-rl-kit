@@ -11,22 +11,23 @@ import torch
 import torch.jit
 import torch.distributions
 import torch.nn.functional as F
-from torch.distributions import Beta, kl_divergence, Normal
+from torch.distributions import Beta, kl_divergence, Normal, Gumbel
 
 
 def make_pd(space: gym.Space):
     """Create `ProbabilityDistribution` from gym.Space"""
     if isinstance(space, gym.spaces.Discrete):
-        return CategoricalPd(space.n)
+        # return CategoricalPd(space.n)
+        return GumbelCategoricalPd(space.n)
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
         # return LinearTanhPd(space.shape[0])
         # return FixedStdGaussianPd(space.shape[0], 1.0)
         # return BetaPd(space.shape[0], 1)
-        # return DiagGaussianPd(space.shape[0], max_norm=2.0)
+        return DiagGaussianPd(space.shape[0], max_norm=2.0)
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
         # return PointCloudPd(space.shape[0], max_norm=2.0)
-        return DiscretizedCategoricalPd(space.shape[0], 7, ordinal=True)
+        # return DiscretizedCategoricalPd(space.shape[0], 7, ordinal=True)
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     elif isinstance(space, gym.spaces.MultiDiscrete):
@@ -80,6 +81,10 @@ class ProbabilityDistribution:
 
     def sample(self, prob):
         """Sample action from probabilities"""
+        raise NotImplementedError()
+
+    def rsample(self, prob):
+        """Sample with gradient"""
         raise NotImplementedError()
 
     def to_inputs(self, action):
@@ -136,18 +141,43 @@ class CategoricalPd(ProbabilityDistribution):
         return -p_log_p.sum(-1, keepdim=True)
 
     def sample(self, logits):
-        logits = self._process_logits(logits)
-        return F.softmax(logits.reshape(-1, logits.shape[-1]), dim=-1).multinomial(1).reshape(*logits.shape[:-1], -1)
+        with torch.no_grad():
+            logits = self._process_logits(logits)
+            return F.softmax(logits.reshape(-1, logits.shape[-1]), dim=-1)\
+                .multinomial(1).reshape(*logits.shape[:-1], -1)
 
     def to_inputs(self, action):
         with torch.no_grad():
             onehot = torch.zeros((*action.shape[:-1], self.n), device=action.device)
             onehot.scatter_(dim=-1, index=action, value=1)
-        return onehot
+            return onehot
 
     def _process_logits(self, logits):
         assert logits.shape[-1] == self.n, (logits.shape[-1], self.n)
         return make_logits_ordnial(logits) if self.ordinal else logits
+
+
+class GumbelCategoricalPd(CategoricalPd):
+    def __init__(self, n, ordinal=False, temp=1):
+        super().__init__(n, ordinal)
+        self.temp = temp
+        self.gumbel = Gumbel(0, 1)
+
+    def sample(self, logits):
+        with torch.no_grad():
+            softmax = self.rsample(logits)
+            return softmax.max(-1)[1].unsqueeze(-1)
+
+    def rsample(self, logits):
+        logits = self._process_logits(logits)
+        logits = (logits + self.gumbel.sample(logits.shape).to(logits.device)) / self.temp
+        return F.softmax(logits, dim=-1)
+
+    def to_inputs(self, action):
+        if action.is_floating_point():
+            assert action.shape[-1] == self.n
+            return action
+        return super().to_inputs(action)
 
 
 class MultiPd(ProbabilityDistribution):
@@ -193,8 +223,14 @@ class MultiPd(ProbabilityDistribution):
         return torch.cat(all_ent, -1)
 
     def sample(self, all_logits):
+        with torch.no_grad():
+            split_logits = all_logits.split(self._prob_sizes, -1)
+            all_actions = [pd.sample(logits).type(self.dtype) for pd, logits in zip(self.pds, split_logits)]
+            return torch.cat(all_actions, -1)
+
+    def rsample(self, all_logits):
         split_logits = all_logits.split(self._prob_sizes, -1)
-        all_actions = [pd.sample(logits).type(self.dtype) for pd, logits in zip(self.pds, split_logits)]
+        all_actions = [pd.rsample(logits).type(self.dtype) for pd, logits in zip(self.pds, split_logits)]
         return torch.cat(all_actions, -1)
 
     def to_inputs(self, all_actions):
@@ -303,6 +339,10 @@ class DiagGaussianPd(ProbabilityDistribution):
         )
 
     def sample(self, prob):
+        with torch.no_grad():
+            return self.rsample(prob)
+
+    def rsample(self, prob):
         mean, logstd = self._split_probs(prob)
         std = logstd.exp()
         return mean + std * torch.randn_like(mean)
@@ -365,6 +405,10 @@ class PointCloudPd(ProbabilityDistribution):
         )
 
     def sample(self, prob):
+        with torch.no_grad():
+            return self.rsample(prob)
+
+    def rsample(self, prob):
         prob = self._split_probs(prob)
         idx = torch.randint(0, self.cloud_size, prob.shape[:-2], device=prob.device)
         idx = torch.zeros((*prob.shape[:-1], 1), dtype=idx.dtype, device=prob.device) + idx.unsqueeze(-1).unsqueeze(-1)
@@ -474,6 +518,10 @@ class FixedStdGaussianPd(ProbabilityDistribution):
         return torch.zeros_like(mean) + (0.5 + 0.5 * math.log(2 * math.pi) + math.log(self.std))
 
     def sample(self, mean):
+        with torch.no_grad():
+            return self.rsample(mean)
+
+    def rsample(self, mean):
         return self._clamp_logits(mean + self.std * torch.randn_like(mean))
 
     def _clamp_logits(self, logits):

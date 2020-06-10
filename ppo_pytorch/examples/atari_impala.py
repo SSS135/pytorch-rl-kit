@@ -1,4 +1,5 @@
 from optfn.gadam import GAdam
+from torch.optim import AdamW
 
 if __name__ == '__main__':
     from .init_vars import *
@@ -35,21 +36,21 @@ if __name__ == '__main__':
         use_pop_art=True,
         reward_scale=1.0,
         kl_pull=0.5,
-        eval_model_blend=0.1,
+        eval_model_blend=0.5,
         vtrace_max_ratio=1.0,
-        vtrace_kl_limit=0.5,
-        kl_limit=0.3,
+        vtrace_kl_limit=0.3,
+        kl_limit=1.0,
         loss_type='impala',
         replay_ratio=3,
-        upgo_scale=0.2,
+        upgo_scale=0.0,
         entropy_loss_scale=0.01,
         barron_alpha_c=(2.0, 1.0),
         memory_burn_in_steps=32,
-        activation_norm_scale=0.003,
+        activation_norm_scale=0.0,
         reward_reweight_interval=40,
         random_crop_obs=False,
 
-        optimizer_factory=partial(optim.AdamW, lr=3e-4),
+        optimizer_factory=partial(GAdam, lr=5e-4, avg_sq_mode='tensor', betas=(0.9, 0.99)),
         model_factory=partial(create_impala_cnn_actor, cnn_kind='normal'),
         # model_factory=partial(create_impala_rnn_actor, hidden_size=256, num_layers=3),
         # model_factory=partial(create_impala_attention_actor, num_units=9, unit_size=7,
@@ -58,7 +59,7 @@ if __name__ == '__main__':
         #                       activation=SiLU, use_imagination=False),
     )
     trainer_params = dict(
-        tag='[ent0.01_r3_upgo0.2_an0.003_ort_pa_kllim0.3_vtkllim0.5_blend0.1_klpull0.5_rclip_oldheadinit_h64]',
+        tag='[tavgsq_ent0.01_r3_upgo0_an0_ort_pa_kllim0.3_vtkllim0.3_blend0.5_klpull0.5_rclip_oldheadinit_h64]',
         log_root_path=log_path,
         log_interval=20000,
         rl_alg_factory=partial(alg_class, **alg_params),

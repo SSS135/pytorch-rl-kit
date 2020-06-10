@@ -1,3 +1,5 @@
+import ppo_pytorch.common.cartpole_continuous
+
 if __name__ == '__main__':
     from .init_vars import *
     from ..algs.parameters import create_ppo_kwargs
@@ -6,7 +8,6 @@ if __name__ == '__main__':
     from ppo_pytorch.common.variable_env.variable_env_trainer import VariableEnvTrainer
     from ppo_pytorch.common.silu import SiLU
     from ppo_pytorch.algs.impala import IMPALA
-    import ppo_pytorch.common.cartpole_continuous
     from ppo_pytorch.common.variable_env.gym_to_variable_env import make_async_env
     from optfn.gadam import GAdam
 
@@ -20,23 +21,23 @@ if __name__ == '__main__':
     alg_params = create_ppo_kwargs(
         None,
 
-        train_interval_frames=8 * 512,
+        train_interval_frames=4 * 512,
         train_horizon=horizon,
         batch_size=512,
-        value_loss_scale=2.0,
-        q_loss_scale=0.0,
-        dpg_loss_scale=0.0,
-        pg_loss_scale=1.0,
+        value_loss_scale=0.5,
+        q_loss_scale=0.5,
+        dpg_loss_scale=1.0,
+        pg_loss_scale=0.0,
         cuda_eval=False,
         cuda_train=True,
 
         replay_buf_size=512 * 1024,
         replay_end_sampling_factor=0.05,
         grad_clip_norm=None,
-        use_pop_art=False,
-        reward_scale=0.1,
-        kl_pull=0.05,
-        eval_model_blend=0.05,
+        use_pop_art=True,
+        reward_scale=1.0,
+        kl_pull=0.5,
+        eval_model_blend=0.5,
         vtrace_max_ratio=1.0,
         vtrace_kl_limit=1.0,
         kl_limit=0.3,
@@ -61,7 +62,7 @@ if __name__ == '__main__':
         rl_alg_factory=partial(alg_class, **alg_params),
         env_factory=env_factory,
         alg_name=alg_class.__name__,
-        tag='[r3]',
+        tag='[qvls0.5_pa_dpg1_r3]',
         log_root_path=log_path,
         log_interval=10000,
     )

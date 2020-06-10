@@ -120,7 +120,7 @@ def calc_upgo(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor,
 @torch.jit.script
 def calc_vtrace(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor,
                 probs_ratio: torch.Tensor, kl_div: torch.Tensor,
-                discount: float, max_ratio: float = 1.0, kl_limit: float = 0.3, lam: float = 1.0,
+                discount: float, max_ratio: float, kl_limit: float, gae_lambda: float,
                 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     _check_data(rewards, values, dones)
     assert probs_ratio.shape == rewards.shape == kl_div.shape == dones.shape, (probs_ratio.shape, rewards.shape, kl_div.shape)
@@ -128,7 +128,7 @@ def calc_vtrace(rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor
 
     nonterminal = 1 - dones
     kl_mask = 1.0 - (kl_div / kl_limit).clamp_max(1.0)
-    c = p = (probs_ratio.clamp_max(max_ratio) * kl_mask).clamp_max(lam)
+    c = p = (probs_ratio.clamp_max(max_ratio) * kl_mask).clamp_max(gae_lambda)
     deltas = p * (rewards + nonterminal * discount * values[1:] - values[:-1])
     nonterm_c = nonterminal * c
     vs_minus_v_xs = torch.zeros_like(values)
