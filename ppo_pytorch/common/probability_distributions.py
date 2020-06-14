@@ -158,15 +158,16 @@ class CategoricalPd(ProbabilityDistribution):
 
 
 class GumbelCategoricalPd(CategoricalPd):
-    def __init__(self, n, ordinal=False, temp=1):
+    def __init__(self, n, ordinal=False, temp=1.0):
         super().__init__(n, ordinal)
         self.temp = temp
         self.gumbel = Gumbel(0, 1)
 
     def sample(self, logits):
         with torch.no_grad():
-            softmax = self.rsample(logits)
-            return softmax.max(-1)[1].unsqueeze(-1)
+            logits = self._process_logits(logits)
+            logits = logits + self.gumbel.sample(logits.shape).to(logits.device)
+            return logits.max(-1)[1].unsqueeze(-1)
 
     def rsample(self, logits):
         logits = self._process_logits(logits)

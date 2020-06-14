@@ -76,9 +76,9 @@ class ActionValueHead(HeadBase):
         self.num_out = num_out
         self.linear = Linear(in_features, num_out)
         self.action_enc = nn.Sequential(
-            nn.Linear(pd.input_vector_len, 128),
+            Linear(pd.input_vector_len, 128),
             SiLU(),
-            nn.Linear(128, in_features),
+            Linear(128, in_features),
             nn.Sigmoid(),
         )
 

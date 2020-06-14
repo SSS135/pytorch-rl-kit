@@ -53,13 +53,13 @@ def create_residual_fc(input_size, hidden_size, use_norm=False):
         return ResidualBlock(
             *norm(),
             nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
+            Linear(hidden_size, hidden_size),
             *norm(),
             nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
+            Linear(hidden_size, hidden_size),
         )
     return nn.Sequential(
-        nn.Linear(input_size, hidden_size),
+        Linear(input_size, hidden_size),
         res_block(),
         res_block(),
         res_block(),
@@ -79,7 +79,7 @@ class FCFeatureExtractor(FeatureExtractorBase):
         self.activation = activation
         self.goal_size = goal_size
         self.model = create_fc(input_size, hidden_sizes, activation, self.norm_factory)
-        self.out_embedding = nn.Linear(goal_size, hidden_sizes[-1]) if goal_size is not None else None
+        self.out_embedding = Linear(goal_size, hidden_sizes[-1]) if goal_size is not None else None
 
         # self.model = create_residual_fc(input_size, hidden_sizes[0])
         # super().reset_weights()
@@ -141,25 +141,25 @@ class FCAttentionFeatureExtractor(FeatureExtractorBase):
         self.num_simple_layers = num_simple_layers
 
         self.personal_fc = nn.Sequential(
-            nn.Linear(input_size - num_units * unit_size, hidden_size),
+            Linear(input_size - num_units * unit_size, hidden_size),
             activation(),
-            nn.Linear(hidden_size, hidden_size),
+            Linear(hidden_size, hidden_size),
             activation(),
         )
         self.unit_fc = nn.Sequential(
-            nn.Linear(unit_size, hidden_size),
+            Linear(unit_size, hidden_size),
             activation(),
-            nn.Linear(hidden_size, hidden_size),
+            Linear(hidden_size, hidden_size),
             activation(),
         )
         self.end_fc = nn.Sequential(
             nn.LayerNorm(hidden_size),
-            nn.Linear(hidden_size, hidden_size),
+            Linear(hidden_size, hidden_size),
             activation(),
         )
         self.full_tr_layers = nn.ModuleList([TrPriorFirstLayer(256, 32, 256 // 32) for _ in range(self.num_full_layers)])
         self.simple_tr_layers = nn.ModuleList([SimpleTrLayer(256, 32, 256 // 32) for _ in range(self.num_simple_layers)])
-        self.out_embedding = nn.Linear(goal_size, hidden_size) if goal_size is not None else None
+        self.out_embedding = Linear(goal_size, hidden_size) if goal_size is not None else None
 
     @property
     def output_size(self):
@@ -225,21 +225,21 @@ class FCImaginationFeatureExtractor(FeatureExtractorBase):
         self.sim_depth = sim_depth
         self.gate_reduce = 8
         self.model = create_fc(input_size, hidden_sizes, activation, self.norm_factory)
-        self.out_embedding = nn.Linear(goal_size, hidden_sizes[-1]) if goal_size is not None else None
+        self.out_embedding = Linear(goal_size, hidden_sizes[-1]) if goal_size is not None else None
 
         h = hidden_sizes[-1]
-        self.action_linear = nn.Linear(pd.input_vector_len, h)
-        self.vrld_layer = nn.Sequential(SiLU(), nn.Linear(h, 3 + pd.prob_vector_len))
-        self.feature_prepare_linear = nn.Linear(h, h)
+        self.action_linear = Linear(pd.input_vector_len, h)
+        self.vrld_layer = nn.Sequential(SiLU(), Linear(h, 3 + pd.prob_vector_len))
+        self.feature_prepare_linear = Linear(h, h)
         self.world_model = nn.Sequential(
             ActivationNorm(1),
             SiLU(),
-            nn.Linear(h, h),
+            Linear(h, h),
             ActivationNorm(1),
             SiLU(),
-            nn.Linear(h, h + h // self.gate_reduce),
+            Linear(h, h + h // self.gate_reduce),
         )
-        self._end_gate_linear = nn.Linear(h, h // self.gate_reduce)
+        self._end_gate_linear = Linear(h, h // self.gate_reduce)
 
     @property
     def output_size(self):
@@ -307,9 +307,9 @@ class FCActionFeatureExtractor(FeatureExtractorBase):
         self.activation = activation
         self.model = self._create_fc()
         self.ac_encoder = nn.Sequential(
-            nn.Linear(pd.input_vector_len, 128),
+            Linear(pd.input_vector_len, 128),
             activation(),
-            nn.Linear(128, 2 * sum(hidden_sizes))
+            Linear(128, 2 * sum(hidden_sizes))
         )
 
     @property
