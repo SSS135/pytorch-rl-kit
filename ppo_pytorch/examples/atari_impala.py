@@ -59,7 +59,7 @@ if __name__ == '__main__':
         #                       activation=SiLU, use_imagination=False),
     )
     trainer_params = dict(
-        tag='[tavgsq_ent0.01_r3_upgo0_an0_ort_pa_kllim0.3_vtkllim0.3_blend0.5_klpull0.5_rclip_oldheadinit_h64]',
+        tag='[]',
         log_root_path=log_path,
         log_interval=20000,
         rl_alg_factory=partial(alg_class, **alg_params),

@@ -25,9 +25,9 @@ if __name__ == '__main__':
         train_horizon=horizon,
         batch_size=512,
         value_loss_scale=0.5,
-        q_loss_scale=0.5,
-        dpg_loss_scale=1.0,
-        pg_loss_scale=0.0,
+        q_loss_scale=0.0,
+        dpg_loss_scale=0.0,
+        pg_loss_scale=1.0,
         cuda_eval=False,
         cuda_train=True,
 
@@ -62,7 +62,7 @@ if __name__ == '__main__':
         rl_alg_factory=partial(alg_class, **alg_params),
         env_factory=env_factory,
         alg_name=alg_class.__name__,
-        tag='[qvls0.5_pa_dpg1_r3]',
+        tag='[]',
         log_root_path=log_path,
         log_interval=10000,
     )
