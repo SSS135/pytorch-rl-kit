@@ -1,20 +1,20 @@
 from typing import List, Callable
 
+import torch
+import torch.jit
 import torch.nn as nn
+from optfn.skip_connections import ResidualBlock
+from ppo_pytorch.common.squash import unsquash
 from ppo_pytorch.actors.transformer import TrPriorFirstLayer, SimpleTrLayer
-
 from ppo_pytorch.common.silu import SiLU, silu
-from ..common.activation_norm import ActivationNorm
+from torch import Tensor
 
 from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor, create_impala_actor
 from .heads import PolicyHead, StateValueHead
 from .norm_factory import NormFactory
+from ..common.activation_norm import ActivationNorm
 from ..common.probability_distributions import ProbabilityDistribution, make_pd
-import torch
 from ..config import Linear
-from optfn.skip_connections import ResidualBlock
-import torch.jit
-from torch import Tensor
 
 
 def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm: NormFactory = None, activation_norm=True):
@@ -195,21 +195,6 @@ class FCAttentionFeatureExtractor(FeatureExtractorBase):
         # if self.goal_size is not None:
         #     x = x * 2 * self.out_embedding(goal).sigmoid()
         return x
-
-
-def squash(x):
-    return x.abs().add(1).sqrt().sub(1).mul(x.sign())
-
-
-def unsquash(x):
-    return 2 * x + x.sign() * x.pow(2)
-
-
-def test_squash():
-    torch.manual_seed(123)
-    t = torch.randn(1000) * 10
-    assert torch.allclose(t, squash(unsquash(t)), atol=1e-4), (t, squash(unsquash(t)))
-    assert torch.allclose(t, unsquash(squash(t)), atol=1e-4), (t, unsquash(squash(t)))
 
 
 class FCImaginationFeatureExtractor(FeatureExtractorBase):
