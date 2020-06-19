@@ -45,7 +45,7 @@ def atari_env_factory(env_name: str, frame_stack, episode_life, grayscale):
 
 
 def make_atari_async_env(env_name: str, num_envs: int, min_ready_envs=0.5,
-                         frame_stack=4, episode_life=False, clip_rewards=True, grayscale=True):
+                         frame_stack=4, episode_life=True, clip_rewards=True, grayscale=True):
     env = AsyncVariableEnv([partial(atari_env_factory, env_name, frame_stack, episode_life, grayscale)] * num_envs, min_ready_envs)
     if clip_rewards:
         env = VariableClipRewardEnv(env)
