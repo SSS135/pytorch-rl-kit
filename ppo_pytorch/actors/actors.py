@@ -4,16 +4,15 @@ from collections import OrderedDict
 from functools import partial
 from typing import Dict, List, Optional
 
+import torch
 import torch.nn as nn
 import torch.nn.init as init
-from ppo_pytorch.common.kaiming_trunc_normal import kaiming_trunc_normal_
 
 from .heads import HeadBase, StateValueHead, PolicyHead, ActionValueHead
 from .norm_factory import NormFactory
 from .utils import weights_init
-from ..common.probability_distributions import make_pd, PointCloudPd
 from ..common.attr_dict import AttrDict
-import torch
+from ..common.probability_distributions import make_pd, PointCloudPd
 
 
 def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, num_out=1, is_recurrent=False):
@@ -42,16 +41,15 @@ def create_impala_actor(action_space, fx_factory, split_policy_value_network, nu
         fx_policy = fx_value = fx_factory()
 
     action_value_head = ActionValueHead(fx_value.output_size, pd=pd, num_out=num_out)
-    state_value_head = StateValueHead(fx_value.output_size, pd=pd, num_out=num_out)
     policy_head = PolicyHead(fx_policy.output_size, pd=pd, layer_norm=isinstance(pd, PointCloudPd))
 
     if split_policy_value_network:
         models = OrderedDict([
             (fx_policy, dict(logits=policy_head)),
-            (fx_value, dict(state_values=state_value_head, action_values=action_value_head))])
+            (fx_value, dict(action_values=action_value_head))])
     else:
         models = OrderedDict([
-            (fx_policy, dict(logits=policy_head, state_values=state_value_head, action_values=action_value_head))])
+            (fx_policy, dict(logits=policy_head, action_values=action_value_head))])
     return ModularActor(models, is_recurrent)
 
 

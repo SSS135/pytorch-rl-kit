@@ -1,5 +1,3 @@
-import ppo_pytorch.common.cartpole_continuous
-
 if __name__ == '__main__':
     from .init_vars import *
     from ..algs.parameters import create_ppo_kwargs
@@ -12,20 +10,18 @@ if __name__ == '__main__':
     from optfn.gadam import GAdam
 
     train_frames = 2e6
-    num_envs = 16
+    num_envs = 8
     actors_per_env = 1
     horizon = 64
     env_factory = partial(make_async_env, num_envs=num_envs, env_name='CartPole-v1', frame_stack=1, frame_skip=1)
 
     alg_class = IMPALA
     alg_params = create_ppo_kwargs(
-        None,
-
         train_interval_frames=4 * 512,
         train_horizon=horizon,
         batch_size=512,
-        value_loss_scale=0.5,
-        q_loss_scale=0.0,
+        value_loss_scale=0.0,
+        q_loss_scale=1.0,
         dpg_loss_scale=0.0,
         pg_loss_scale=1.0,
         cuda_eval=False,
@@ -37,7 +33,7 @@ if __name__ == '__main__':
         use_pop_art=True,
         reward_scale=1.0,
         kl_pull=0.5,
-        eval_model_blend=0.5,
+        eval_model_blend=0.05,
         vtrace_max_ratio=1.0,
         vtrace_kl_limit=1.0,
         kl_limit=0.3,
@@ -50,6 +46,7 @@ if __name__ == '__main__':
         activation_norm_scale=0.0,
         reward_reweight_interval=40,
         random_crop_obs=False,
+        action_noise_scale=0.0,
 
         model_factory=partial(create_impala_fc_actor, hidden_sizes=(256, 256, 256), activation=SiLU),
         # model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),

@@ -2,14 +2,13 @@
 # https://github.com/openai/baselines/blob/master/baselines/common/distributions.py
 
 import math
-from functools import partial
-from typing import Tuple, Optional, Callable, Dict, Any, List
+from typing import Dict, Any, List
 
 import gym.spaces
 import numpy as np
 import torch
-import torch.jit
 import torch.distributions
+import torch.jit
 import torch.nn.functional as F
 from torch.distributions import Beta, kl_divergence, Normal, Gumbel
 
@@ -17,8 +16,8 @@ from torch.distributions import Beta, kl_divergence, Normal, Gumbel
 def make_pd(space: gym.Space):
     """Create `ProbabilityDistribution` from gym.Space"""
     if isinstance(space, gym.spaces.Discrete):
-        # return CategoricalPd(space.n)
-        return GumbelCategoricalPd(space.n)
+        return CategoricalPd(space.n)
+        # return GumbelCategoricalPd(space.n, temp=0.5)
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
         # return LinearTanhPd(space.shape[0])
