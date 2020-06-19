@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 from ppo_pytorch.common.silu import SiLU
 
@@ -86,8 +87,10 @@ class ActionValueHead(HeadBase):
         normalized_columns_initializer_(self.linear.weight.data, 1.0)
         self.linear.bias.data.fill_(0)
 
-    def forward(self, x, actions=None, **kwargs):
+    def forward(self, x, actions=None, action_noise_scale=0, **kwargs):
         actions = self.pd.to_inputs(actions)
+        if action_noise_scale != 0:
+            actions = actions + action_noise_scale * torch.randn_like(actions)
         q = self.linear(x * 2 * self.action_enc(actions))
         assert q.shape == (*actions.shape[:-1], self.num_out)
         return q
