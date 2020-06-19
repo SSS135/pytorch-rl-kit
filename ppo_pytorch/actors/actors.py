@@ -15,7 +15,7 @@ from ..common.attr_dict import AttrDict
 from ..common.probability_distributions import make_pd, PointCloudPd
 
 
-def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, num_out=1, is_recurrent=False):
+def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, num_values=1, is_recurrent=False):
     pd = make_pd(action_space)
 
     if split_policy_value_network:
@@ -23,7 +23,7 @@ def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, 
     else:
         fx_policy = fx_value = fx_factory()
 
-    value_head = StateValueHead(fx_value.output_size, pd=pd, num_out=num_out)
+    value_head = StateValueHead(fx_value.output_size, pd=pd, num_out=num_values)
     policy_head = PolicyHead(fx_policy.output_size, pd=pd)
     if split_policy_value_network:
         models = OrderedDict([(fx_policy, dict(logits=policy_head)), (fx_value, dict(state_values=value_head))])
@@ -32,7 +32,7 @@ def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, 
     return ModularActor(models, is_recurrent)
 
 
-def create_impala_actor(action_space, fx_factory, split_policy_value_network, num_out, is_recurrent):
+def create_impala_actor(action_space, fx_factory, split_policy_value_network, num_values, is_recurrent):
     pd = make_pd(action_space)
 
     if split_policy_value_network:
@@ -40,7 +40,7 @@ def create_impala_actor(action_space, fx_factory, split_policy_value_network, nu
     else:
         fx_policy = fx_value = fx_factory()
 
-    action_value_head = ActionValueHead(fx_value.output_size, pd=pd, num_out=num_out)
+    action_value_head = ActionValueHead(fx_value.output_size, pd=pd, num_out=num_values)
     policy_head = PolicyHead(fx_policy.output_size, pd=pd, layer_norm=isinstance(pd, PointCloudPd))
 
     if split_policy_value_network:

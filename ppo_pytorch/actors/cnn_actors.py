@@ -273,22 +273,22 @@ class Sega_CNNFeatureExtractor(CNNFeatureExtractor):
 
 def create_ppo_cnn_actor(observation_space, action_space, cnn_kind='normal',
                          cnn_activation=nn.ReLU, fc_activation=nn.ReLU, norm_factory: NormFactory=None,
-                         split_policy_value_network=False, num_out=1,
+                         split_policy_value_network=False, num_values=1,
                          add_positional_features=False, normalize_input=False, goal_size=None):
     assert len(observation_space.shape) == 3
 
     def fx_factory(): return CNNFeatureExtractor(
         observation_space.shape, cnn_kind, cnn_activation, fc_activation, norm_factory=norm_factory,
         add_positional_features=add_positional_features, normalize_input=normalize_input)
-    return create_ppo_actor(action_space, fx_factory, split_policy_value_network, num_out=num_out)
+    return create_ppo_actor(action_space, fx_factory, split_policy_value_network, num_values=num_values)
 
 
 def create_impala_cnn_actor(observation_space, action_space, cnn_kind='normal',
-                            cnn_activation=nn.ReLU, fc_activation=nn.ReLU, norm_factory: NormFactory=None, num_out=1,
+                            cnn_activation=nn.ReLU, fc_activation=nn.ReLU, norm_factory: NormFactory=None, num_values=1,
                             add_positional_features=False, normalize_input=False, goal_size=None):
     assert len(observation_space.shape) == 3
 
     def fx_factory(): return CNNFeatureExtractor(
         observation_space.shape, cnn_kind, cnn_activation, fc_activation, norm_factory=norm_factory,
         add_positional_features=add_positional_features, normalize_input=normalize_input)
-    return create_impala_actor(action_space, fx_factory, False, num_out, False)
+    return create_impala_actor(action_space, fx_factory, False, num_values, False)

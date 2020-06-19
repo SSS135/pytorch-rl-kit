@@ -14,6 +14,6 @@ def unsquash(x, eps: float = 0.001):
 
 def test_squash():
     torch.manual_seed(123)
-    t = torch.randn(1000) * 100
+    t = torch.linspace(-100, 100, 1000, dtype=torch.double)
     assert torch.allclose(t, squash(unsquash(t)), atol=1e-3), (t, squash(unsquash(t)))
     assert torch.allclose(t, unsquash(squash(t)), atol=1e-3), (t, unsquash(squash(t)))

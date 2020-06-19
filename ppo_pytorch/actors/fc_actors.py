@@ -342,7 +342,7 @@ def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128)
     else:
         def fx_factory(): return FCFeatureExtractor(**fx_kwargs)
 
-    return create_ppo_actor(action_space, fx_factory, split_policy_value_network, num_out=num_values)
+    return create_ppo_actor(action_space, fx_factory, split_policy_value_network, num_values=num_values)
 
 
 def create_impala_fc_actor(observation_space, action_space, hidden_sizes=(128, 128), activation=nn.Tanh,
