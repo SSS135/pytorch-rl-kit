@@ -77,20 +77,20 @@ class ActionValueHead(HeadBase):
         self.linear = Linear(in_features, num_out)
         self.action_enc = nn.Sequential(
             Linear(pd.input_vector_len, 128),
-            SiLU(),
-            Linear(128, in_features),
-            nn.Sigmoid(),
+            nn.Tanh(),
+            Linear(128, in_features * 2),
         )
 
     def reset_weights(self):
-        normalized_columns_initializer_(self.linear.weight.data, 0.1)
+        normalized_columns_initializer_(self.linear.weight.data, 1.0)
         self.linear.bias.data.fill_(0)
 
     def forward(self, x, actions=None, action_noise_scale=0, **kwargs):
         actions = self.pd.to_inputs(actions)
         if action_noise_scale != 0:
             actions = actions + action_noise_scale * torch.randn_like(actions)
-        q = self.linear(x * 2 * self.action_enc(actions))
+        ac_add, ac_mul = self.action_enc(actions).chunk(2, -1)
+        q = self.linear(x * ac_mul + ac_add)
         assert q.shape == (*actions.shape[:-1], self.num_out)
         return q
 
@@ -123,7 +123,7 @@ class StateValueHead(HeadBase):
         self.reset_weights()
 
     def reset_weights(self):
-        normalized_columns_initializer_(self.linear.weight.data, 0.1)
+        normalized_columns_initializer_(self.linear.weight.data, 1.0)
         self.linear.bias.data.fill_(0)
 
     def forward(self, x, **kwargs):

@@ -143,15 +143,16 @@ def calc_vtrace(rewards: Tensor, values: Tensor, dones: Tensor, probs_ratio: Ten
 
 
 @torch.jit.script
-def calc_retrace(rewards: Tensor, state_values: Tensor, action_values: Tensor, dones: Tensor,
-                 probs_ratio: Tensor, kl_div: Tensor, discount: float, lam: float, prob_scale: float) -> Tensor:
+def calc_retrace(rewards: Tensor, state_values: Tensor, action_values: Tensor, dones: Tensor, probs_ratio: Tensor,
+                 kl_div: Tensor, discount: float, kl_limit: float, lam: float, prob_scale: float) -> Tensor:
     _check_data(rewards, state_values, dones)
-    assert probs_ratio.shape == rewards.shape == kl_div.shape == dones.shape, (probs_ratio.shape, rewards.shape, kl_div.shape)
+    assert probs_ratio.shape == rewards.shape == dones.shape, (probs_ratio.shape, rewards.shape)
     assert state_values.shape == action_values.shape
     assert rewards.shape[0] == state_values.shape[0] - 1 and rewards.shape[1:] == state_values.shape[1:]
 
     nonterminal = 1 - dones
-    c = (probs_ratio * prob_scale).clamp_max(lam)
+    kl_mask = (kl_div < kl_limit).float()
+    c = (probs_ratio * prob_scale).clamp_max(lam) * kl_mask
     deltas = rewards + nonterminal * discount * state_values[1:] - action_values[:-1]
     nonterm_c_disc = nonterminal * c * discount
     vs_minus_v_xs = torch.zeros_like(state_values)

@@ -32,7 +32,7 @@ from ..common.activation_norm import activation_norm_loss
 from ..common.attr_dict import AttrDict
 from ..common.barron_loss import barron_loss
 from ..common.data_loader import DataLoader
-from ..common.gae import calc_vtrace, calc_upgo
+from ..common.gae import calc_vtrace, calc_upgo, calc_retrace
 from ..common.pop_art import PopArt
 from ..common.rl_base import RLBase, RLStepData
 
@@ -359,17 +359,17 @@ class IMPALA(RLBase):
             .expand(*ac_out_train.logits.shape[:-1], n_values, ac_out_train.logits.shape[-1])
         state_value_actions = pd.sample(state_value_logits)
         state_values = self._train_model.heads.action_values(
-            state_value_features, actions=state_value_actions, action_noise_scale=self.action_noise_scale).mean(-2)
+            state_value_features, actions=state_value_actions, action_noise_scale=0).mean(-2)
         state_values_avg = self._target_model.heads.action_values(
-            state_value_features_target, actions=state_value_actions, action_noise_scale=self.action_noise_scale).mean(-2)
+            state_value_features_target, actions=state_value_actions, action_noise_scale=0).mean(-2)
         action_values = self._train_model.heads.action_values(
-            ac_out_train.features_0, actions=actions_replay, action_noise_scale=self.action_noise_scale)
-        # action_values_avg = self._target_model.heads.action_values(
-        #     ac_out_target.features_0, actions=actions_replay, action_noise_scale=self.action_noise_scale)
+            ac_out_train.features_0, actions=actions_replay, action_noise_scale=0)
+        action_values_avg = self._target_model.heads.action_values(
+            ac_out_target.features_0, actions=actions_replay, action_noise_scale=0)
 
         if self.dpg_loss_scale != 0:
-            actions_desired = self._train_model.heads.logits.pd.rsample(ac_out_train.logits)
-            dpg_values = self._calc_dpg(actions_desired, ac_out_train.features_0)
+            actions_desired = self._train_model.heads.logits.pd.rsample(state_value_logits)
+            dpg_values = self._calc_dpg(actions_desired, state_value_features).mean(-2)
         else:
             dpg_values = state_values.detach()
 
@@ -382,7 +382,7 @@ class IMPALA(RLBase):
             state_values_avg=state_values_avg.squeeze(-1),
             dpg_values=dpg_values.squeeze(-1),
             action_values=action_values.squeeze(-1),
-            # action_values_avg=action_values_avg.squeeze(-1),
+            action_values_avg=action_values_avg.squeeze(-1),
             logits_target=ac_out_target.logits,
             **(dict(features_raw=ac_out_train.features_raw_0) if hasattr(ac_out_train, 'features_raw_0') else {}),
         )
@@ -454,6 +454,8 @@ class IMPALA(RLBase):
             self._process_rewards(data, do_log)
         data.state_values = data.state_values[:-1]
         data.action_values = data.action_values[:-1]
+        data.action_values_avg = data.action_values_avg[:-1]
+        data.state_values_avg = data.state_values_avg[:-1]
 
         loss_world_model = self._get_world_model_loss(data, do_log)
 
@@ -467,10 +469,12 @@ class IMPALA(RLBase):
         elif LossType.impala in self.loss_type:
             loss_pg = impala_loss(data.logp, data.advantages, data.kl_target, self.kl_limit)
 
-        loss_kl = self.kl_pull * data.kl_target.mean()
+        loss_pg = self.pg_loss_scale * loss_pg
+        # loss_kl = self.kl_pull * data.kl_target.mean()
+        loss_kl = self.kl_pull * (data.logits_target - data.logits).pow(2).mean()
         loss_ent = self.entropy_loss_scale * -data.entropy.mean()
-        loss_state_value = self.value_loss_scale * barron_loss(data.state_values, data.state_value_targets, *self.barron_alpha_c, reduce=False)
-        loss_action_value = self.q_loss_scale * barron_loss(data.action_values, data.action_value_targets, *self.barron_alpha_c, reduce=False)
+        loss_state_value = self.value_loss_scale * 0.5 * (data.state_values - data.state_value_targets).pow(2)
+        loss_action_value = self.q_loss_scale * 0.5 * (data.action_values - data.action_value_targets).pow(2)
 
         kl_mask = (data.kl_target.detach().mean(-1) <= self.kl_limit).float()
         assert kl_mask.shape == data.dpg_values.shape
@@ -482,6 +486,18 @@ class IMPALA(RLBase):
         else:
             loss_act_norm = act_norm * max(self.activation_norm_scale, 1 - self.frame_train / 100_000)
 
+        # state_value_pull = 0.5 * (data.state_values_avg.detach() - data.state_values).pow(2).mean()
+        # action_value_pull = 0.5 * (data.action_values_avg.detach() - data.action_values).pow(2).mean()
+        # value_pull_loss = 0.0 * (state_value_pull + action_value_pull)
+
+        # state_value_pull = (data.state_values[..., 0] - data.state_values[..., 1]).abs().mean()
+        # action_value_pull = (data.action_values[..., 0] - data.action_values[..., 1]).abs().mean()
+        # value_pull_loss = 0.0 * (state_value_pull + action_value_pull)
+
+        # state_value_pull = data.state_values.min(-1)[0].mean()
+        # action_value_pull = data.action_values.min(-1)[0].mean()
+        # value_pull_loss = 0.1 * (state_value_pull + action_value_pull)
+
         assert loss_state_value.shape == data.state_values.shape, (loss_state_value.shape, data.state_values.shape)
         assert loss_action_value.shape == loss_dpg.shape == loss_state_value.shape
 
@@ -492,7 +508,7 @@ class IMPALA(RLBase):
 
         # sum all losses
         total_loss = loss_pg + loss_kl + loss_state_value + loss_action_value + loss_dpg + loss_world_model + \
-                     loss_ent + loss_act_norm
+                     loss_ent + loss_act_norm #+ value_pull_loss
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_pg.mean().item(), loss_state_value.mean().item())
 
@@ -588,13 +604,13 @@ class IMPALA(RLBase):
             data.rewards, state_values_avg, data.dones, probs_ratio, kl_replay,
             self.reward_discount, self.vtrace_kl_limit, lam=1.0, prob_scale=1.0)
 
-        # action_values_avg = data.action_values_avg.detach()
-        # action_value_targets = calc_retrace(
-        #     data.rewards, state_values_avg, action_values_avg, data.dones, probs_ratio, kl_replay,
-        #     self.reward_discount, lam=1.0, prob_scale=1.2)
-        # action_value_targets = action_value_targets[:-1]
+        action_values_avg = unsquash(data.action_values_avg).detach()
+        action_value_targets = calc_retrace(
+            data.rewards, state_values_avg, action_values_avg, data.dones, probs_ratio, kl_replay,
+            self.reward_discount, self.vtrace_kl_limit, lam=1.0, prob_scale=1.0)
+        action_value_targets = action_value_targets[:-1]
 
-        action_value_targets = data.rewards + self.reward_discount * (1 - data.dones) * state_value_targets[1:]
+        # action_value_targets = data.rewards + self.reward_discount * (1 - data.dones) * state_value_targets[1:]
 
         advantages_upgo = calc_upgo(data.rewards, state_values, data.dones, self.reward_discount,
                                     lam=0.95, action_values=action_values) - state_values[:-1]
@@ -624,7 +640,7 @@ class IMPALA(RLBase):
                 self.logger.add_scalar('Values/Value Targets PopArt', state_value_targets.mean(), self.frame_train)
 
         assert data.vtrace_p.shape == advantages_upgo.shape
-        advantages = self._adv_norm(self.pg_loss_scale * advantages + self.upgo_scale * advantages_upgo)
+        advantages = self._adv_norm(advantages + self.upgo_scale * advantages_upgo)
 
         data.state_value_targets = state_value_targets
         data.advantages = advantages

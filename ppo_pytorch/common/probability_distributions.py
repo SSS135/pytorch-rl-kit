@@ -17,7 +17,7 @@ def make_pd(space: gym.Space):
     """Create `ProbabilityDistribution` from gym.Space"""
     if isinstance(space, gym.spaces.Discrete):
         return CategoricalPd(space.n)
-        # return GumbelCategoricalPd(space.n, temp=0.5)
+        # return GumbelCategoricalPd(space.n)
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
         # return LinearTanhPd(space.shape[0])
@@ -25,7 +25,7 @@ def make_pd(space: gym.Space):
         # return BetaPd(space.shape[0], 1)
         return DiagGaussianPd(space.shape[0], max_norm=2.0)
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
-        # return PointCloudPd(space.shape[0], max_norm=2.0)
+        # return PointCloudPd(space.shape[0], max_norm=2.0, cloud_size=16)
         # return DiscretizedCategoricalPd(space.shape[0], 7, ordinal=True)
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
@@ -131,7 +131,10 @@ class CategoricalPd(ProbabilityDistribution):
     def kl(self, logits0, logits1):
         logits0 = self._process_logits(logits0)
         logits1 = self._process_logits(logits1)
-        return (logits0 - logits1).pow(2).mean(-1, keepdim=True)
+        # return (logits0 - logits1).pow(2).mean(-1, keepdim=True)
+        logp0 = F.log_softmax(logits0, dim=-1)
+        logp1 = F.log_softmax(logits1, dim=-1)
+        return (logp0.exp() * (logp0 - logp1)).sum(dim=-1, keepdim=True)
 
     def entropy(self, logits):
         logits = self._process_logits(logits)

@@ -1,3 +1,4 @@
+from optfn.gadam import GAdam
 from torch.optim import Adam
 
 if __name__ == '__main__':
@@ -13,7 +14,7 @@ if __name__ == '__main__':
     num_envs = 16
     horizon = 64
 
-    env_factory = partial(make_atari_async_env, num_envs=num_envs, env_name='BeamRiderNoFrameskip-v4',
+    env_factory = partial(make_atari_async_env, num_envs=num_envs, env_name='BreakoutNoFrameskip-v4',
                           episode_life=False, clip_rewards=False)
 
     alg_class = IMPALA
@@ -22,7 +23,7 @@ if __name__ == '__main__':
         train_horizon=horizon,
         batch_size=512,
         value_loss_scale=0.0,
-        q_loss_scale=0.5,
+        q_loss_scale=2.0,
         dpg_loss_scale=0.0,
         pg_loss_scale=1.0,
         cuda_eval=True,
@@ -37,9 +38,9 @@ if __name__ == '__main__':
         eval_model_blend=0.05,
         vtrace_max_ratio=1.0,
         vtrace_kl_limit=1.0,
-        kl_limit=0.1,
+        kl_limit=0.3,
         loss_type='impala',
-        replay_ratio=7,
+        replay_ratio=3,
         upgo_scale=0.0,
         entropy_loss_scale=0.01,
         barron_alpha_c=(2.0, 1.0),
@@ -47,9 +48,9 @@ if __name__ == '__main__':
         activation_norm_scale=0.0,
         reward_reweight_interval=40,
         random_crop_obs=False,
-        action_noise_scale=0.0,
+        action_noise_scale=0.1,
 
-        # optimizer_factory=partial(GAdam, lr=5e-4, avg_sq_mode='tensor', betas=(0.9, 0.99)),
+        # optimizer_factory=partial(GAdam, lr=3e-4, avg_sq_mode='tensor', betas=(0.9, 0.99)),
         optimizer_factory=partial(Adam, lr=3e-4, eps=1e-5),
         model_factory=partial(create_impala_cnn_actor, cnn_kind='normal'),
         # model_factory=partial(create_impala_rnn_actor, hidden_size=256, num_layers=3),
@@ -59,7 +60,7 @@ if __name__ == '__main__':
         #                       activation=SiLU, use_imagination=False),
     )
     trainer_params = dict(
-        tag='[unsquash_kllim0.1_vtkllim1_rscale1_qls0.5_vls0]',
+        tag='[blend0.05_retrace-kllim_qls2_vls0_r3_msekl_kllim0.3_vtkllim1]',
         log_root_path=log_path,
         log_interval=20000,
         rl_alg_factory=partial(alg_class, **alg_params),
