@@ -87,7 +87,7 @@ def calc_value_targets(rewards: Tensor, values: Tensor, dones: Tensor,
 
 @torch.jit.script
 def calc_upgo(rewards: Tensor, values: Tensor, dones: Tensor,
-              reward_discount: float, lam: float = 1.0, action_values: Optional[Tensor]=None) -> Tensor:
+              reward_discount: float, lam: float = 1.0, action_values: Optional[Tensor] = None) -> Tensor:
     """
     Calculate temporal difference targets
     Args:
@@ -111,40 +111,42 @@ def calc_upgo(rewards: Tensor, values: Tensor, dones: Tensor,
 
     for t_inv in range(rewards.shape[0]):
         t = rewards.shape[0] - 1 - t_inv
-        lerp = target_factor[t + 1] if t_inv > 0 else target_factor[t]
-        targets[t] = rewards[t] + nonterm_disc[t] * torch.lerp(values[t + 1], targets[t + 1], lerp)
+        torch.lerp(values[t], rewards[t] + nonterm_disc[t] * targets[t + 1], target_factor[t], out=targets[t])
+        # lerp = target_factor[t + 1] if t_inv > 0 else target_factor[t]
+        # targets[t] = rewards[t] + nonterm_disc[t] * torch.lerp(values[t + 1], targets[t + 1], lerp)
 
     return targets[:-1]
 
 
 @torch.jit.script
-def calc_vtrace(rewards: Tensor, values: Tensor, dones: Tensor, probs_ratio: Tensor, kl_div: Tensor,
-                discount: float, kl_limit: float, lam: float, prob_scale: float) -> Tuple[Tensor, Tensor, Tensor]:
+def calc_vtrace(rewards: Tensor, values: Tensor, dones: Tensor, probs_ratio: Tensor,
+                kl_div: Tensor, discount: float, kl_limit: float, lam: float) -> Tuple[Tensor, Tensor, Tensor]:
     _check_data(rewards, values, dones)
     assert probs_ratio.shape == rewards.shape == kl_div.shape == dones.shape, (probs_ratio.shape, rewards.shape, kl_div.shape)
     assert rewards.shape[0] == values.shape[0] - 1 and rewards.shape[1:] == values.shape[1:]
 
     nonterminal = 1 - dones
     kl_mask = (kl_div < kl_limit).float()
-    c = p = (probs_ratio * prob_scale).clamp_max(lam) * kl_mask
-    deltas = p * (rewards + nonterminal * discount * values[1:] - values[:-1])
+    # kl_mask = 1.0 - (kl_div / kl_limit).clamp_max(1.0)
+    c = probs_ratio.clamp_max(lam) * kl_mask
+    deltas = c * (rewards + nonterminal * discount * values[1:] - values[:-1])
     nonterm_c_disc = nonterminal * c * discount
     vs_minus_v_xs = torch.zeros_like(values)
     for i_inv in range(rewards.shape[0]):
         i = rewards.shape[0] - 1 - i_inv
         torch.addcmul(deltas[i], nonterm_c_disc[i], vs_minus_v_xs[i + 1], out=vs_minus_v_xs[i])
     value_targets = vs_minus_v_xs + values
-    advantages_vtrace = p * (rewards + nonterminal * discount * value_targets[1:] - values[:-1])
+    advantages = c * (rewards + nonterminal * discount * value_targets[1:] - values[:-1])
 
     assert value_targets.shape == values.shape, (value_targets.shape, values.shape)
-    assert advantages_vtrace.shape == rewards.shape, (advantages_vtrace.shape, rewards.shape)
+    assert advantages.shape == rewards.shape, (advantages.shape, rewards.shape)
 
-    return value_targets, advantages_vtrace, p
+    return value_targets, advantages, c
 
 
 @torch.jit.script
 def calc_retrace(rewards: Tensor, state_values: Tensor, action_values: Tensor, dones: Tensor, probs_ratio: Tensor,
-                 kl_div: Tensor, discount: float, kl_limit: float, lam: float, prob_scale: float) -> Tensor:
+                 kl_div: Tensor, discount: float, kl_limit: float, lam: float) -> Tensor:
     _check_data(rewards, state_values, dones)
     assert probs_ratio.shape == rewards.shape == dones.shape, (probs_ratio.shape, rewards.shape)
     assert state_values.shape == action_values.shape
@@ -152,7 +154,7 @@ def calc_retrace(rewards: Tensor, state_values: Tensor, action_values: Tensor, d
 
     nonterminal = 1 - dones
     kl_mask = (kl_div < kl_limit).float()
-    c = (probs_ratio * prob_scale).clamp_max(lam) * kl_mask
+    c = probs_ratio.clamp_max(lam) * kl_mask
     deltas = rewards + nonterminal * discount * state_values[1:] - action_values[:-1]
     nonterm_c_disc = nonterminal * c * discount
     vs_minus_v_xs = torch.zeros_like(state_values)
@@ -172,15 +174,15 @@ def assert_equal_tensors(a, b, abs_tol=1e-4):
 
 
 def test_upgo():
-    rewards = Tensor([0, 0, 1], dtype=torch.float)
-    dones = Tensor([0, 0, 0], dtype=torch.float)
+    rewards = torch.tensor([0, 0, 1], dtype=torch.float)
+    dones = torch.tensor([0, 0, 0], dtype=torch.float)
 
-    values_low = Tensor(     [0.5, 0.5, 0.5, 0], dtype=torch.float) # q = (0.5, 0.5, 1.0)
-    upgo_target_low = Tensor([0.5, 1, 1], dtype=torch.float)
+    values_low = torch.tensor(     [0.5, 0.5, 0.5, 0], dtype=torch.float) # q = (0.5, 0.5, 1.0)
+    upgo_target_low = torch.tensor([0.5, 1, 1], dtype=torch.float)
     upgo_low = calc_upgo(rewards.unsqueeze(1), values_low.unsqueeze(1), dones.unsqueeze(1), 1.0).squeeze(1)
     assert torch.allclose(upgo_low, upgo_target_low), upgo_low
 
-    values_high = Tensor([1, 1, 2, 2], dtype=torch.float)
+    values_high = torch.tensor([1, 1, 2, 2], dtype=torch.float)
     upgo_high = calc_upgo(rewards.unsqueeze(1), values_high.unsqueeze(1), dones.unsqueeze(1), 1.0).squeeze(1)
     returns_high = calc_value_targets(rewards.unsqueeze(1), values_high.unsqueeze(1), dones.unsqueeze(1), 1.0).squeeze(1)
     assert torch.allclose(upgo_high, returns_high), upgo_high
@@ -197,7 +199,7 @@ def test_vtrace():
     kl_div = torch.zeros(N)
     ret = calc_value_targets(rewards, values, dones, discount)
     adv = calc_advantages(rewards, values, dones, discount, 1)
-    v_ret, v_adv, p = calc_vtrace(rewards, values, dones, prob_ratio, kl_div, discount, 1.0, 0.3)
+    v_ret, v_adv, p = calc_vtrace(rewards, values, dones, prob_ratio, kl_div, discount, 0.3, 1.0)
     v_ret = v_ret[:-1]
 
     assert v_ret.shape == ret.shape

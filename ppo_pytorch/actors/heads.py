@@ -61,10 +61,6 @@ class PolicyHead(HeadBase):
 
 
 class ActionValueHead(HeadBase):
-    """
-    Actor-critic head. Used in PPO / A3C.
-    """
-
     def __init__(self, in_features, num_out=1, pd: ProbabilityDistribution = None):
         """
         Args:
@@ -103,6 +99,46 @@ class ActionValueHead(HeadBase):
         self.linear.weight.data *= std
         self.linear.bias.data *= std
         self.linear.bias.data += mean
+
+
+class DoubleActionValueHead(HeadBase):
+    def __init__(self, in_features, num_out=1, pd: ProbabilityDistribution = None):
+        """
+        Args:
+            in_features: Input feature vector width.
+            pd: Action probability distribution.
+        """
+        super().__init__(in_features)
+        self.pd = pd
+        self.num_out = num_out
+        self.linears = nn.ModuleList([Linear(in_features // 2, num_out) for _ in range(2)])
+        self.action_encs = nn.ModuleList([nn.Sequential(
+            Linear(pd.input_vector_len, 128),
+            nn.Tanh(),
+            Linear(128, in_features),
+        ) for _ in range(2)])
+
+    def reset_weights(self):
+        for linear in self.linears:
+            normalized_columns_initializer_(linear.weight.data, 1.0)
+            linear.bias.data.fill_(0)
+
+    def forward(self, features, actions=None, action_noise_scale=0, **kwargs):
+        actions = self.pd.to_inputs(actions)
+        if action_noise_scale != 0:
+            actions = actions + action_noise_scale * torch.randn_like(actions)
+        ac_enc = [enc(actions).chunk(2, -1) for enc in self.action_encs]
+        qs = [linear(x * ac_mul + ac_add)
+              for linear, x, (ac_mul, ac_add) in zip(self.linears, features.chunk(2, -1), ac_enc)]
+        q = torch.cat(qs, -1)
+        assert q.shape == (*actions.shape[:-1], 2 * self.num_out)
+        return q
+
+    def normalize(self, mean, std):
+        for linear in self.linears:
+            linear.bias.data -= mean
+            linear.bias.data /= std
+            linear.weight.data /= std
 
 
 class StateValueHead(HeadBase):

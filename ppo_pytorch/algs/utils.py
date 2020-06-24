@@ -1,8 +1,9 @@
-from typing import Optional, Tuple
+import math
 
 import torch
 import torch.jit
 from torch import nn
+from torch import Tensor
 
 
 def lerp_module_(start, end, factor):
@@ -19,26 +20,28 @@ def lerp_module_(start, end, factor):
 
 
 @torch.jit.script
-def v_mpo_loss(logp: torch.Tensor, advantages: torch.Tensor, kl_target: torch.Tensor, kl_limit: float) \
-        -> Optional[torch.Tensor]:
+def v_mpo_loss(logp: Tensor, advantages: Tensor, kl_target: Tensor, kl_limit: float,
+               adv_temp: Tensor, target_temp: float) -> Tensor:
     assert kl_target.shape == logp.shape and kl_target.dim() == 2
+    assert advantages.shape == kl_target.shape[:1]
 
-    mask = kl_target.mean(-1) <= kl_limit
-    if mask.float().mean().item() < 0.2:
-        return None
+    mask = advantages >= advantages.median()
+    advantages = advantages[mask]
+    logp = logp[mask.unsqueeze(-1).expand_as(logp)].view(-1, logp.shape[1])
+    kl_target = kl_target[mask.unsqueeze(-1).expand_as(kl_target)].view(-1, kl_target.shape[1])
+    kl_mask = (kl_target <= kl_limit).float()
 
-    softmax = advantages[mask].softmax(0)
-    softmax = softmax.sub(softmax.median()).mul_(softmax.numel())
-    logp_masked = logp[mask.unsqueeze(-1).expand_as(logp)].view(-1, logp.shape[1])
-    loss_policy = softmax.detach().clamp(-5, 5).unsqueeze(-1).mul(-logp_masked)
+    loss_policy = advantages.div(adv_temp.detach()).softmax(0).unsqueeze(-1).mul(-logp).mul(kl_mask)
+    loss_temp = adv_temp * target_temp + adv_temp * (torch.logsumexp(advantages / adv_temp, 0) - math.log(advantages.shape[0]))
 
     assert loss_policy.ndim == 2, loss_policy.shape
+    assert loss_temp.ndim == 0
 
-    return loss_policy.mean()
+    return loss_policy.mean(-1).sum() + loss_temp.mean()
 
 
 @torch.jit.script
-def impala_loss(logp: torch.Tensor, advantages: torch.Tensor, kl_target: torch.Tensor, kl_limit: float) -> torch.Tensor:
+def impala_loss(logp: Tensor, advantages: Tensor, kl_target: Tensor, kl_limit: float) -> Tensor:
     assert advantages.dim() == 1
     assert kl_target.shape == logp.shape and kl_target.dim() == 2
 
@@ -50,29 +53,3 @@ def impala_loss(logp: torch.Tensor, advantages: torch.Tensor, kl_target: torch.T
     return loss_policy.mean()
 
 
-class RunningNorm:
-    def __init__(self, momentum=0.99, mean_norm=True):
-        self.momentum = momentum
-        self.mean_norm = mean_norm
-        self._mean = 0
-        self._square = 0
-        self._iter = 0
-
-    def __call__(self, values, update_stats=True):
-        if update_stats:
-            self._mean = self.momentum * self._mean + (1 - self.momentum) * values.mean().item()
-            self._square = self.momentum * self._square + (1 - self.momentum) * values.pow(2).mean().item()
-            self._iter += 1
-
-        bias_corr = 1 - self.momentum ** self._iter
-        mean = self._mean / bias_corr
-        square = self._square / bias_corr
-
-        if self.mean_norm:
-            std = (square - mean ** 2) ** 0.5
-            values = (values - mean) / max(std, 1e-5)
-        else:
-            rms = square ** 0.5
-            values = values / max(rms, 1e-5)
-
-        return values

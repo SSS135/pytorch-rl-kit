@@ -40,16 +40,16 @@ def create_impala_actor(action_space, fx_factory, split_policy_value_network, nu
     else:
         fx_policy = fx_value = fx_factory()
 
-    action_value_head = ActionValueHead(fx_value.output_size, pd=pd, num_out=num_values)
+    state_value_head = StateValueHead(fx_value.output_size, pd=pd, num_out=num_values)
     policy_head = PolicyHead(fx_policy.output_size, pd=pd, layer_norm=isinstance(pd, PointCloudPd))
 
     if split_policy_value_network:
         models = OrderedDict([
             (fx_policy, dict(logits=policy_head)),
-            (fx_value, dict(action_values=action_value_head))])
+            (fx_value, dict(state_values=state_value_head))])
     else:
         models = OrderedDict([
-            (fx_policy, dict(logits=policy_head, action_values=action_value_head))])
+            (fx_policy, dict(logits=policy_head, state_values=state_value_head))])
     return ModularActor(models, is_recurrent)
 
 
@@ -196,9 +196,9 @@ class ModularActor(Actor):
         assert match_found
 
     def head_fx_index(self, head_name):
-        for fx, heads in self.models.items():
+        for i, (fx, heads) in enumerate(self.models.items()):
             if head_name in heads:
-                return fx
+                return i
         raise KeyError
 
     def head_features(self, head_name, outputs):
