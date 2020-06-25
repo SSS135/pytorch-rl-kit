@@ -174,15 +174,15 @@ def assert_equal_tensors(a, b, abs_tol=1e-4):
 
 
 def test_upgo():
-    rewards = torch.tensor([0, 0, 1], dtype=torch.float)
-    dones = torch.tensor([0, 0, 0], dtype=torch.float)
+    rewards = Tensor([0, 0, 1], dtype=torch.float)
+    dones = Tensor([0, 0, 0], dtype=torch.float)
 
-    values_low = torch.tensor(     [0.5, 0.5, 0.5, 0], dtype=torch.float) # q = (0.5, 0.5, 1.0)
-    upgo_target_low = torch.tensor([0.5, 1, 1], dtype=torch.float)
+    values_low = Tensor(     [0.5, 0.5, 0.5, 0], dtype=torch.float) # q = (0.5, 0.5, 1.0)
+    upgo_target_low = Tensor([0.5, 1, 1], dtype=torch.float)
     upgo_low = calc_upgo(rewards.unsqueeze(1), values_low.unsqueeze(1), dones.unsqueeze(1), 1.0).squeeze(1)
     assert torch.allclose(upgo_low, upgo_target_low), upgo_low
 
-    values_high = torch.tensor([1, 1, 2, 2], dtype=torch.float)
+    values_high = Tensor([1, 1, 2, 2], dtype=torch.float)
     upgo_high = calc_upgo(rewards.unsqueeze(1), values_high.unsqueeze(1), dones.unsqueeze(1), 1.0).squeeze(1)
     returns_high = calc_value_targets(rewards.unsqueeze(1), values_high.unsqueeze(1), dones.unsqueeze(1), 1.0).squeeze(1)
     assert torch.allclose(upgo_high, returns_high), upgo_high

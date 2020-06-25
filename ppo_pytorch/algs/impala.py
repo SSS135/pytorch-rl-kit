@@ -159,9 +159,6 @@ class IMPALA(RLBase):
         self._executor = ThreadPoolExecutor(max_workers=1, initializer=lambda: torch.set_num_threads(4))
         self._crop = None
 
-        self._grad_norm_values = GradRunningNorm(value_loss_scale)
-        self._grad_norm_logits = GradRunningNorm(pg_loss_scale)
-
     @property
     def _vmpo_temp(self):
         return self._vmpo_temp_data / self._vmpo_temp_scale
@@ -272,7 +269,8 @@ class IMPALA(RLBase):
             self.logger.add_scalar('Stability/KL Replay', kl_replay, self.frame_train)
             self.logger.add_scalar('Model Diff/Abs', model_diff(old_model, self._train_model), self.frame_train)
             self.logger.add_scalar('Model Diff/Max', model_diff(old_model, self._train_model, True), self.frame_train)
-            self.logger.add_scalar('Stability/VMPO Temp', self._vmpo_temp, self.frame_train)
+            if LossType.v_mpo in self.loss_type:
+                self.logger.add_scalar('Stability/VMPO Temp', self._vmpo_temp, self.frame_train)
 
         self._unapply_pop_art(value_target_list)
 
@@ -353,8 +351,8 @@ class IMPALA(RLBase):
         with torch.no_grad():
             ac_out_target = self._target_model(states, goal=reward_weights, evaluate_heads=['logits'])
 
-        logits_features = self._grad_norm_logits(self._train_model.head_features('logits', ac_out_train))
-        value_features = self._grad_norm_values(self._train_model.head_features('state_values', ac_out_train))
+        logits_features = self._train_model.head_features('logits', ac_out_train)
+        value_features = self._train_model.head_features('state_values', ac_out_train)
         if do_log:
             value_features = log_gradients(value_features, self.logger, 'Values', self.frame_train)
             logits_features = log_gradients(logits_features, self.logger, 'Logits', self.frame_train)

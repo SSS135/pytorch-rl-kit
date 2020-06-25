@@ -46,7 +46,7 @@ def impala_loss(logp: Tensor, advantages: Tensor, kl_target: Tensor, kl_limit: f
     assert kl_target.shape == logp.shape and kl_target.dim() == 2
 
     kl_mask = (kl_target <= kl_limit).float()
-    loss_policy = advantages.clamp(-5, 5).unsqueeze_(-1).detach_().mul(-logp).mul_(kl_mask)
+    loss_policy = advantages.unsqueeze(-1).detach().mul(-logp).mul_(kl_mask)
 
     assert loss_policy.shape[:-1] == advantages.shape, (loss_policy.shape, advantages.shape)
 

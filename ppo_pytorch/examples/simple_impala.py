@@ -49,7 +49,7 @@ if __name__ == '__main__':
         random_crop_obs=False,
         advantage_discount=1.0,
 
-        model_factory=partial(create_impala_fc_actor, hidden_sizes=(128, 128), activation=nn.Tanh, split_policy_value_network=False),
+        model_factory=partial(create_impala_fc_actor, hidden_sizes=(128, 128), activation=nn.Tanh),
         # model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
         # optimizer_factory=partial(GAdam, lr=5e-4, avg_sq_mode='tensor', betas=(0.9, 0.99)),
         optimizer_factory=partial(Adam, lr=3e-4, eps=1e-6),
