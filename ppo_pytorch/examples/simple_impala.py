@@ -37,7 +37,6 @@ if __name__ == '__main__':
         reward_scale=1.0,
         kl_pull=1.0,
         eval_model_blend=0.05,
-        vtrace_kl_limit=0.3,
         kl_limit=0.3,
         loss_type='impala',
         replay_ratio=7,

@@ -36,8 +36,7 @@ if __name__ == '__main__':
         reward_scale=1.0,
         kl_pull=1.0,
         eval_model_blend=0.01,
-        vtrace_kl_limit=0.3,
-        kl_limit=100,
+        kl_limit=0.3,
         loss_type='impala',
         replay_ratio=3,
         upgo_scale=0.0,
@@ -61,7 +60,7 @@ if __name__ == '__main__':
         #                       activation=SiLU, use_imagination=False),
     )
     trainer_params = dict(
-        tag='[lstm_h96_blend0.01_pull1_vls1_r3_kllim100_vtkllim0.3]',
+        tag='[lstm_h96_blend0.01_pull1_vls1_r3_vtkllim0.3]',
         log_root_path=log_path,
         log_interval=20000,
         rl_alg_factory=partial(alg_class, **alg_params),

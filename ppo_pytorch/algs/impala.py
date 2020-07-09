@@ -68,11 +68,10 @@ class IMPALA(RLBase):
                  replay_buf_size=256 * 1024,
                  replay_ratio=7,
                  min_replay_size=10000,
-                 vtrace_kl_limit=0.5,
                  upgo_scale=0.0,
                  grad_clip_norm=None,
                  kl_pull=0.5,
-                 kl_limit=0.1,
+                 kl_limit=0.3,
                  replay_end_sampling_factor=0.1,
                  loss_type='impala',
                  eval_model_blend=0.05,
@@ -102,7 +101,6 @@ class IMPALA(RLBase):
         self.lr_scheduler_factory = lr_scheduler_factory
         self.replay_buf_size = replay_buf_size
         self.replay_ratio = replay_ratio
-        self.vtrace_kl_limit = vtrace_kl_limit
         self.upgo_scale = upgo_scale
         self.min_replay_size = min_replay_size
         self.replay_end_sampling_factor = replay_end_sampling_factor
@@ -427,10 +425,9 @@ class IMPALA(RLBase):
             data[k] = v.flatten(end_dim=1)
 
         if LossType.v_mpo in self.loss_type:
-            loss_pg = v_mpo_loss(data.logp, data.advantages, data.kl_target, self.kl_limit,
-                                 self._vmpo_temp, self.target_vmpo_temp)
+            loss_pg = v_mpo_loss(data.logp, data.advantages, self._vmpo_temp, self.target_vmpo_temp)
         elif LossType.impala in self.loss_type:
-            loss_pg = impala_loss(data.logp, data.advantages, data.kl_target, self.kl_limit)
+            loss_pg = impala_loss(data.logp, data.advantages)
 
         loss_pg = self.pg_loss_scale * loss_pg
         # loss_kl = self.kl_pull * data.kl_target.mean()
@@ -491,11 +488,11 @@ class IMPALA(RLBase):
 
         _, advantages, data.vtrace_p = calc_vtrace(
             data.rewards, state_values, data.dones, probs_ratio, kl_replay,
-            self.reward_discount, self.vtrace_kl_limit, lam=self.advantage_discount)
+            self.reward_discount, self.kl_limit, lam=self.advantage_discount)
 
         state_value_targets, _, _ = calc_vtrace(
             data.rewards, state_values, data.dones, probs_ratio, kl_replay,
-            self.reward_discount, self.vtrace_kl_limit, lam=1.0)
+            self.reward_discount, self.kl_limit, lam=1.0)
 
         advantages_upgo = calc_upgo(data.rewards, state_values, data.dones, self.reward_discount,
                                     lam=self.advantage_discount) - state_values[:-1]

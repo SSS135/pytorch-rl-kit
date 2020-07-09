@@ -20,18 +20,14 @@ def lerp_module_(start, end, factor):
 
 
 @torch.jit.script
-def v_mpo_loss(logp: Tensor, advantages: Tensor, kl_target: Tensor, kl_limit: float,
-               adv_temp: Tensor, target_temp: float) -> Tensor:
-    assert kl_target.shape == logp.shape and kl_target.dim() == 2
-    assert advantages.shape == kl_target.shape[:1]
+def v_mpo_loss(logp: Tensor, advantages: Tensor, adv_temp: Tensor, target_temp: float) -> Tensor:
+    assert advantages.shape == logp.shape[:-1]
 
     mask = advantages >= advantages.median()
     advantages = advantages[mask]
     logp = logp[mask.unsqueeze(-1).expand_as(logp)].view(-1, logp.shape[1])
-    kl_target = kl_target[mask.unsqueeze(-1).expand_as(kl_target)].view(-1, kl_target.shape[1])
-    kl_mask = (kl_target <= kl_limit).float()
 
-    loss_policy = advantages.div(adv_temp.detach()).softmax(0).unsqueeze(-1).mul(-logp).mul(kl_mask)
+    loss_policy = advantages.div(adv_temp.detach()).softmax(0).unsqueeze(-1).mul(-logp)
     loss_temp = adv_temp * target_temp + adv_temp * (torch.logsumexp(advantages / adv_temp, 0) - math.log(advantages.shape[0]))
 
     assert loss_policy.ndim == 2, loss_policy.shape
@@ -41,15 +37,10 @@ def v_mpo_loss(logp: Tensor, advantages: Tensor, kl_target: Tensor, kl_limit: fl
 
 
 @torch.jit.script
-def impala_loss(logp: Tensor, advantages: Tensor, kl_target: Tensor, kl_limit: float) -> Tensor:
-    assert advantages.dim() == 1
-    assert kl_target.shape == logp.shape and kl_target.dim() == 2
-
-    kl_mask = (kl_target <= kl_limit).float()
-    loss_policy = advantages.unsqueeze(-1).detach().mul(-logp).mul_(kl_mask)
-
+def impala_loss(logp: Tensor, advantages: Tensor) -> Tensor:
+    assert advantages.shape == logp.shape[:-1]
+    loss_policy = advantages.unsqueeze(-1).detach().mul(-logp)
     assert loss_policy.shape[:-1] == advantages.shape, (loss_policy.shape, advantages.shape)
-
     return loss_policy.mean()
 
 
