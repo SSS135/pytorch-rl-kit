@@ -45,18 +45,17 @@ class NamedVecEnv:
 
 
 class AtariVecEnv(NamedVecEnv):
-    def __init__(self, env_name, episode_life=True, scale_float_obs=False, clip_rewards=False, rescale_rewards=True,
+    def __init__(self, env_name, episode_life=True, scale_float_obs=False, clip_rewards=False,
                  frame_stack=True, grayscale=True, parallel='process'):
         self.scale_float_obs = scale_float_obs
         self.clip_rewards = clip_rewards
-        self.rescale_rewards = rescale_rewards
         self.episode_life = episode_life
         self.frame_stack = frame_stack
         self.grayscale = grayscale
         super().__init__(env_name, parallel)
 
     def get_env_factory(self):
-        def make(env_name, episode_life, scale_float_obs, clip_rewards, frame_stack, grayscale, rescale_rewards):
+        def make(env_name, episode_life, scale_float_obs, clip_rewards, frame_stack, grayscale):
             env = gym.make(env_name)
             assert 'NoFrameskip' in env.spec.id
             env = NoopResetEnv(env, noop_max=30)
@@ -72,14 +71,12 @@ class AtariVecEnv(NamedVecEnv):
                 env = ScaledFloatFrame(env)
             if clip_rewards:
                 env = ClipRewardEnv(env)
-            if rescale_rewards:
-                env = RescaleRewardEnv(env)
             if frame_stack:
                 env = FrameStack(env, 4)
             return env
 
         return partial(make, self.env_name, self.episode_life, self.scale_float_obs, self.clip_rewards,
-                       self.rescale_rewards, self.frame_stack, self.grayscale)
+                       self.frame_stack, self.grayscale)
 
 
 class SimpleVecEnv(NamedVecEnv):
