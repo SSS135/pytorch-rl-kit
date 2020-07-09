@@ -11,7 +11,7 @@ from .variable_env_merger import VariableEnvMerger
 from .variable_step_result import VariableStepResult
 
 
-def recv(pipe: Pipe, timeout: float = 60):
+def recv(pipe: Pipe, timeout: float = 300):
     assert pipe.poll(timeout)
     return pipe.recv()
 
