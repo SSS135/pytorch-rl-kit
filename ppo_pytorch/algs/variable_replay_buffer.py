@@ -11,9 +11,10 @@ DONE = 'dones'
 
 
 class BufferThread:
-    def __init__(self, capacity, horizon, end_sampling_factor):
+    def __init__(self, capacity, horizon, num_burn_in_samples, end_sampling_factor):
         self.capacity = capacity
         self.horizon = horizon
+        self.num_burn_in_samples = num_burn_in_samples
         self.end_sampling_factor = end_sampling_factor
         self._num_new_samples = 0
         self._data: Dict[str, Tensor] = None
@@ -22,9 +23,10 @@ class BufferThread:
 
     @property
     def avail_new_samples(self):
-        if len(self) < self.horizon or self._num_new_samples < self.horizon:
+        samples = self._num_new_samples + self.num_burn_in_samples
+        if len(self) < self.horizon or samples < self.horizon:
             return 0
-        return self._num_new_samples // self.horizon * self.horizon
+        return samples // self.horizon * self.horizon
 
     def reduce_capacity(self, new_capacity):
         assert new_capacity <= self.capacity
@@ -58,8 +60,9 @@ class BufferThread:
         return {k: v[start:end] for k, v in self._data.items()}
 
     def get_new_samples(self) -> Dict[str, Tensor]:
-        index = self._index
-        num_samples = self.avail_new_samples
+        index = self._index - self.num_burn_in_samples
+        self._num_new_samples += self.num_burn_in_samples
+        num_samples = self._num_new_samples // self.horizon * self.horizon
         assert 0 < num_samples < self.capacity
         self._num_new_samples = max(0, self._num_new_samples - num_samples)
 
@@ -104,9 +107,10 @@ class BufferThread:
 
 
 class VariableReplayBuffer:
-    def __init__(self, capacity, horizon, end_sampling_factor=1.0):
+    def __init__(self, capacity, horizon, num_burn_in_samples, end_sampling_factor=1.0):
         self._total_capacity = capacity
         self.horizon = horizon
+        self.num_burn_in_samples = num_burn_in_samples
         self.end_sampling_factor = end_sampling_factor
         self._buffers: List[BufferThread] = []
         self._actor_id_to_buf_index: Dict[int, int] = {}
@@ -183,7 +187,7 @@ class VariableReplayBuffer:
         for buf in self._buffers:
             buf.reduce_capacity(new_cap)
         while len(self._buffers) < new_num_buf:
-            self._buffers.append(BufferThread(new_cap, self.horizon, self.end_sampling_factor))
+            self._buffers.append(BufferThread(new_cap, self.horizon, self.num_burn_in_samples, self.end_sampling_factor))
 
 
 def test_variable_replay_buffer_normal():

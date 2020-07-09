@@ -72,14 +72,14 @@ def create_residual_fc(input_size, hidden_size, use_norm=False):
 
 
 class FCFeatureExtractor(FeatureExtractorBase):
-    def __init__(self, input_size: int, hidden_sizes=(128, 128), activation=nn.Tanh, goal_size=None, **kwargs):
+    def __init__(self, input_size: int, hidden_sizes=(128, 128), activation=nn.Tanh, goal_size=0, **kwargs):
         super().__init__(**kwargs)
         self.input_size = input_size
         self.hidden_sizes = hidden_sizes
         self.activation = activation
         self.goal_size = goal_size
         self.model = create_fc(input_size, hidden_sizes, activation, self.norm_factory)
-        self.out_embedding = Linear(goal_size, hidden_sizes[-1]) if goal_size is not None else None
+        self.out_embedding = Linear(goal_size, hidden_sizes[-1]) if goal_size != 0 else None
 
         # self.model = create_residual_fc(input_size, hidden_sizes[0])
         # super().reset_weights()
@@ -97,7 +97,7 @@ class FCFeatureExtractor(FeatureExtractorBase):
 
     def forward(self, input: torch.Tensor, logger=None, cur_step=None, goal=None, **kwargs):
         x = input.reshape(-1, input.shape[-1])
-        if self.goal_size is not None:
+        if self.goal_size != 0:
             goal = goal.reshape(-1, goal.shape[-1])
         x = self._extract_features(x, goal, logger, cur_step)
         return x.reshape(*input.shape[:-1], -1)
@@ -107,7 +107,7 @@ class FCFeatureExtractor(FeatureExtractorBase):
             x = layer(x)
             if logger is not None:
                 logger.add_histogram(f'layer_{i}_output', x, cur_step)
-        if self.goal_size is not None:
+        if self.goal_size != 0:
             x = x * 2 * self.out_embedding(goal).sigmoid()
         return x
 

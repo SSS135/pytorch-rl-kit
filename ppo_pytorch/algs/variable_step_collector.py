@@ -83,14 +83,25 @@ class VariableStepCollector:
                                               lambda: self.reward_weight_gen.generate(1)[0])
         if self.actor.is_recurrent:
             dones_t = data.done.unsqueeze(0).to(self.device)
+            # todo: correctly reweight rewards
+            prev_rewards = self._get_data_field(
+                data.actor_id, data.done, lambda x: x.rewards.sum(-1) if x.rewards is not None else torch.tensor(0.0),
+                lambda: torch.tensor(0.0)).unsqueeze(0)
+            pd = self.actor.heads.logits.pd
+            prev_actions = self._get_data_field(
+                data.actor_id, data.done, lambda x: x.actions,
+                lambda: pd.sample(torch.zeros([1, pd.prob_vector_len])).squeeze(0)).unsqueeze(0)
+
             if self._memory_shape is None:
-                self._memory_shape = self.actor(obs.unsqueeze(0), memory=None, dones=dones_t,
-                                                goal=reward_weights.unsqueeze(0)).memory.shape[1:]
+                self._memory_shape = self.actor(
+                    obs.unsqueeze(0), memory=None, dones=dones_t, goal=reward_weights.unsqueeze(0),
+                    prev_rewards=prev_rewards, prev_actions=prev_actions).memory.shape[1:]
             input_memory = self._get_data_field(data.actor_id, data.done,
                                                 lambda x: x.output_memory,
                                                 lambda: torch.zeros(self._memory_shape))
-            ac_out = self.actor(obs.unsqueeze(0), memory=input_memory, dones=dones_t,
-                                goal=reward_weights.unsqueeze(0))
+            ac_out = self.actor(
+                obs.unsqueeze(0), memory=input_memory, dones=dones_t, goal=reward_weights.unsqueeze(0),
+                prev_rewards=prev_rewards, prev_actions=prev_actions)
             ac_out.logits = ac_out.logits.squeeze(0)
         else:
             ac_out = self.actor(obs, goal=reward_weights, evaluate_heads=['logits'])

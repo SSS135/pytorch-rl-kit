@@ -4,14 +4,17 @@ from functools import partial
 import torch
 import torch.nn as nn
 from optfn.skip_connections import ResidualBlock
+from ppo_pytorch.actors.fc_actors import FCFeatureExtractor
+from ppo_pytorch.actors.rnn_actors import RNNFeatureExtractor
+from ppo_pytorch.common.probability_distributions import make_pd
 from torch import autograd
 from torch.autograd import Variable
+from torch import Tensor
 
 from .actors import FeatureExtractorBase, create_ppo_actor, create_impala_actor
 from .norm_factory import NormFactory
 from .utils import make_conv_heatmap, image_to_float
 from ..common.make_grid import make_grid
-from ..config import Linear
 from ppo_pytorch.common.activation_norm import ActivationNorm
 
 
@@ -40,7 +43,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
     Convolution network.
     """
     def __init__(self, input_shape, cnn_kind='normal',
-                 cnn_activation=partial(nn.ReLU, inplace=True), fc_activation=partial(nn.ReLU, inplace=True),
+                 cnn_activation=partial(nn.ReLU, inplace=True),
                  add_positional_features=False, normalize_input=False, activation_norm=True, **kwargs):
         """
         Args:
@@ -53,15 +56,14 @@ class CNNFeatureExtractor(FeatureExtractorBase):
         super().__init__(**kwargs)
         self.input_shape = input_shape
         self.cnn_activation = cnn_activation
-        self.linear_activation = fc_activation
         self.cnn_kind = cnn_kind
         self.add_positional_features = add_positional_features
         self.normalize_input = normalize_input
         self.activation_norm = activation_norm
         self.convs = None
-        self.linear = None
         self._prev_positions = None
         self._create_model()
+        self._output_size = self._calc_linear_size()
 
     def _create_model(self):
         input_channels = self.input_shape[0] + (2 if self.add_positional_features else 0)
@@ -72,7 +74,6 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                 self._make_cnn_layer(32, 64, 4, 2),
                 self._make_cnn_layer(64, 64, 3, 1),
             ])
-            self.linear = self._make_fc_layer(self._calc_linear_size(), 512)
         elif self.cnn_kind == 'large': # custom (2,066,432 parameters)
             nf = 32
             self.convs = nn.ModuleList([
@@ -81,7 +82,6 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                 self._make_cnn_layer(nf * 2, nf * 4, 4, 2, 1),
                 self._make_cnn_layer(nf * 4, nf * 8, 4, 2, 1),
             ])
-            self.linear = self._make_fc_layer(self._calc_linear_size(), 512)
         elif self.cnn_kind == 'grouped': # custom grouped (6,950,912 parameters)
             nf = 32
             self.convs = nn.ModuleList([
@@ -95,15 +95,11 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                 ChannelShuffle(nf * 32),
                 self._make_cnn_layer(nf * 32, nf * 8, 3, 1, 1, groups=8),
             ])
-            self.linear = self._make_fc_layer(self._calc_linear_size(), 512)
         elif self.cnn_kind == 'impala':
             c_mult = 2
             def cnn_norm_fn(num_c):
                 return (self.norm_factory.create_cnn_norm(num_c, False),) \
                     if self.norm_factory is not None and self.norm_factory.allow_cnn else ()
-            def fc_norm_fn(num_c):
-                return (self.norm_factory.create_fc_norm(num_c, False),) \
-                    if self.norm_factory is not None and self.norm_factory.allow_fc else ()
             def impala_block(c_in, c_out):
                 return nn.Sequential(
                     nn.Conv2d(c_in, c_out, 3, 1, 1),
@@ -138,18 +134,12 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                     nn.ReLU(True),
                 )
             )
-            self.linear = nn.Sequential(
-                Linear(self._calc_linear_size(), 256),
-                ActivationNorm(1),
-                *fc_norm_fn(256),
-                nn.ReLU(True),
-            )
         else:
             raise ValueError(self.cnn_kind)
 
     @property
     def output_size(self):
-        return self.linear[0].out_features
+        return self._output_size
 
     # def reset_weights(self):
     #     super().reset_weights()
@@ -162,28 +152,21 @@ class CNNFeatureExtractor(FeatureExtractorBase):
             out_shape = self._extract_features(torch.randn(shape)).shape
             return out_shape[1] * out_shape[2] * out_shape[3]
 
-    def _make_fc_layer(self, in_features, out_features, first_layer=False):
-        bias = self.norm_factory is None or not self.norm_factory.disable_bias or not self.norm_factory.allow_fc
-        return self._make_layer(Linear(in_features, out_features, bias=bias), first_layer=first_layer)
-
     def _make_cnn_layer(self, *args, first_layer=False, **kwargs):
         bias = self.norm_factory is None or not self.norm_factory.disable_bias or not self.norm_factory.allow_cnn
         return self._make_layer(nn.Conv2d(*args, **kwargs, bias=bias), first_layer=first_layer)
 
     def _make_layer(self, transf, first_layer=False):
-        is_linear = isinstance(transf, nn.Linear) or isinstance(transf, Linear)
-        features = transf.out_features if is_linear else transf.out_channels
+        features = transf.out_channels
 
         # parts = [ActivationNormWrapper(transf)]
         parts = [transf]
         if self.activation_norm:
-            parts.append(ActivationNorm(1 if is_linear else 3))
-        if self.norm_factory is not None and \
-                (self.norm_factory.allow_after_first_layer or not first_layer) and \
-                (self.norm_factory.allow_fc if is_linear else self.norm_factory.allow_cnn):
-            func = self.norm_factory.create_fc_norm if is_linear else self.norm_factory.create_cnn_norm
-            parts.append(func(features, first_layer))
-        parts.append(self.linear_activation() if is_linear else self.cnn_activation())
+            parts.append(ActivationNorm(3))
+        if self.norm_factory is not None and self.norm_factory.allow_cnn and \
+                (self.norm_factory.allow_after_first_layer or not first_layer):
+            parts.append(self.norm_factory.create_cnn_norm(features, first_layer))
+        parts.append(self.cnn_activation())
         return nn.Sequential(*parts)
 
     def _extract_features(self, x, logger=None, cur_step=None):
@@ -214,7 +197,6 @@ class CNNFeatureExtractor(FeatureExtractorBase):
 
         x = self._extract_features(input, logger, cur_step)
         x = x.view(x.size(0), -1)
-        x = self.linear(x)
 
         if logger is not None:
             logger.add_histogram('conv_activations_linear', x, cur_step)
@@ -259,36 +241,82 @@ class CNNFeatureExtractor(FeatureExtractorBase):
             logger.add_image('state_attention', img, cur_step)
 
 
-class Sega_CNNFeatureExtractor(CNNFeatureExtractor):
-    def _create_model(self):
-        nf = 32
-        in_c = self.input_shape[0]
-        self.convs = nn.ModuleList([
-            self._make_layer(nn.Conv2d(in_c, nf, 8, 4, 0, bias=self.norm_factory is None)),
-            self._make_layer(nn.Conv2d(nf, nf * 2, 6, 3, 0, bias=self.norm_factory is None)),
-            self._make_layer(nn.Conv2d(nf * 2, nf * 4, 4, 2, 0, bias=self.norm_factory is None)),
-        ])
-        self.linear = self._make_layer(Linear(1920, 512))
+class CNNRNNFeatureExtractor(FeatureExtractorBase):
+    def __init__(self, cnn_fx, rnn_fx):
+        super().__init__()
+        self.cnn_fx = cnn_fx
+        self.rnn_fx = rnn_fx
+
+    def reset_weights(self):
+        self.cnn_fx.reset_weights()
+        self.rnn_fx.reset_weights()
+
+    @property
+    def output_size(self):
+        return self.rnn_fx.output_size
+
+    def forward(self, input: Tensor, memory: Tensor, dones: Tensor, prev_rewards: Tensor, prev_actions: Tensor, **kwargs):
+        features = self.cnn_fx(input, **kwargs)
+        return self.rnn_fx(features, memory, dones, prev_rewards, prev_actions, **kwargs)
+
+
+class CNNFCFeatureExtractor(FeatureExtractorBase):
+    def __init__(self, cnn_fx, rnn_fx):
+        super().__init__()
+        self.cnn_fx = cnn_fx
+        self.fc_fx = rnn_fx
+
+    def reset_weights(self):
+        self.cnn_fx.reset_weights()
+        self.fc_fx.reset_weights()
+
+    @property
+    def output_size(self):
+        return self.fc_fx.output_size
+
+    def forward(self, input: Tensor, **kwargs):
+        features = self.cnn_fx(input, **kwargs)
+        return self.fc_fx(features, **kwargs)
 
 
 def create_ppo_cnn_actor(observation_space, action_space, cnn_kind='normal',
-                         cnn_activation=nn.ReLU, fc_activation=nn.ReLU, norm_factory: NormFactory=None,
+                         cnn_activation=nn.ReLU, norm_factory: NormFactory=None,
                          split_policy_value_network=False, num_values=1,
-                         add_positional_features=False, normalize_input=False, goal_size=None):
+                         add_positional_features=False, normalize_input=False):
     assert len(observation_space.shape) == 3
 
     def fx_factory(): return CNNFeatureExtractor(
-        observation_space.shape, cnn_kind, cnn_activation, fc_activation, norm_factory=norm_factory,
+        observation_space.shape, cnn_kind, cnn_activation, norm_factory=norm_factory,
         add_positional_features=add_positional_features, normalize_input=normalize_input)
     return create_ppo_actor(action_space, fx_factory, split_policy_value_network, num_values=num_values)
 
 
 def create_impala_cnn_actor(observation_space, action_space, cnn_kind='normal',
-                            cnn_activation=nn.ReLU, fc_activation=nn.ReLU, norm_factory: NormFactory=None, num_values=1,
-                            add_positional_features=False, normalize_input=False, goal_size=None):
+                            activation=nn.ReLU, norm_factory: NormFactory=None, num_values=1,
+                            add_positional_features=False, normalize_input=False, goal_size=0, fc_size=512):
     assert len(observation_space.shape) == 3
 
-    def fx_factory(): return CNNFeatureExtractor(
-        observation_space.shape, cnn_kind, cnn_activation, fc_activation, norm_factory=norm_factory,
-        add_positional_features=add_positional_features, normalize_input=normalize_input)
-    return create_impala_actor(action_space, fx_factory, False, num_values, False)
+    def fx_factory():
+        cnn_fx = CNNFeatureExtractor(
+            observation_space.shape, cnn_kind, activation, norm_factory=norm_factory,
+            add_positional_features=add_positional_features, normalize_input=normalize_input)
+        fc_fx = FCFeatureExtractor(cnn_fx.output_size, (fc_size,), goal_size=goal_size, activation=activation)
+        return CNNFCFeatureExtractor(cnn_fx, fc_fx)
+    return create_impala_actor(action_space, fx_factory,
+                               split_policy_value_network=False, num_values=num_values, is_recurrent=False)
+
+
+def create_impala_cnn_rnn_actor(observation_space, action_space, cnn_kind='normal',
+                                cnn_activation=nn.ReLU, cnn_norm_factory: NormFactory=None,
+                                rnn_layers=2, rnn_hidden_size=256,
+                                num_values=1, add_positional_features=False, normalize_input=False, goal_size=0):
+    assert len(observation_space.shape) == 3
+    pd = make_pd(action_space)
+    def fx_factory():
+        cnn_fx = CNNFeatureExtractor(
+            observation_space.shape, cnn_kind, cnn_activation, norm_factory=cnn_norm_factory,
+            add_positional_features=add_positional_features, normalize_input=normalize_input)
+        rnn_fx = RNNFeatureExtractor(pd, cnn_fx.output_size, rnn_hidden_size, rnn_layers, env_input=False)
+        return CNNRNNFeatureExtractor(cnn_fx, rnn_fx)
+    return create_impala_actor(
+        action_space, fx_factory, split_policy_value_network=False, num_values=num_values, is_recurrent=True)

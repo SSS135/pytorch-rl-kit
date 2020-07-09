@@ -1,5 +1,3 @@
-from torch.optim import Adam
-
 from ..common.cartpole_continuous import CartPoleContinuousEnv
 
 if __name__ == '__main__':
@@ -12,6 +10,8 @@ if __name__ == '__main__':
     from ppo_pytorch.algs.impala import IMPALA
     from ppo_pytorch.common.variable_env.gym_to_variable_env import make_async_env
     from optfn.gadam import GAdam
+    from ppo_pytorch.actors.rnn_actors import create_impala_rnn_actor
+    from torch.optim import Adam
 
     train_frames = 2e6
     num_envs = 8
@@ -37,7 +37,7 @@ if __name__ == '__main__':
         reward_scale=1.0,
         kl_pull=1.0,
         eval_model_blend=0.05,
-        vtrace_kl_limit=0.5,
+        vtrace_kl_limit=0.3,
         kl_limit=0.3,
         loss_type='impala',
         replay_ratio=7,
@@ -49,8 +49,8 @@ if __name__ == '__main__':
         random_crop_obs=False,
         advantage_discount=1.0,
 
-        model_factory=partial(create_impala_fc_actor, hidden_sizes=(128, 128), activation=nn.Tanh),
-        # model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
+        # model_factory=partial(create_impala_fc_actor, hidden_sizes=(128, 128), activation=nn.Tanh),
+        model_factory=partial(create_impala_rnn_actor, hidden_size=128, num_layers=2),
         # optimizer_factory=partial(GAdam, lr=5e-4, avg_sq_mode='tensor', betas=(0.9, 0.99)),
         optimizer_factory=partial(Adam, lr=3e-4, eps=1e-6),
 
