@@ -24,9 +24,9 @@ from ppo_pytorch.common.utils import save_git_diff
 import time
 
 
-log_path = './tensorboard'
-diff_path = './diffs'
-src_root = '/home/alexander/PyCharm' if is_linux else 'c:/Users/Alexander/sync-pc/PyCharm'
+log_path = '/tensorboard' if is_linux else './tensorboard'
+diff_path = '/diffs' if is_linux else './diffs'
+src_root = '/PyCharm' if is_linux else 'c:/Users/Alexander/sync-pc/PyCharm'
 
 time_str = time.strftime("%Y-%m-%d %H_%M_%S")
 save_git_diff(diff_path, time_str, f'{src_root}/ppo_pytorch')
