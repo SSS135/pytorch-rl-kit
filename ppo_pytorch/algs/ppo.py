@@ -26,11 +26,6 @@ from ..common.data_loader import DataLoader
 from ..common.pop_art import PopArt
 from ..common.probability_distributions import DiagGaussianPd, CategoricalPd, ProbabilityDistribution
 from ..common.rl_base import RLBase, RLStepData
-
-
-class Constraint(Enum):
-    clip = 'clip'
-    spu = 'spu'
     
     
 class SchedulerManager:
@@ -106,9 +101,10 @@ class PPO(RLBase):
                  optimizer_factory=partial(optim.Adam, lr=3e-4),
                  value_loss_scale=0.5,
                  entropy_loss_scale=0.01,
-                 constraint='clip',
                  policy_clip=0.2,
                  value_clip: Optional[float] = 0.2,
+                 kl_pull=0.0,
+                 batch_kl_limit=1.0,
                  cuda_eval=False,
                  cuda_train=False,
                  grad_clip_norm=2,
@@ -116,7 +112,6 @@ class PPO(RLBase):
                  lr_scheduler_factory=None,
                  clip_decay_factory=None,
                  entropy_decay_factory=None,
-                 spu_dis_agg_lam=(0.01, 0.01 / 1.3, 2.0),
                  use_pop_art=False,
                  activation_norm_scale=0.0,
                  squash_values=False,
@@ -139,10 +134,6 @@ class PPO(RLBase):
                 Callable object receiving `model.parameters()` and returning model optimizer
             value_loss_scale (float): Multiplier for state-value loss
             entropy_loss_scale (float): Entropy maximization loss bonus (typically 0 to 0.01)
-            constraint tuple[str]: Policy optimization constraint. State value always uses 'clip' constraint.
-                Tuple could contain zero or more of these values:
-                'clip' - PPO clipping. Implementation is somewhat different from PPO paper.
-                    Controlled by `policy_clip` and `value_clip`
             policy_clip (float): policy clip strength
             value_clip (float): State-value clip strength
             cuda_eval (bool): Use CUDA for environment steps
@@ -168,6 +159,8 @@ class PPO(RLBase):
         self.advantage_discount = advantage_discount
         self.policy_clip = policy_clip
         self.value_clip = value_clip
+        self.kl_pull = kl_pull
+        self.batch_kl_limit = batch_kl_limit
         self.entropy_loss_scale = entropy_loss_scale
         self.horizon = horizon
         self.ppo_iters = ppo_iters
@@ -179,16 +172,10 @@ class PPO(RLBase):
         self.model_factory = model_factory
         self.optimizer_factory = optimizer_factory
         self.reward_scale = reward_scale
-        self.spu_dis_agg_lam = spu_dis_agg_lam
         self.use_pop_art = use_pop_art
         self.lr_scheduler_factory = lr_scheduler_factory
         self.activation_norm_scale = activation_norm_scale
         self.squash_values = squash_values
-
-        assert isinstance(constraint, str) or isinstance(constraint, list) or isinstance(constraint, tuple)
-        self.constraint = (constraint,) if isinstance(constraint, str) else constraint
-        self.constraint = [Constraint[c] for c in self.constraint]
-        assert len(set(self.constraint) - set(c for c in Constraint)) == 0
 
         self._train_model: Actor = model_factory(observation_space, action_space)
         self._eval_model: Actor = model_factory(observation_space, action_space)
@@ -339,7 +326,7 @@ class PPO(RLBase):
             loss = loss.mean() + self.activation_norm_scale * act_norm_loss
 
         kl = kl.item()
-        if not self._has_constraint(Constraint.spu) or kl < self.spu_dis_agg_lam[1] * self._clip_mult:
+        if kl < self.batch_kl_limit * self._clip_mult:
             # optimize
             loss.backward()
             if self.grad_clip_norm is not None:
@@ -375,22 +362,14 @@ class PPO(RLBase):
         assert kl.shape == advantages.shape, (kl.shape, advantages.shape)
 
         loss_ent = -self.entropy_loss_scale * entropy.mean()
+        # loss_kl = self.kl_pull * kl.mean()
+        loss_kl = (logits - logits_old).pow_(2).mean().mul(0.5 * self.kl_pull)
 
-        if self._has_constraint(Constraint.clip):
-            policy_clip = self.policy_clip * self._clip_mult
-            unclipped_policy_loss = ratio * advantages
-            clipped_policy_loss = ratio.clamp(-policy_clip, policy_clip) * advantages
-            loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
-            assert loss_clip.shape == advantages.shape
-        elif self._has_constraint(Constraint.spu):
-            kl_dis, _, lam = self.spu_dis_agg_lam
-            loss_clip = kl - lam * ratio * advantages
-            good_kl_mask = kl.detach() <= kl_dis * self._clip_mult
-            loss_clip = loss_clip * good_kl_mask.float()
-            assert loss_clip.shape == advantages.shape
-            # agg_kl_check = (kl_mean.detach().mean() < self.kl_agg * self._clip_mult * advantages.abs().mean()).float()
-            # loss_clip = loss_clip * agg_kl_check
-            # loss_ent = loss_ent * agg_kl_check
+        policy_clip = self.policy_clip * self._clip_mult
+        unclipped_policy_loss = ratio * advantages
+        clipped_policy_loss = ratio.clamp(-policy_clip, policy_clip) * advantages
+        loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
+        assert loss_clip.shape == advantages.shape
 
         # value loss
         if self.value_clip is not None:
@@ -407,12 +386,10 @@ class PPO(RLBase):
         # assert loss_value.shape == loss_ent.shape, (loss_value.shape, loss_ent.shape)
 
         loss_clip = loss_clip.mean()
-        loss_ent = loss_ent.mean()
-        # loss_kl = loss_kl.mean()
         loss_value = loss_value.mean()
 
         # sum all losses
-        total_loss = loss_clip + loss_value + loss_ent #+ loss_kl
+        total_loss = loss_clip + loss_value + loss_ent + loss_kl
         assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
             (loss_clip.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
 
@@ -425,10 +402,6 @@ class PPO(RLBase):
                 self.logger.add_scalar('Prob Ratio/Abs Max' + tag, ratio.abs().max(), self.frame_train)
 
         return total_loss, kl.mean()
-
-    def _has_constraint(self, cons):
-        assert isinstance(cons, Constraint)
-        return cons in self.constraint
 
     @property
     def _learning_rate(self):

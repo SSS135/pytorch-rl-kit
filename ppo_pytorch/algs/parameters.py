@@ -91,7 +91,6 @@ def create_atari_kwargs(learning_decay_frames=None, **kwargs):
         optimizer_factory=partial(optim.Adam, lr=2.5e-4, eps=1e-5),
         horizon=128,
         batch_size=32 * 8,
-        constraint='clip',
         value_loss_scale=0.5,
         grad_clip_norm=4,
         ppo_iters=4,
