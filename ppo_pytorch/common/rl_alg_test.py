@@ -22,6 +22,8 @@ def run_training(trainer_cls, trainer_params, alg_params, train_frames, profile=
 
     if is_running_on_windows():
         os.system(f'title {trainer_params["tag"]}')
+    else:
+        print(f'\33]0;{trainer_params["tag"]}\a', end='', flush=True)
 
     with trainer_cls(**trainer_params) as trainer:
         trainer.logger.add_text('wrap_params', pprint.pformat(trainer_params))
