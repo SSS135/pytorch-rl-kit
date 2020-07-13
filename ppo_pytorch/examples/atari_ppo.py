@@ -8,7 +8,7 @@ if __name__ == '__main__':
     from ppo_pytorch.common.env_trainer import EnvTrainer
     from ppo_pytorch.common.rl_alg_test import run_training
 
-    env_factory = partial(AtariVecEnv, 'BreakoutNoFrameskip-v4', parallel='process',
+    env_factory = partial(AtariVecEnv, 'BeamRiderNoFrameskip-v4', parallel='process',
                           episode_life=True, clip_rewards=True)
 
     alg_class = PPO
@@ -25,7 +25,7 @@ if __name__ == '__main__':
         ppo_iters=3,
         value_clip=0.2,
         policy_clip=0.2,
-        kl_pull=0.3,
+        kl_pull=0.0,
         batch_kl_limit=1.0,
         entropy_loss_scale=0.005,
         grad_clip_norm=20,
@@ -36,7 +36,7 @@ if __name__ == '__main__':
         model_factory=partial(create_ppo_cnn_actor, cnn_kind='normal'),
     )
     trainer_params = dict(
-        tag='[ac16_bs512_msekl_gcn20_kl0.3_kllim1_clip_vclip_iter3]',
+        tag='[ac16_bs512_msekl_gcn20_kl0_kllim1_clip_vclip_iter3]',
         log_root_path=log_path,
         log_interval=20000,
         rl_alg_factory=partial(alg_class, **alg_params),

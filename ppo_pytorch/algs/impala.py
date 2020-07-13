@@ -80,6 +80,7 @@ class IMPALA(RLBase):
                  reward_reweight_interval=40,
                  num_rewards=1,
                  target_vmpo_temp=0.1,
+                 squash_values=False,
 
                  **kwargs):
         super().__init__(observation_space, action_space, **kwargs)
@@ -114,6 +115,7 @@ class IMPALA(RLBase):
         self.num_rewards = num_rewards
         self.random_crop_obs = random_crop_obs
         self.target_vmpo_temp = target_vmpo_temp
+        self.squash_values = squash_values
 
         self._reward_weight_gen = RewardWeightGenerator(self.num_rewards)
         goal_size = self._reward_weight_gen.num_weights
@@ -457,8 +459,9 @@ class IMPALA(RLBase):
                     pa_mean, pa_std = self._pop_art.statistics
                     data.state_values = data.state_values * pa_std + pa_mean
                     data.state_value_targets = data.state_value_targets * pa_std + pa_mean
-                data.state_values = unsquash(data.state_values)
-                data.state_value_targets = unsquash(data.state_value_targets)
+                if self.squash_values:
+                    data.state_values = unsquash(data.state_values)
+                    data.state_value_targets = unsquash(data.state_value_targets)
                 log_training_data(self._do_log, self.logger, self.frame_train, self._train_model, data)
 
                 ratio = data.logp - data.logp_target
@@ -482,7 +485,9 @@ class IMPALA(RLBase):
             pa_mean, pa_std = self._pop_art.statistics
 
         data.rewards = self.reward_scale * data.rewards
-        state_values = unsquash(data.state_values * pa_std + pa_mean if self.use_pop_art else data.state_values)
+        state_values = data.state_values * pa_std + pa_mean if self.use_pop_art else data.state_values
+        if self.squash_values:
+            state_values = unsquash(state_values)
         probs_ratio = data.probs_ratio.mean(-1)
         kl_replay = data.kl_replay.mean(-1)
 
@@ -510,7 +515,8 @@ class IMPALA(RLBase):
             self.logger.add_scalar('Values/Values Std', state_values.std(), self.frame_train)
             self.logger.add_scalar('Values/Value Targets', state_value_targets.mean(), self.frame_train)
 
-        state_value_targets = squash(state_value_targets)
+        if self.squash_values:
+            state_value_targets = squash(state_value_targets)
         if self.use_pop_art:
             state_value_targets = (state_value_targets - pa_mean) / pa_std
             if do_log:

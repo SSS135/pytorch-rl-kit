@@ -1,6 +1,12 @@
 from ..common.cartpole_continuous import CartPoleContinuousEnv
 
 if __name__ == '__main__':
+    # import os
+    # os.system('/create_huge_pages.sh')
+    #
+    # import ray
+    # ray.init(include_webui=False, object_store_memory=2 * 1024 * 1024 * 1024 - 1, huge_pages=True, plasma_directory="/mnt/hugepages")
+
     from .init_vars import *
     from ..algs.parameters import create_ppo_kwargs
     from ppo_pytorch.actors.fc_actors import create_impala_fc_actor
@@ -17,13 +23,14 @@ if __name__ == '__main__':
     num_envs = 8
     actors_per_env = 1
     horizon = 64
+    burnin = 32
     env_factory = partial(make_async_env, num_envs=num_envs, env_name='CartPole-v1', frame_stack=1, frame_skip=1)
 
     alg_class = IMPALA
     alg_params = create_ppo_kwargs(
-        train_interval_frames=4 * 512,
+        train_interval_frames=4 * 8 * (64 + burnin),
         train_horizon=horizon,
-        batch_size=512,
+        batch_size=8 * (64 + burnin),
         value_loss_scale=1.0,
         pg_loss_scale=1.0,
         cuda_eval=False,
@@ -39,10 +46,10 @@ if __name__ == '__main__':
         eval_model_blend=0.05,
         kl_limit=0.3,
         loss_type='impala',
-        replay_ratio=7,
+        replay_ratio=3,
         upgo_scale=0.0,
         entropy_loss_scale=0.01,
-        memory_burn_in_steps=32,
+        memory_burn_in_steps=burnin,
         activation_norm_scale=0.0,
         reward_reweight_interval=40,
         random_crop_obs=False,

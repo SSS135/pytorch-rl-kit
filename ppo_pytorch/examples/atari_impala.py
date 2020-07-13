@@ -2,6 +2,12 @@ from optfn.gadam import GAdam
 from torch.optim import Adam, AdamW
 
 if __name__ == '__main__':
+    # import os
+    # os.system('/create_huge_pages.sh')
+    #
+    # import ray
+    # ray.init(include_webui=False, object_store_memory=2 * 1024 * 1024 * 1024 - 1, huge_pages=True, plasma_directory="/mnt/hugepages")
+
     from .init_vars import *
     from ..common.rl_alg_test import run_training
     from ..algs.impala import IMPALA
@@ -12,11 +18,11 @@ if __name__ == '__main__':
 
     train_frames = 50e6
     num_envs = 16
-    burnin = 32
+    burnin = 0
     horizon = 64 + burnin
 
-    env_factory = partial(make_atari_async_env, num_envs=num_envs, env_name='BreakoutNoFrameskip-v4',
-                          episode_life=False, clip_rewards=False)
+    env_factory = partial(make_atari_async_env, num_envs=num_envs, env_name='BeamRiderNoFrameskip-v4',
+                          episode_life=True, clip_rewards=True)
 
     alg_class = IMPALA
     alg_params = create_ppo_kwargs(
@@ -35,7 +41,7 @@ if __name__ == '__main__':
         use_pop_art=False,
         reward_scale=1.0,
         kl_pull=1.0,
-        eval_model_blend=0.01,
+        eval_model_blend=0.05,
         kl_limit=0.3,
         loss_type='impala',
         replay_ratio=3,
@@ -47,12 +53,13 @@ if __name__ == '__main__':
         random_crop_obs=False,
         advantage_discount=0.95,
         target_vmpo_temp=0.1,
+        squash_values=False,
 
         # optimizer_factory=partial(GAdam, lr=5e-4, avg_sq_mode='tensor', betas=(0.9, 0.99)),
         optimizer_factory=partial(Adam, lr=3e-4, eps=1e-6),
         # optimizer_factory=partial(GAdam, lr=5e-3, eps=1e-6, betas=(0.9, 0.9), amsgrad_decay=0.001),
-        model_factory=partial(create_impala_cnn_rnn_actor, cnn_kind='normal'),
-        # model_factory=partial(create_impala_cnn_actor, cnn_kind='normal'),
+        # model_factory=partial(create_impala_cnn_rnn_actor, cnn_kind='normal'),
+        model_factory=partial(create_impala_cnn_actor, cnn_kind='normal'),
         # model_factory=partial(create_impala_rnn_actor, hidden_size=256, num_layers=3),
         # model_factory=partial(create_impala_attention_actor, num_units=9, unit_size=7,
         #                       hidden_size=256, activation=SiLU, split_policy_value_network=True),
@@ -60,7 +67,7 @@ if __name__ == '__main__':
         #                       activation=SiLU, use_imagination=False),
     )
     trainer_params = dict(
-        tag='[lstm_h96_blend0.01_pull1_vls1_r3_vtkllim0.3]',
+        tag='[nosquash_h64_blend0.05_pull1_vls1_r3_kllim0.3]',
         log_root_path=log_path,
         log_interval=20000,
         rl_alg_factory=partial(alg_class, **alg_params),
