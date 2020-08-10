@@ -8,7 +8,7 @@ from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 
 from .atari_wrappers import NoopResetEnv, MaxAndSkipEnv, EpisodicLifeEnv, FireResetEnv, ScaledFloatFrame, ClipRewardEnv, \
-    FrameStack, RescaleRewardEnv
+    FrameStack
 from .monitor import Monitor
 from .online_normalizer import OnlineNormalizer
 from .threading_vec_env import ThreadingVecEnv
@@ -17,9 +17,10 @@ from .threading_vec_env import ThreadingVecEnv
 class NamedVecEnv:
     vec_env_types = dict(dummy=DummyVecEnv, thread=ThreadingVecEnv, process=SubprocVecEnv)
 
-    def __init__(self, env_name: str, parallel: str = 'dummy'):
+    def __init__(self, env_name: str, parallel: str = 'dummy', envs_per_process=1):
         self.env_name = env_name
-        self.parallel = parallel
+        self.vec_env_cls = partial(SubprocVecEnv, in_series=envs_per_process) if parallel == 'process' \
+            else self.vec_env_types[parallel]
         self.envs = None
         self.num_actors = None
 
@@ -32,7 +33,7 @@ class NamedVecEnv:
         if self.envs is not None:
             self.envs.close()
         self.num_actors = num_actors
-        self.envs = self.vec_env_types[self.parallel]([self.get_env_factory()] * num_actors)
+        self.envs = self.vec_env_cls([self.get_env_factory()] * num_actors)
 
     def step(self, actions):
         return self.envs.step(actions)
@@ -46,13 +47,13 @@ class NamedVecEnv:
 
 class AtariVecEnv(NamedVecEnv):
     def __init__(self, env_name, episode_life=True, scale_float_obs=False, clip_rewards=False,
-                 frame_stack=True, grayscale=True, parallel='process'):
+                 frame_stack=True, grayscale=True, **kwargs):
         self.scale_float_obs = scale_float_obs
         self.clip_rewards = clip_rewards
         self.episode_life = episode_life
         self.frame_stack = frame_stack
         self.grayscale = grayscale
-        super().__init__(env_name, parallel)
+        super().__init__(env_name, **kwargs)
 
     def get_env_factory(self):
         def make(env_name, episode_life, scale_float_obs, clip_rewards, frame_stack, grayscale):
