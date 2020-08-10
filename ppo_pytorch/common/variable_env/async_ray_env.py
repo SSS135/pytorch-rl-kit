@@ -20,14 +20,20 @@ class RemoteEnv:
         self.env = env_fn()
         self.env.reset()
 
-    def get_stats(self):
-        return self.env.observation_space, self.env.action_space, self.env.env_name
+    def get_spaces(self):
+        return self.env.observation_space, self.env.action_space
+
+    def get_name(self):
+        return self.env.env_name
 
     def reset(self):
         return self.env.reset()
 
-    def step(self, action):
+    def step_id(self, action):
         return self.env.step(action), self.env_id
+
+    def step(self, action):
+        return self.env.step(action)
 
     def render(self):
         return self.env.render()
@@ -44,7 +50,8 @@ class AsyncRayEnv(VariableEnv):
         self._step_objs = []
 
         self._envs = [RemoteEnv.remote(ef, i) for i, ef in enumerate(env_factories)]
-        self.observation_space, self.action_space, self.env_name = ray.get(self._envs[0].get_stats.remote())
+        self.observation_space, self.action_space = ray.get(self._envs[0].get_spaces.remote())
+        self.env_name = ray.get(self._envs[0].get_name.remote())
 
     @property
     def num_envs(self):
@@ -70,7 +77,7 @@ class AsyncRayEnv(VariableEnv):
         actions = self._merger.split_actions(actions)
         assert len(self._awaiting_action_envs) == len(actions), (len(self._awaiting_action_envs), actions)
         for env, ac in zip(self._awaiting_action_envs, actions):
-            self._step_objs.append(env.step.remote(ac))
+            self._step_objs.append(env.step_id.remote(ac))
         self._awaiting_action_envs.clear()
 
     def _get_states(self) -> VariableStepResult:
