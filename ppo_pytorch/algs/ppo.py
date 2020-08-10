@@ -1,5 +1,7 @@
 import math
 import pprint
+from asyncio import Future
+from concurrent.futures.thread import ThreadPoolExecutor
 from copy import deepcopy
 from enum import Enum
 from functools import partial
@@ -17,6 +19,7 @@ from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
 
 from .steps_processor import StepsProcessor
+from .utils import lerp_module_
 from ..actors.fc_actors import create_ppo_fc_actor
 from ..actors.actors import Actor
 from ..actors.utils import model_diff
@@ -115,6 +118,7 @@ class PPO(RLBase):
                  use_pop_art=False,
                  activation_norm_scale=0.0,
                  squash_values=False,
+                 target_model_blend=0.1,
                  **kwargs):
         """
         Single threaded implementation of Proximal Policy Optimization Algorithms
@@ -176,14 +180,18 @@ class PPO(RLBase):
         self.lr_scheduler_factory = lr_scheduler_factory
         self.activation_norm_scale = activation_norm_scale
         self.squash_values = squash_values
+        self.target_model_blend = target_model_blend
 
         self._train_model: Actor = model_factory(observation_space, action_space)
+        self._target_model: Actor = model_factory(observation_space, action_space)
         self._eval_model: Actor = model_factory(observation_space, action_space)
         if self.model_init_path is not None:
             self._train_model.load_state_dict(torch.load(self.model_init_path), True)
             print(f'loaded model {self.model_init_path}')
+        copy_state_dict(self._train_model, self._target_model)
         copy_state_dict(self._train_model, self._eval_model)
         self._train_model = self._train_model.train().to(self.device_train, non_blocking=True)
+        self._target_model = self._target_model.train().to(self.device_train, non_blocking=True)
         self._eval_model = self._eval_model.eval().to(self.device_eval, non_blocking=True)
 
         self._optimizer = optimizer_factory(self._train_model.parameters())
@@ -194,14 +202,8 @@ class PPO(RLBase):
         self._steps_processor = self._create_steps_processor()
         self._target_step = 0
 
-        # self.eval_model_update_interval = 10
-        # self._eval_no_copy_updates = 0
-        # self.eval_model_blend = 1.0
-        # self.eps_nu = 0.1
-        # self.eps_alpha = 0.005
-        # self.nu = torch.scalar_tensor(1.0, requires_grad=True)
-        # self.alpha = torch.scalar_tensor(5.0, requires_grad=True)
-        # self._optimizer.add_param_group(dict(params=[self.nu, self.alpha]))
+        self._train_future: Optional[Future] = None
+        self._train_executor = ThreadPoolExecutor(max_workers=1)
 
     def _step(self, data: RLStepData) -> torch.Tensor:
         with torch.no_grad():
@@ -218,25 +220,19 @@ class PPO(RLBase):
                 if len(self._steps_processor.data.states) > self.horizon:
                     self._train()
 
-            return self.limit_actions(actions)
-
-    def limit_actions(self, actions):
-        if isinstance(self.action_space, gym.spaces.Box):
-            return actions.clamp(-3, 3) / 3
-        else:
-            assert isinstance(self.action_space, gym.spaces.Discrete) or \
-                   isinstance(self.action_space, gym.spaces.MultiDiscrete)
-            return actions
+            return self._eval_model.heads.logits.pd.postprocess_action(actions)
 
     def _train(self):
-        self.frame_train = self.frame_eval
-        self._check_log()
-        data = self._create_data()
-        self._train_async(data)
-        self._scheduler.step(self.frame_train)
-        # if self._train_future is not None:
-        #     self._train_future.result()
-        # self._train_future = self._train_executor.submit(self._train_async, data)
+        with torch.no_grad():
+            if self._train_future is not None:
+                self._train_future.result()
+
+            self.frame_train = self.frame_eval
+            self._check_log()
+
+            old_sp = self._steps_processor
+            self._steps_processor = self._create_steps_processor()
+            self._train_future = self._train_executor.submit(self._train_async, old_sp)
 
     def _create_data(self):
         self._steps_processor.complete()
@@ -244,11 +240,15 @@ class PPO(RLBase):
         self._steps_processor = self._create_steps_processor()
         return data
 
-    def _train_async(self, data):
+    def _train_async(self, steps_processor):
         with torch.no_grad():
+            steps_processor.complete()
+            data = steps_processor.data
+
             log_training_data(self._do_log, self.logger, self.frame_train, self._train_model, data)
             self._ppo_update(data)
             self._model_saver.check_save_model(self._train_model, self.frame_train)
+            self._scheduler.step(self.frame_train)
 
     def _ppo_update(self, data: AttrDict):
         self._apply_pop_art(data)
@@ -267,7 +267,6 @@ class PPO(RLBase):
         with DataLoader(data, rand_idx, self.device_train, 4) as data_loader:
             for ppo_iter in range(self.ppo_iters):
                 for loader_iter in range(batches):
-                    # prepare batch data
                     batch = AttrDict(data_loader.get_next_batch())
                     loss, kl = self._ppo_step(batch, self._do_log and ppo_iter == self.ppo_iters - 1 and loader_iter == 0)
                     kl_list.append(kl)
@@ -286,7 +285,7 @@ class PPO(RLBase):
         # NoisyLinear.randomize_network(self._train_model)
 
         copy_state_dict(self._train_model, self._eval_model)
-        # self._eval_model = deepcopy(self._train_model).to(self.device_eval).eval()
+        lerp_module_(self._target_model, self._train_model, self.target_model_blend)
 
     def _apply_pop_art(self, data):
         if self.use_pop_art:
@@ -314,8 +313,12 @@ class PPO(RLBase):
                 actor_params.cur_step = self.frame_train
 
             actor_out = self._train_model(batch.states, **actor_params)
+            if self.target_model_blend < 1:
+                with torch.no_grad():
+                    actor_out_target = self._target_model(batch.states, evaluate_heads=['logits'], **actor_params)
 
             batch.logits = actor_out.logits
+            batch.logits_target = actor_out_target.logits if self.target_model_blend < 1 else batch.logits_old
             batch.state_values = actor_out.state_values.squeeze(-1)
 
             for k, v in list(batch.items()):
@@ -326,7 +329,7 @@ class PPO(RLBase):
             loss = loss.mean() + self.activation_norm_scale * act_norm_loss
 
         kl = kl.item()
-        if kl < self.batch_kl_limit * self._clip_mult:
+        if self.batch_kl_limit is None or kl < self.batch_kl_limit * self._clip_mult:
             # optimize
             loss.backward()
             if self.grad_clip_norm is not None:
@@ -340,7 +343,7 @@ class PPO(RLBase):
         return loss, kl
 
     def _get_ppo_loss(self, batch, pd=None, do_log=False, tag=''):
-        logits, logits_old = batch.logits, batch.logits_old
+        logits, logits_old, logits_target = batch.logits, batch.logits_old, batch.logits_target
         values, values_old = batch.state_values, batch.state_values_old
         state_value_targets = batch.state_value_targets
         actions = batch.actions
@@ -349,13 +352,11 @@ class PPO(RLBase):
         if pd is None:
             pd = self._train_model.heads.logits.pd
 
-
-        # action probability ratio
-        # log probabilities used for better numerical stability
-        logp_old = pd.logp(actions, logits_old)
+        logp_target = pd.logp(actions, logits_target)
         logp = pd.logp(actions, logits)
-        ratio = (logp - logp_old).mean(-1)
-        kl = pd.kl(logits_old, logits).mean(-1)
+        # ratio = (logp - logp_old).mean(-1)
+        ratio = (logp - logp_target).mean(-1)
+        kl = pd.kl(logits_target, logits).mean(-1)
         entropy = pd.entropy(logits)
 
         assert kl.shape == ratio.shape == logp.shape[:-1], (kl.shape, ratio.shape, logp.shape)
@@ -363,7 +364,7 @@ class PPO(RLBase):
 
         loss_ent = -self.entropy_loss_scale * entropy.mean()
         # loss_kl = self.kl_pull * kl.mean()
-        loss_kl = (logits - logits_old).pow_(2).mean().mul(0.5 * self.kl_pull)
+        loss_kl = (logits - logits_target).pow_(2).mean().mul(0.5 * self.kl_pull)
 
         policy_clip = self.policy_clip * self._clip_mult
         unclipped_policy_loss = ratio * advantages
