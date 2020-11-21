@@ -12,63 +12,54 @@ if __name__ == '__main__':
     num_envs = 32
     horizon = 128
     actors_per_env = 4
-    env_factory = partial(make_gold_env, pvp=True, num_pods=4, num_envs=num_envs, frame_stack=2, render_first_env=True)
+    env_factory = partial(make_gold_env, pvp=True, num_pods=4, num_envs=num_envs, frame_stack=1, render_first_env=True)
 
     alg_class = IMPALA
     alg_params = create_ppo_kwargs(
-        train_frames,
-
-        num_actors=num_envs,
-        train_interval_frames=horizon * num_envs * actors_per_env,
+        train_interval_frames=2 * 1024,
         train_horizon=horizon,
-        batch_size=512,
-        value_loss_scale=2.0,
-        q_loss_scale=2.0,
-        cuda_eval=True,
+        batch_size=256,
+        value_loss_scale=1.0,
+        pg_loss_scale=1.0,
+        cuda_eval=False,
         cuda_train=True,
-
         reward_discount=0.99,
-        # reward_scale=1.0,
 
-        replay_buf_size=512 * 1024,
-        replay_end_sampling_factor=0.05,
-        grad_clip_norm=None,
+        replay_buf_size=256 * 1024,
+        replay_end_sampling_factor=1.0,
+        grad_clip_norm=2,
         use_pop_art=False,
         reward_scale=1.0,
-        kl_pull=0.05,
-        eval_model_blend=0.05,
-        vtrace_max_ratio=1.0,
-        vtrace_kl_limit=1.0,
-        kl_limit=0.2,
-        loss_type='impala',
+        kl_pull=0.3,
+        eval_model_blend=1.0,
+        kl_limit=0.3,
         replay_ratio=3,
-        upgo_scale=0.5,
-        entropy_loss_scale=0.003,
-        barron_alpha_c=(1.5, 1.0),
-        memory_burn_in_steps=32,
-        activation_norm_scale=0.003,
+        upgo_scale=0.0,
+        entropy_loss_scale=0.005,
+        activation_norm_scale=0.0,
         reward_reweight_interval=40,
+        advantage_discount=0.95,
 
-        model_factory=partial(create_ppo_fc_actor, hidden_sizes=(256, 256, 256),
-                              activation=SiLU, split_policy_value_network=False, use_imagination=False),
-        # model_factory=partial(rl.actors.create_ppo_rnn_actor, hidden_size=256, num_layers=3),
+        ppo_iters=4,
+        ppo_policy_clip=0.3,
+        ppo_value_clip=0.3,
+
+        # model_factory=partial(create_impala_fc_actor, hidden_sizes=(128, 128), activation=nn.Tanh),
+        # model_factory=partial(create_impala_rnn_actor, hidden_size=128, num_layers=2),
+        # optimizer_factory=partial(GAdam, lr=5e-4, avg_sq_mode='tensor', betas=(0.9, 0.99)),
         optimizer_factory=partial(optim.Adam, lr=3e-4),
-
-        # model_init_path='tensorboard\IMPALA_CSBPvP_2020-05-15_12-19-42_[ne16_h128_w-randn_mp]_j15vto_z\model_0.pth',
-        # disable_training=True,
     )
     trainer_params = dict(
         rl_alg_factory=partial(alg_class, **alg_params),
         env_factory=env_factory,
         alg_name=alg_class.__name__,
-        tag='[r3_sp1]',
+        tag='[0.5sp_rwin]',
         log_root_path=log_path,
         log_interval=10000,
         num_archive_models=10,
         archive_save_interval=30_000,
         archive_switch_interval=250 * num_envs * actors_per_env,
-        selfplay_prob=1.0,
-        rate_agents=True,
+        selfplay_prob=0.5,
     )
 
     run_training(VariableSelfPlayTrainer, trainer_params, alg_params, train_frames)

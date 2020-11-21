@@ -17,24 +17,26 @@ if __name__ == '__main__':
         value_loss_scale=0.5,
         cuda_eval=False,
         cuda_train=True,
+        batch_kl_limit=None,
 
         use_pop_art=False,
         reward_scale=0.1,
         ppo_iters=6,
-        constraint='clip',
+        # constraint='clip',
         value_clip=0.2,
         policy_clip=0.2,
         entropy_loss_scale=0.005,
-        grad_clip_norm=None,
-        barron_alpha_c=(2.0, 1),
-        advantage_scaled_clip=False,
+        grad_clip_norm=2,
+        target_model_blend=1,
+        # barron_alpha_c=(2.0, 1),
+        # advantage_scaled_clip=False,
 
         optimizer_factory=partial(optim.Adam, lr=3e-4),
     )
     hparams = dict(
     )
     wrap_params = dict(
-        tag='[openai-hp]',
+        tag='[noblend_localadv]',
         log_root_path=log_path,
         log_interval=10000,
     )
