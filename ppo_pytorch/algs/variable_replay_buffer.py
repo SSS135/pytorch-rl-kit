@@ -12,6 +12,7 @@ DONE = 'dones'
 
 class BufferThread:
     def __init__(self, capacity, horizon, num_burn_in_samples, end_sampling_factor):
+        assert capacity >= 2 * horizon
         self.capacity = capacity
         self.horizon = horizon
         self.num_burn_in_samples = num_burn_in_samples
@@ -30,6 +31,7 @@ class BufferThread:
 
     def reduce_capacity(self, new_capacity):
         assert new_capacity <= self.capacity
+        assert new_capacity >= 2 * self.horizon
         if self.capacity == new_capacity:
             return
         cut_end = max(self._index, new_capacity)
@@ -63,7 +65,7 @@ class BufferThread:
         index = self._index - self.num_burn_in_samples
         self._num_new_samples += self.num_burn_in_samples
         num_samples = self._num_new_samples // self.horizon * self.horizon
-        assert 0 < num_samples < self.capacity
+        assert 0 < num_samples < self.capacity, (num_samples, self.capacity, self.horizon, self._num_new_samples, self.num_burn_in_samples)
         self._num_new_samples = max(0, self._num_new_samples - num_samples)
 
         start = index - num_samples - self._num_new_samples
@@ -96,7 +98,7 @@ class BufferThread:
         for name, value in sample:
             self._data[name][self._index] = value
 
-        self._num_new_samples += 1
+        self._num_new_samples = min(self._num_new_samples + 1, self.capacity)
         self._index += 1
         self._check_full_loop()
 
@@ -183,7 +185,7 @@ class VariableReplayBuffer:
 
     def _increase_num_buffers(self, new_num_buf):
         assert new_num_buf >= len(self._buffers)
-        new_cap = self._total_capacity // new_num_buf
+        new_cap = max(2 * self.horizon, self._total_capacity // (new_num_buf * self.horizon) * (self.horizon + 1))
         for buf in self._buffers:
             buf.reduce_capacity(new_cap)
         while len(self._buffers) < new_num_buf:

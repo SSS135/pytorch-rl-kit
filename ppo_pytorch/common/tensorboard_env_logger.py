@@ -130,9 +130,14 @@ class TensorboardEnvLogger:
             self._logger.add_scalar('Reward Window/Mean By Episode', wrmean, self._frame)
             self._logger.add_scalar('Reward Window/Std By Episode', wrstd, self._frame)
             self._logger.add_scalar('Reward Window/Norm Std By Episode', wrstd / max(1e-5, abs(wrmean)), self._frame)
-            self._logger.add_scalar('Episode Lengths/Sample', self._new_rewards[-1].len, self._new_rewards[-1].episode_index)
-            self._logger.add_scalar('Rewards By Episode/Sample', self._new_rewards[-1].true_reward, self._new_rewards[-1].episode_index)
-            self._logger.add_scalar('Rewards By Frame/Sample', self._new_rewards[-1].true_reward, self._new_rewards[-1].step_index)
+            self._logger.add_scalar('Episode Lengths/Sample', self._new_rewards[-1].len,
+                                    self._new_rewards[-1].episode_index)
+            self._logger.add_scalar('Rewards By Episode/Sample', self._new_rewards[-1].true_reward,
+                                    self._new_rewards[-1].episode_index)
+            self._logger.add_scalar('Rewards By Frame/Sample', self._new_rewards[-1].true_reward,
+                                    self._new_rewards[-1].step_index)
+            self._logger.add_histogram('Rewards By Frame/Rewards', np.array([r.true_reward for r in self._new_rewards]),
+                                       self._new_rewards[-1].step_index)
 
             last_ep = self._new_rewards[-1].episode_index
             last_frame = self._new_rewards[-1].step_index

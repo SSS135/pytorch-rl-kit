@@ -18,7 +18,7 @@ from ..tensorboard_env_logger import TensorboardEnvLogger
 @dataclass
 class Team:
     id: int
-    selfplay: List[bool]
+    training: bool
     done: List[bool]
     returns: List[float]
     agents: List[int]
@@ -145,8 +145,8 @@ class VariableSelfPlayTrainer:
         data_sp, data_arch = [], []
         for i, (m_id, t_id, a_id) in enumerate(zip(self._data.match_id.tolist(), self._data.team_id.tolist(), self._data.agent_id.tolist())):
             match, team = self._get_match_and_team(m_id, t_id, a_id, allow_create=True)
-            sample = [x[i] for x in (self._data.obs, self._data.rewards, self._data.done, self._data.true_reward, self._data.agent_id)]
-            (data_sp if team.selfplay[team.agents.index(a_id)] else data_arch).append(sample)
+            sample = [x[i] for x in (self._data.obs, self._data.rewards, self._data.done, self._data.true_reward, self._data.agent_id, self._data.action_mask)]
+            (data_sp if team.training else data_arch).append(sample)
         return [[torch.from_numpy(np.stack(x, 0)) for x in zip(*data)] if len(data) > 0 else None for data in (data_sp, data_arch)]
 
     def _cat_actions(self, actions_sp: Optional[Tensor], actions_arch: Optional[Tensor]) -> Tensor:
@@ -154,7 +154,7 @@ class VariableSelfPlayTrainer:
         actions = []
         for m_id, t_id, a_id in zip(self._data.match_id.tolist(), self._data.team_id.tolist(), self._data.agent_id.tolist()):
             match, team = self._get_match_and_team(m_id, t_id, a_id)
-            actions.append((actions_sp if team.selfplay[team.agents.index(a_id)] else actions_arch).pop(0))
+            actions.append((actions_sp if team.training else actions_arch).pop(0))
         return torch.stack(actions, 0)
 
     def _get_match_and_team(self, m_id: int, t_id: int, a_id: int, allow_create=False) -> Tuple[Match, Team]:
@@ -168,11 +168,12 @@ class VariableSelfPlayTrainer:
         if team is None:
             assert allow_create
             team = match.teams[t_id] = Team(t_id, [], [], [], [])
+            # TODO: correctly ensure some teams are training
+            team.training = len(match.teams) == 1 or random.random() < self.selfplay_prob
             # print('create team', t_id, 'match', m_id)
 
         if a_id not in team.agents:
             team.agents.append(a_id)
-            team.selfplay.append(random.random() < self.selfplay_prob)
             team.done.append(False)
             team.returns.append(0)
             assert all(t == team or a_id not in t.agents for m in self._matches.values() for t in m.teams.values()), \
@@ -189,13 +190,13 @@ class VariableSelfPlayTrainer:
             if not all(done for team in teams for done in team.done):
                 continue
 
-            selfplay_all = all(s for t in teams for s in t.selfplay)
-            archive_all = all(not s for t in teams for s in t.selfplay)
+            selfplay_all = all(t.training for t in teams)
+            archive_all = all(not t.training for t in teams)
             if selfplay_all or archive_all:
                 continue
 
-            r_selfplay = np.mean([r for t in teams for (r, selfplay) in zip(t.returns, t.selfplay) if selfplay])
-            r_archive = np.mean([r for t in teams for (r, selfplay) in zip(t.returns, t.selfplay) if not selfplay])
+            r_selfplay = np.mean([r for t in teams for r in t.returns if t.training])
+            r_archive = np.mean([r for t in teams for r in t.returns if not t.training])
             win = r_selfplay > r_archive
             draw = r_selfplay == r_archive
 

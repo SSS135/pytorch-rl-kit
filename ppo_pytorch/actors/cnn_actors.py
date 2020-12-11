@@ -1,5 +1,6 @@
 import math
 from functools import partial
+from typing import Union, Callable
 
 import torch
 import torch.nn as nn
@@ -13,7 +14,7 @@ from torch import Tensor
 
 from .actors import FeatureExtractorBase, create_ppo_actor, create_impala_actor
 from .norm_factory import NormFactory
-from .utils import make_conv_heatmap, image_to_float
+from .utils import make_conv_heatmap, image_to_float, fixup_init
 from ..common.make_grid import make_grid
 from ppo_pytorch.common.activation_norm import ActivationNorm
 
@@ -38,11 +39,51 @@ class ChannelShuffle(nn.Module):
         return input[:, Variable(self.indices)].contiguous()
 
 
+def log_policy_attention(states, head_out, logger, cur_step):
+    states_grad = autograd.grad(
+        head_out.logits.abs().mean() + head_out.state_values.abs().mean(), states,
+        only_inputs=True, retain_graph=True)[0]
+    with torch.no_grad():
+        img = states_grad[:4]
+        img.abs_()
+        img /= img.view(4, -1).pow(2).mean(1).sqrt_().add_(1e-5).view(4, 1, 1, 1)
+        img = img.view(-1, 1, *img.shape[2:]).abs()
+        img = make_grid(img, 4, normalize=True, fill_value=0.1)
+        logger.add_image('state_attention', img, cur_step)
+
+
+def log_conv_filters(index: int, conv: nn.Conv2d, logger, cur_step):
+    with torch.no_grad():
+        channels = conv.in_channels * conv.out_channels
+        shape = conv.weight.shape
+        kernel_h, kernel_w = shape[2], shape[3]
+        img = conv.weight.view(channels, 1, kernel_h, kernel_w).clone()
+        max_img_size = 100 * 5
+        img_size = channels * math.sqrt(kernel_h * kernel_w)
+        if img_size > max_img_size:
+            channels = channels * (max_img_size / img_size)
+            channels = math.ceil(math.sqrt(channels)) ** 2
+            img = img[:channels]
+        img = make_conv_heatmap(img, scale=2 * img.std())
+        img = make_grid(img, nrow=round(math.sqrt(channels)), normalize=False, fill_value=0.1)
+        logger.add_image('conv_featrues_{}_img'.format(index), img, cur_step)
+        logger.add_histogram('conv_features_{}_hist'.format(index), conv.weight, cur_step)
+
+
+def log_conv_activations(index: int, x: torch.Tensor, logger, cur_step):
+    with torch.no_grad():
+        img = x[0].unsqueeze(1).clone()
+        img = make_conv_heatmap(img)
+        img = make_grid(img, nrow=round(math.sqrt(x.shape[1])), normalize=False, fill_value=0.1)
+        logger.add_image('conv_activations_{}_img'.format(index), img, cur_step)
+        logger.add_histogram('conv_activations_{}_hist'.format(index), x[0], cur_step)
+
+
 class CNNFeatureExtractor(FeatureExtractorBase):
     """
     Convolution network.
     """
-    def __init__(self, input_shape, cnn_kind='normal',
+    def __init__(self, input_shape, cnn_kind: Union[str, Callable] = 'normal',
                  cnn_activation=partial(nn.ReLU, inplace=True),
                  add_positional_features=False, normalize_input=False, activation_norm=True, **kwargs):
         """
@@ -68,7 +109,9 @@ class CNNFeatureExtractor(FeatureExtractorBase):
     def _create_model(self):
         input_channels = self.input_shape[0] + (2 if self.add_positional_features else 0)
         # create convolutional layers
-        if self.cnn_kind == 'normal': # Nature DQN (1,683,456 parameters)
+        if callable(self.cnn_kind):
+            self.convs = self.cnn_kind(input_channels)
+        elif self.cnn_kind == 'normal': # Nature DQN (1,683,456 parameters)
             self.convs = nn.ModuleList([
                 self._make_cnn_layer(input_channels, 32, 8, 4, first_layer=True),
                 self._make_cnn_layer(32, 64, 4, 2),
@@ -141,10 +184,10 @@ class CNNFeatureExtractor(FeatureExtractorBase):
     def output_size(self):
         return self._output_size
 
-    # def reset_weights(self):
-    #     super().reset_weights()
-    #     if self.cnn_kind == 'impala':
-    #         fixup_init(self.convs)
+    def reset_weights(self):
+        super().reset_weights()
+        if self.cnn_kind == 'impala' or callable(self.cnn_kind):
+            fixup_init(self.convs)
 
     def _calc_linear_size(self):
         with torch.no_grad():
@@ -173,7 +216,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
         for i, layer in enumerate(self.convs):
             x = layer(x)
             if logger is not None:
-                self._log_conv_activations(i, x, logger, cur_step)
+                log_conv_activations(i, x, logger, cur_step)
         return x
 
     def _add_position_features(self, x: torch.Tensor):
@@ -202,43 +245,6 @@ class CNNFeatureExtractor(FeatureExtractorBase):
             logger.add_histogram('conv_activations_linear', x, cur_step)
 
         return x.view(*input_shape[:-3], x.shape[-1])
-
-    def _log_conv_activations(self, index: int, x: torch.Tensor, logger, cur_step):
-        with torch.no_grad():
-            img = x[0].unsqueeze(1).clone()
-            img = make_conv_heatmap(img)
-            img = make_grid(img, nrow=round(math.sqrt(x.shape[1])), normalize=False, fill_value=0.1)
-            logger.add_image('conv_activations_{}_img'.format(index), img, cur_step)
-            logger.add_histogram('conv_activations_{}_hist'.format(index), x[0], cur_step)
-
-    def _log_conv_filters(self, index: int, conv: nn.Conv2d, logger, cur_step):
-        with torch.no_grad():
-            channels = conv.in_channels * conv.out_channels
-            shape = conv.weight.shape
-            kernel_h, kernel_w = shape[2], shape[3]
-            img = conv.weight.view(channels, 1, kernel_h, kernel_w).clone()
-            max_img_size = 100 * 5
-            img_size = channels * math.sqrt(kernel_h * kernel_w)
-            if img_size > max_img_size:
-                channels = channels * (max_img_size / img_size)
-                channels = math.ceil(math.sqrt(channels)) ** 2
-                img = img[:channels]
-            img = make_conv_heatmap(img, scale=2 * img.std())
-            img = make_grid(img, nrow=round(math.sqrt(channels)), normalize=False, fill_value=0.1)
-            logger.add_image('conv_featrues_{}_img'.format(index), img, cur_step)
-            logger.add_histogram('conv_features_{}_hist'.format(index), conv.weight, cur_step)
-
-    def _log_policy_attention(self, states, head_out, logger, cur_step):
-        states_grad = autograd.grad(
-            head_out.logits.abs().mean() + head_out.state_values.abs().mean(), states,
-            only_inputs=True, retain_graph=True)[0]
-        with torch.no_grad():
-            img = states_grad[:4]
-            img.abs_()
-            img /= img.view(4, -1).pow(2).mean(1).sqrt_().add_(1e-5).view(4, 1, 1, 1)
-            img = img.view(-1, 1, *img.shape[2:]).abs()
-            img = make_grid(img, 4, normalize=True, fill_value=0.1)
-            logger.add_image('state_attention', img, cur_step)
 
 
 class CNNRNNFeatureExtractor(FeatureExtractorBase):
@@ -293,7 +299,8 @@ def create_ppo_cnn_actor(observation_space, action_space, cnn_kind='normal',
 
 def create_impala_cnn_actor(observation_space, action_space, cnn_kind='normal',
                             activation=nn.ReLU, norm_factory: NormFactory=None, num_values=1,
-                            add_positional_features=False, normalize_input=False, goal_size=0, fc_size=512):
+                            add_positional_features=False, normalize_input=False, goal_size=0, fc_size=256,
+                            split_policy_value_network=False):
     assert len(observation_space.shape) == 3
 
     def fx_factory():
@@ -303,7 +310,7 @@ def create_impala_cnn_actor(observation_space, action_space, cnn_kind='normal',
         fc_fx = FCFeatureExtractor(cnn_fx.output_size, (fc_size,), goal_size=goal_size, activation=activation)
         return CNNFCFeatureExtractor(cnn_fx, fc_fx)
     return create_impala_actor(action_space, fx_factory,
-                               split_policy_value_network=False, num_values=num_values, is_recurrent=False)
+                               split_policy_value_network=split_policy_value_network, num_values=num_values, is_recurrent=False)
 
 
 def create_impala_cnn_rnn_actor(observation_space, action_space, cnn_kind='normal',

@@ -62,7 +62,7 @@ if __name__ == '__main__':
         # optimizer_factory=partial(GAdam, lr=5e-4, avg_sq_mode='tensor', betas=(0.9, 0.99)),
         optimizer_factory=partial(Adam, lr=3e-4),
 
-        # model_init_path='tensorboard\IMPALA_CSBPvP_2020-05-15_12-19-42_[ne16_h128_w-randn_mp]_j15vto_z\model_0.pth',
+        # model_init_path='tensorboard\IMPALA_CSBPvP_2020-11-21_21-40-12_[0.5sp_rwin]_b5i4227q\model_0.pth',
         # disable_training=True,
     )
     trainer_params = dict(

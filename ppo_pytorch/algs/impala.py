@@ -11,16 +11,17 @@ import torch
 import torch.autograd
 import torch.optim as optim
 from optfn.gradient_logger import log_gradients
-from ppo_pytorch.actors.fc_actors import FCFeatureExtractor
-from ppo_pytorch.common.squash import squash, unsquash
-from ppo_pytorch.algs.reward_weight_generator import RewardWeightGenerator
+from ..actors.fc_actors import FCFeatureExtractor
+from ..common.probability_distributions import mask_gradient
+from ..common.squash import squash, unsquash
+from ..algs.reward_weight_generator import RewardWeightGenerator
 from rl_exp.noisy_linear import NoisyLinear
 from torch import Tensor
 from torch.nn.utils import clip_grad_norm_
 
 from .ppo import SchedulerManager, copy_state_dict, log_training_data
 from .utils import impala_loss
-from ppo_pytorch.algs.running_norm import RunningNorm, GradRunningNorm
+from .running_norm import RunningNorm, GradRunningNorm
 from .utils import v_mpo_loss
 from .variable_replay_buffer import VariableReplayBuffer
 from .variable_step_collector import VariableStepCollector
@@ -66,7 +67,7 @@ class IMPALA(RLBase):
                  kl_pull=0.5,
                  kl_limit=0.3,
                  replay_end_sampling_factor=0.1,
-                 eval_model_blend=0.05,
+                 eval_model_blend=1.0,
                  memory_burn_in_steps=16,
                  activation_norm_scale=0.0,
                  reward_reweight_interval=40,
@@ -485,15 +486,10 @@ class IMPALA(RLBase):
         state_values_td = state_values_td[:-1]
 
         if do_log:
-            self.logger.add_scalar('Advantages/Mean', advantages.mean(), self.frame_train)
-            self.logger.add_scalar('Advantages/RMS', advantages.pow(2).mean().sqrt(), self.frame_train)
-            self.logger.add_scalar('Advantages/UPGO Mean', advantages_upgo.mean(), self.frame_train)
-            self.logger.add_scalar('Advantages/UPGO RMS', advantages_upgo.pow(2).mean().sqrt(), self.frame_train)
-            self.logger.add_scalar('Advantages/Std', advantages.std(), self.frame_train)
-            self.logger.add_scalar('Values/Values', state_values.mean(), self.frame_train)
-            self.logger.add_scalar('Values/Values RMS', state_values.pow(2).mean().sqrt(), self.frame_train)
-            self.logger.add_scalar('Values/Values Std', state_values.std(), self.frame_train)
-            self.logger.add_scalar('Values/Value Targets', state_values_td.mean(), self.frame_train)
+            self.logger.add_histogram('Advantages/Advantages', advantages, self.frame_train)
+            self.logger.add_histogram('Advantages/UPGO', advantages_upgo, self.frame_train)
+            self.logger.add_histogram('Values/Values', state_values, self.frame_train)
+            self.logger.add_histogram('Values/Value Targets', state_values_td, self.frame_train)
 
         if self.squash_values:
             state_values_td = squash(state_values_td)

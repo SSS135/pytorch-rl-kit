@@ -20,7 +20,7 @@ if __name__ == '__main__':
     from torch.optim import Adam
 
     train_frames = 2e6
-    num_envs = 8
+    num_envs = 16
     actors_per_env = 1
     horizon = 64
     burnin = 32
@@ -28,9 +28,9 @@ if __name__ == '__main__':
 
     alg_class = IMPALA
     alg_params = create_ppo_kwargs(
-        train_interval_frames=4 * 8 * (64 + burnin),
+        train_interval_frames=4 * 8 * 64,
         train_horizon=horizon,
-        batch_size=8 * (64 + burnin),
+        batch_size=8 * 64,
         value_loss_scale=1.0,
         pg_loss_scale=1.0,
         cuda_eval=False,
@@ -39,11 +39,11 @@ if __name__ == '__main__':
 
         replay_buf_size=256 * 1024,
         replay_end_sampling_factor=0.05,
-        grad_clip_norm=None,
+        grad_clip_norm=4,
         use_pop_art=False,
-        reward_scale=1.0,
-        kl_pull=1.0,
-        eval_model_blend=0.05,
+        reward_scale=0.03,
+        kl_pull=0.0,
+        eval_model_blend=0.01,
         kl_limit=0.3,
         loss_type='impala',
         replay_ratio=3,
@@ -52,8 +52,11 @@ if __name__ == '__main__':
         memory_burn_in_steps=burnin,
         activation_norm_scale=0.0,
         reward_reweight_interval=40,
-        random_crop_obs=False,
-        advantage_discount=1.0,
+        advantage_discount=0.95,
+
+        ppo_iters=3,
+        ppo_policy_clip=0.5,
+        ppo_value_clip=1.0,
 
         # model_factory=partial(create_impala_fc_actor, hidden_sizes=(128, 128), activation=nn.Tanh),
         model_factory=partial(create_impala_rnn_actor, hidden_size=128, num_layers=2),

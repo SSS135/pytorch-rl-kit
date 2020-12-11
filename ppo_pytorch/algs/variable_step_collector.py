@@ -157,6 +157,7 @@ class VariableStepCollector:
             step_data = self._step_datas[aid]
             step_data.obs = data_obs[i]
             step_data.logits = logits[i]
+            step_data.action_mask = data_action_mask[i]
             step_data.actions = actions[i]
             step_data.reward_weights = reward_weights[i]
             step_data.rewards = None

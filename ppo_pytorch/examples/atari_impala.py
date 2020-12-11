@@ -18,17 +18,17 @@ if __name__ == '__main__':
 
     train_frames = 50e6
     num_envs = 16
-    burnin = 0
-    horizon = 64 + burnin
+    burnin = 32
+    horizon = 64
 
     env_factory = partial(make_atari_async_env, num_envs=num_envs, env_name='BeamRiderNoFrameskip-v4',
                           episode_life=True, clip_rewards=True)
 
     alg_class = IMPALA
     alg_params = create_ppo_kwargs(
-        train_interval_frames=4 * 8 * (64 + burnin),
+        train_interval_frames=4 * 8 * 64,
         train_horizon=horizon,
-        batch_size=8 * (64 + burnin),
+        batch_size=8 * 64,
         value_loss_scale=1.0,
         pg_loss_scale=1.0,
         cuda_eval=True,
@@ -40,8 +40,8 @@ if __name__ == '__main__':
         grad_clip_norm=None,
         use_pop_art=False,
         reward_scale=1.0,
-        kl_pull=1.0,
-        eval_model_blend=0.05,
+        kl_pull=0.0,
+        eval_model_blend=0.01,
         kl_limit=0.3,
         loss_type='impala',
         replay_ratio=3,
@@ -50,10 +50,13 @@ if __name__ == '__main__':
         memory_burn_in_steps=burnin,
         activation_norm_scale=0.0,
         reward_reweight_interval=40,
-        random_crop_obs=False,
         advantage_discount=0.95,
         target_vmpo_temp=0.1,
         squash_values=False,
+
+        ppo_iters=3,
+        ppo_policy_clip=0.5,
+        ppo_value_clip=1.0,
 
         # optimizer_factory=partial(GAdam, lr=5e-4, avg_sq_mode='tensor', betas=(0.9, 0.99)),
         optimizer_factory=partial(Adam, lr=3e-4, eps=1e-6),
