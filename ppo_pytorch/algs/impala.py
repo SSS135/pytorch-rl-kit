@@ -150,6 +150,8 @@ class IMPALA(RLBase):
         self._data_future: Optional[Future] = None
         self._executor = ThreadPoolExecutor(max_workers=1, initializer=lambda: torch.set_num_threads(4))
 
+        # self._dataset = []
+
     @property
     def _learning_rate(self):
         return self._optimizer.param_groups[0]['lr']
@@ -159,6 +161,12 @@ class IMPALA(RLBase):
         return True
 
     def _step(self, data: RLStepData) -> torch.Tensor:
+        # assert data.obs.ndim == 2, data.obs.shape
+        # self._dataset.extend(data.obs)
+        # if len(self._dataset) > 512 * 1024:
+        #     torch.save(torch.stack(self._dataset), 'obs.pt')
+        #     raise
+
         actions = self._step_collector.step(data)
 
         if not self.disable_training:
@@ -221,9 +229,12 @@ class IMPALA(RLBase):
         num_rollouts = data.states.shape[1]
         assert num_samples > 0
 
+        action_mask = data.action_mask if 'action_mask' in data else None
         data = AttrDict(states=data.states, logits_replay=data.logits,
                         actions=data.actions, rewards=data.rewards, dones=data.dones,
                         **(dict(memory=data.memory) if self._train_model.is_recurrent else dict()))
+        if action_mask is not None:
+            data['action_mask'] = action_mask
 
         self._add_reward_weights(data)
 
@@ -382,6 +393,8 @@ class IMPALA(RLBase):
         data.update({k: v[:-1] for k, v in data.items() if k != 'state_values'})
 
         pd = self._train_model.heads.logits.pd
+        if pd.multi_cnn:
+            data.logits = mask_gradient(data.logits, data.action_mask)
         data.logp_replay = pd.logp(data.actions, data.logits_replay)
         data.logp_target = pd.logp(data.actions, data.logits_target)
         data.logp = pd.logp(data.actions, data.logits)
@@ -390,6 +403,10 @@ class IMPALA(RLBase):
         data.probs_ratio = (data.logp_target.detach() - data.logp_replay).mean(-1, keepdim=True).exp()
         data.kl_replay = pd.kl(data.logits_replay, data.logits_target)
         data.kl_target = pd.kl(data.logits_target, data.logits_target)
+
+        if pd.multi_cnn:
+            mask_sum = data.action_mask.sum(-1).float().clamp_min(1e-6)
+            data.ppo_ratio = (data.ppo_ratio * data.action_mask).sum(-1) / mask_sum
 
         with torch.no_grad():
             self._process_rewards(data, do_log)
@@ -472,6 +489,10 @@ class IMPALA(RLBase):
         probs_ratio = data.probs_ratio.mean(-1)
         kl_replay = data.kl_replay.mean(-1)
 
+        pd = self._train_model.heads.logits.pd
+        if pd.multi_cnn:
+            mask_sum = data.action_mask.sum(-1).float().clamp_min(1e-6)
+            kl_replay, probs_ratio = [(x * data.action_mask).sum(-1) / mask_sum for x in (kl_replay, probs_ratio)]
         _, advantages, data.vtrace_p = calc_vtrace(
             data.rewards, state_values, data.dones, probs_ratio, kl_replay,
             self.reward_discount, self.kl_limit, lam=self.advantage_discount)

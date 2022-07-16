@@ -12,7 +12,7 @@ if __name__ == '__main__':
     from raic2020.local_state_cnn import make_layers, make_layers_impala
     from ..actors.norm_factory import BatchNormFactory
 
-    train_frames = 100e6
+    train_frames = 1000e6
     num_envs = 4
     horizon = 64
     actors_per_env = 50
@@ -27,19 +27,19 @@ if __name__ == '__main__':
         pg_loss_scale=1.0,
         cuda_eval=True,
         cuda_train=True,
-        reward_discount=0.99,
+        reward_discount=1.0,
 
-        replay_buf_size=512 * 1024,
+        replay_buf_size=1024 * 1024,
         replay_end_sampling_factor=0.1,
         grad_clip_norm=None,
         use_pop_art=False,
-        reward_scale=0.2,
-        kl_pull=0.5,
+        reward_scale=1.0,
+        kl_pull=1.0,
         eval_model_blend=1.0,
-        kl_limit=0.3,
+        kl_limit=0.2,
         replay_ratio=3,
         upgo_scale=0.0,
-        entropy_loss_scale=0.001,
+        entropy_loss_scale=0.0,
         activation_norm_scale=0.0,
         reward_reweight_interval=40,
         advantage_discount=0.95,
@@ -52,7 +52,7 @@ if __name__ == '__main__':
         optimizer_factory=partial(optim.Adam, lr=2e-4),
 
         # disable_training=True,
-        model_init_path='tensorboard\IMPALA_CodeCraft_2020-12-11_08-24-36_[]_st_7e9u8\model_0.pth',
+        model_init_path='tensorboard\IMPALA_CodeCraft_2020-12-17_18-48-35_[]_kbg27vym\model_0.pth',
     )
     # trainer_params = dict(
     #     rl_alg_factory=partial(alg_class, **alg_params),

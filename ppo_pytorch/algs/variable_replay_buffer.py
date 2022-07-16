@@ -34,10 +34,11 @@ class BufferThread:
         assert new_capacity >= 2 * self.horizon
         if self.capacity == new_capacity:
             return
-        cut_end = max(self._index, new_capacity)
-        cut_start = cut_end - new_capacity
-        slc = slice(cut_start, cut_end)
-        self._data = {k: v[slc].contiguous() for k, v in self._data.items()}
+        if self._data is not None:
+            cut_end = max(self._index, new_capacity)
+            cut_start = cut_end - new_capacity
+            slc = slice(cut_start, cut_end)
+            self._data = {k: v[slc].clone() for k, v in self._data.items()}
         self.capacity = new_capacity
         self._check_full_loop()
 
@@ -135,6 +136,7 @@ class VariableReplayBuffer:
             sample_aid_set = set(sample_aids)
             desired_buf_count = len(buf_aid_set | sample_aid_set)
             if desired_buf_count > len(self._buffers):
+                desired_buf_count = max(desired_buf_count, round(len(self._buffers) * 1.5))
                 self._increase_num_buffers(desired_buf_count)
 
             # fill new actor ids to buffer

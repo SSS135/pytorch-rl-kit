@@ -32,7 +32,7 @@ class RewardWeightGenerator:
 
         randn = torch.zeros((num_actors, self.num_rewards), device=device)
         randn[:, 0] = 1
-        # randn[:, 2] = 1
+        # randn[:, 2] = 0.1
         # randn[:, 3] = 0
         return randn#.softmax(dim=1)
 

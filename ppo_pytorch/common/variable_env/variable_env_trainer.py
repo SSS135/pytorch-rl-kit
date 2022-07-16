@@ -46,10 +46,11 @@ class VariableEnvTrainer:
     def step(self, always_log=False):
         """Do single step of RL alg"""
 
-        tensors = self._data.obs, self._data.rewards, self._data.done, self._data.true_reward, self._data.agent_id
-        obs, rewards, done, true_reward, agent_id = [torch.as_tensor(x) for x in tensors]
+        tensors = (self._data.obs, self._data.rewards, self._data.done,
+                   self._data.true_reward, self._data.agent_id, self._data.action_mask)
+        obs, rewards, done, true_reward, agent_id, action_mask = [torch.as_tensor(x) for x in tensors]
 
-        action = self._rl_alg.step(obs, rewards, done, true_reward, agent_id)
+        action = self._rl_alg.step(obs, rewards, done, true_reward, agent_id, action_mask)
         self._data = self._env.step(action.numpy())
 
         self._frame += len(self._data.obs)

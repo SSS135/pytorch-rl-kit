@@ -10,6 +10,7 @@ import torch
 import torch.distributions
 import torch.jit
 import torch.nn.functional as F
+from .multi_cnn_space import MultiCNNSpace
 from torch.distributions import Beta, kl_divergence, Normal, Gumbel
 
 
@@ -33,11 +34,17 @@ def make_pd(space: gym.Space):
         return MultiCategoricalPd(space.nvec)
     elif isinstance(space, gym.spaces.Dict):
         return MultiPd([make_pd(s) for s in space.spaces.values()])
+    elif isinstance(space, MultiCNNSpace):
+        pd = make_pd(space.space)
+        pd.multi_cnn = True
+        return pd
     else:
         raise TypeError(space)
 
 
 class ProbabilityDistribution:
+    multi_cnn = False
+
     def __init__(self, init_args: Dict[str, Any]):
         del init_args['self']
         del init_args['__class__']
@@ -593,6 +600,14 @@ def make_logits_ordnial(logits):
     next_sum = (upper_tri * logits_neg).sum(-1)
     prev_cur_sum = ((1 - upper_tri) * logits_pos).sum(-1)
     return prev_cur_sum + next_sum
+
+
+def mask_gradient(logits: torch.Tensor, mask: torch.Tensor):
+    assert mask.dim() <= logits.dim()
+    while mask.dim() != logits.dim():
+        mask = mask.unsqueeze(-1)
+    mask = mask.float()
+    return logits * mask + logits.detach() * (1 - mask)
 
 
 def test_probtypes():

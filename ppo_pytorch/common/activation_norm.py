@@ -14,10 +14,10 @@ class ActivationNorm(nn.Module):
         self._input = []
 
     def forward(self, input: torch.Tensor, always_run=False):
-        if not always_run and not input.requires_grad:
-            return input
-        self._input.append(input.clone())
-        assert len(self._input) < 1000, 'maybe forgot to call get_loss?'
+        # if not always_run and not input.requires_grad:
+        #     return input
+        # self._input.append(input.clone())
+        # assert len(self._input) < 1000, 'maybe forgot to call get_loss?'
         return input
 
     def get_loss(self, clear=True) -> Optional[torch.Tensor]:
