@@ -15,7 +15,6 @@ class VariableStepResult:
     true_reward: np.ndarray
     team_id: np.ndarray
     match_id: np.ndarray
-    action_mask: Optional[np.ndarray]
 
     def copy(self, shallow=False):
         return VariableStepResult(**{k: (v if shallow else np.copy(v)) for k, v in dataclasses.asdict(self).items()})
@@ -31,5 +30,4 @@ class VariableStepResult:
             true_reward=np.concatenate([r.true_reward for r in res], 0),
             team_id=np.concatenate([r.team_id for r in res], 0),
             match_id=np.concatenate([r.match_id for r in res], 0),
-            action_mask=np.concatenate([r.action_mask for r in res], 0),
         )

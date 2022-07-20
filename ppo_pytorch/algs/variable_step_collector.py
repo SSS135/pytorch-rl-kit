@@ -27,7 +27,6 @@ class StepData:
     rewards: Tensor = None
     done: Tensor = None
     reward_weights: Tensor = None
-    action_mask: Tensor = None
 
 
 class VariableStepCollector:
@@ -113,11 +112,9 @@ class VariableStepCollector:
         return (ac_out.logits, reward_weights, *mem_tuple)
 
     def _push_to_buffer(self, data: RLStepData, logits, actions, reward_weights, memory_in, memory_out):
-        (data_actor_id, data_done, data_rewards, data_obs, data_action_mask,
-         logits, actions, reward_weights, memory_in, memory_out) = \
+        data_actor_id, data_done, data_rewards, data_obs, logits, actions, reward_weights, memory_in, memory_out = \
             [x.cpu() if x is not None else None for x in
-             (data.actor_id, data.done, data.rewards, data.obs, data.action_mask,
-              logits, actions, reward_weights, memory_in, memory_out)]
+             (data.actor_id, data.done, data.rewards, data.obs, logits, actions, reward_weights, memory_in, memory_out)]
 
         # write rewards and done to step data, extract complete steps
         full_step_datas = {}
@@ -143,7 +140,6 @@ class VariableStepCollector:
                 actor_ids=torch.tensor(full_actor_ids, dtype=torch.long),
                 states=full_step_datas.obs,
                 logits=full_step_datas.logits,
-                action_mask=full_step_datas.action_mask,
                 actions=full_step_datas.actions,
                 **(dict(memory=full_step_datas.input_memory) if self.actor.is_recurrent else {}),
                 rewards=full_step_datas.rewards,
@@ -161,7 +157,6 @@ class VariableStepCollector:
             step_data = self._step_datas[aid]
             step_data.obs = data_obs[i]
             step_data.logits = logits[i]
-            step_data.action_mask = data_action_mask[i]
             step_data.actions = actions[i]
             step_data.reward_weights = reward_weights[i]
             step_data.rewards = None

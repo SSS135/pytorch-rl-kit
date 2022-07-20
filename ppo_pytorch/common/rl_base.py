@@ -13,7 +13,6 @@ class RLStepData(NamedTuple):
     done: torch.Tensor
     obs: torch.Tensor
     actor_id: torch.Tensor
-    action_mask: torch.Tensor
 
 
 class RLBase:
@@ -78,9 +77,9 @@ class RLBase:
         raise NotImplementedError
 
     def step(self, obs: torch.Tensor, rewards: torch.Tensor, done: torch.Tensor,
-             true_reward: torch.Tensor, actor_id: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
+             true_reward: torch.Tensor, actor_id: torch.Tensor) -> torch.Tensor:
         data = self._preprocess_data(obs=obs, rewards=rewards, true_reward=true_reward,
-                                     done=done, actor_id=actor_id, action_mask=action_mask)
+                                     done=done, actor_id=actor_id)
         actions = self._step(data)
         self.frame_eval += data.obs.shape[0]
         if isinstance(self.action_space, Discrete):
@@ -89,7 +88,7 @@ class RLBase:
             return actions.reshape(actions.shape[0], -1)
 
     def _preprocess_data(self, obs: torch.Tensor, rewards: torch.Tensor, done: torch.Tensor,
-                         true_reward: torch.Tensor, actor_id: torch.Tensor, action_mask: torch.Tensor) -> RLStepData:
+                         true_reward: torch.Tensor, actor_id: torch.Tensor) -> RLStepData:
         num_actors = obs.shape[0]
 
         if rewards.ndim == 1:
@@ -102,8 +101,6 @@ class RLBase:
             assert torch.allclose(actor_id, torch.arange(self.num_actors, dtype=torch.long))
         if obs.dtype == torch.float64:
             obs = obs.float()
-        if action_mask is None:
-            action_mask = torch.zeros_like(rewards, dtype=torch.bool)
 
         assert obs.shape == (num_actors, *self.observation_space.shape), f'{obs.shape} {self.observation_space.shape}'
         assert obs.dtype in (torch.float32, torch.uint8), obs.dtype
@@ -119,10 +116,8 @@ class RLBase:
         true_reward = true_reward.float()
         done = done.float()
         actor_id = actor_id.long()
-        action_mask = action_mask.bool()
 
-        return RLStepData(obs=obs, rewards=rewards, true_reward=true_reward, done=done,
-                          actor_id=actor_id, action_mask=action_mask)
+        return RLStepData(obs=obs, rewards=rewards, true_reward=true_reward, done=done, actor_id=actor_id)
 
     def drop_collected_steps(self):
         pass

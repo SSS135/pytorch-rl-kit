@@ -8,7 +8,6 @@ from .actors import FeatureExtractorBase, create_ppo_actor, create_impala_actor
 import torch
 from torch import nn
 from ..common.qrnn import DenseQRNN, QRNN
-import sru
 from torch import Tensor
 
 
@@ -95,7 +94,7 @@ class RNNFeatureExtractor(FeatureExtractorBase):
             memory = torch.cat(memory, -1)
         memory = memory.transpose(0, 1)
 
-        self.act_norm_x(TanhTransform.atanh(x))
+        self.act_norm_x(torch.atanh(x))
         # memory = self.act_norm_memory(memory)
 
         if logger is not None:
