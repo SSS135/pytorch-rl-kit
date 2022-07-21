@@ -4,6 +4,8 @@ import torch
 import torch.jit
 import torch.nn as nn
 from optfn.skip_connections import ResidualBlock
+from rl_exp.noisy_linear import NoisyLinear
+
 from ppo_pytorch.common.squash import unsquash
 from ppo_pytorch.actors.transformer import TrPriorFirstLayer, SimpleTrLayer
 from ppo_pytorch.common.silu import SiLU, silu
@@ -17,7 +19,7 @@ from ..common.probability_distributions import ProbabilityDistribution, make_pd
 from ..config import Linear
 
 
-def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm: NormFactory = None, activation_norm=True):
+def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm: NormFactory = None, noisy_net=False):
     """
     Create fully connected network
     Args:
@@ -35,9 +37,8 @@ def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm:
     for i in range(len(hidden_sizes)):
         n_in = in_size if i == 0 else hidden_sizes[i - 1]
         n_out = hidden_sizes[i]
-        layer = [Linear(n_in, n_out, bias=norm is None or not norm.disable_bias)]
-        if activation_norm:
-            layer.append(ActivationNorm(1))
+        cls = NoisyLinear if noisy_net else Linear
+        layer = [cls(n_in, n_out, bias=norm is None or not norm.disable_bias)]
         if norm is not None and norm.allow_fc and (norm.allow_after_first_layer or i != 0):
             layer.append(norm.create_fc_norm(n_out, i == 0))
         layer.append(activation())
@@ -72,13 +73,13 @@ def create_residual_fc(input_size, hidden_size, use_norm=False):
 
 
 class FCFeatureExtractor(FeatureExtractorBase):
-    def __init__(self, input_size: int, hidden_sizes=(128, 128), activation=nn.Tanh, goal_size=0, **kwargs):
+    def __init__(self, input_size: int, hidden_sizes=(128, 128), activation=nn.Tanh, goal_size=0, noisy_net=False, **kwargs):
         super().__init__(**kwargs)
         self.input_size = input_size
         self.hidden_sizes = hidden_sizes
         self.activation = activation
         self.goal_size = goal_size
-        self.model = create_fc(input_size, hidden_sizes, activation, self.norm_factory)
+        self.model = create_fc(input_size, hidden_sizes, activation, self.norm_factory, noisy_net)
         self.out_embedding = Linear(goal_size, hidden_sizes[-1]) if goal_size != 0 else None
 
         # self.model = create_residual_fc(input_size, hidden_sizes[0])
@@ -347,11 +348,11 @@ def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128)
 
 def create_impala_fc_actor(observation_space, action_space, hidden_sizes=(128, 128), activation=nn.Tanh,
                            norm_factory: NormFactory=None, num_values=1, goal_size=None, use_imagination=False,
-                           split_policy_value_network=True):
+                           split_policy_value_network=True, noisy_net=False):
     assert len(observation_space.shape) == 1
 
     fx_kwargs = dict(input_size=observation_space.shape[0], hidden_sizes=hidden_sizes, activation=activation,
-                     norm_factory=norm_factory, goal_size=goal_size)
+                     norm_factory=norm_factory, goal_size=goal_size, noisy_net=noisy_net)
 
     if use_imagination:
         pd = make_pd(action_space)

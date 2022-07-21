@@ -72,7 +72,7 @@ class IMPALA(RLBase):
                  reward_reweight_interval=40,
                  num_rewards=1,
                  squash_values=False,
-                 
+
                  ppo_iters=1,
                  ppo_policy_clip=None,
                  ppo_value_clip=None,
@@ -265,6 +265,8 @@ class IMPALA(RLBase):
         if self._eval_model.training:
             self._eval_model = self._eval_model.eval()
         NoisyLinear.randomize_network(self._eval_model)
+        NoisyLinear.copy_noise(self._eval_model, self._train_model)
+        NoisyLinear.copy_noise(self._eval_model, self._target_model)
 
     def _apply_pop_art(self):
         if self.use_pop_art:
@@ -384,11 +386,11 @@ class IMPALA(RLBase):
         data.logp_replay = pd.logp(data.actions, data.logits_replay)
         data.logp_target = pd.logp(data.actions, data.logits_target)
         data.logp = pd.logp(data.actions, data.logits)
-        data.ppo_ratio = (data.logp - data.logp_target).mean(-1)
+        data.logp_ratio_target = (data.logp - data.logp_target).sum(-1)
+        data.prob_ratio_replay = (data.logp - data.logp_replay).sum(-1).exp()
         data.entropy = pd.entropy(data.logits)
-        data.probs_ratio = (data.logp_target.detach() - data.logp_replay).mean(-1, keepdim=True).exp()
-        data.kl_replay = pd.kl(data.logits_replay, data.logits_target)
-        data.kl_target = pd.kl(data.logits_target, data.logits_target)
+        data.kl_replay = pd.kl(data.logits_replay, data.logits)
+        data.kl_target = pd.kl(data.logits_target, data.logits)
 
         with torch.no_grad():
             self._process_rewards(data, do_log)
@@ -397,10 +399,14 @@ class IMPALA(RLBase):
         for k, v in data.items():
             data[k] = v.flatten(end_dim=1)
 
-        unclipped_policy_loss = data.ppo_ratio * data.advantages
+        assert data.logp.shape[:-1] == data.prob_ratio_replay.shape
+        assert data.kl_replay.shape[:-1] == data.prob_ratio_replay.shape
+        assert data.advantages.shape == data.prob_ratio_replay.shape
+
+        unclipped_policy_loss = data.logp_ratio_target * -data.advantages
         if self.ppo_policy_clip is not None:
-            clipped_policy_loss = data.ppo_ratio.clamp(-self.ppo_policy_clip, self.ppo_policy_clip) * data.advantages
-            loss_pg = -torch.min(unclipped_policy_loss, clipped_policy_loss)
+            clipped_policy_loss = data.logp_ratio_target.clamp(-self.ppo_policy_clip, self.ppo_policy_clip) * -data.advantages
+            loss_pg = torch.max(unclipped_policy_loss, clipped_policy_loss)
         else:
             loss_pg = unclipped_policy_loss
         assert loss_pg.shape == data.advantages.shape, (loss_pg.shape, data.advantages.shape)
@@ -451,7 +457,7 @@ class IMPALA(RLBase):
                 self.logger.add_scalar('Prob Ratio/Abs Mean' + tag, ratio.abs().mean(), self.frame_train)
                 self.logger.add_scalar('Prob Ratio/Abs Max' + tag, ratio.abs().max(), self.frame_train)
                 self.logger.add_scalar('VTrace P/Mean', data.vtrace_p.mean(), self.frame_train)
-                self.logger.add_scalar('VTrace P/Above 0.25 Fraction', (data.vtrace_p > 0.25).float().mean(), self.frame_train)
+                self.logger.add_scalar('VTrace P/Above 0.75 Fraction', (data.vtrace_p > 0.75).float().mean(), self.frame_train)
                 self.logger.add_scalar('Stability/Entropy' + tag, data.entropy.mean(), self.frame_train)
                 self.logger.add_scalar('Losses/State Value' + tag, loss_state_value.mean(), self.frame_train)
                 self.logger.add_histogram('Losses/Value Hist' + tag, loss_state_value, self.frame_train)
@@ -468,14 +474,14 @@ class IMPALA(RLBase):
         state_values = data.state_values * pa_std + pa_mean if self.use_pop_art else data.state_values
         if self.squash_values:
             state_values = unsquash(state_values)
-        probs_ratio = data.probs_ratio.mean(-1)
+        probs_ratio = data.prob_ratio_replay
         kl_replay = data.kl_replay.mean(-1)
 
-        _, advantages, data.vtrace_p = calc_vtrace(
-            data.rewards, state_values, data.dones, probs_ratio, kl_replay,
-            self.reward_discount, self.kl_limit, lam=self.advantage_discount)
+        # _, advantages, data.vtrace_p = calc_vtrace(
+        #     data.rewards, state_values, data.dones, probs_ratio, kl_replay,
+        #     self.reward_discount, self.kl_limit, lam=self.advantage_discount)
 
-        state_values_td, _, _ = calc_vtrace(
+        state_values_td, advantages, data.vtrace_p = calc_vtrace(
             data.rewards, state_values, data.dones, probs_ratio, kl_replay,
             self.reward_discount, self.kl_limit, lam=1.0)
 

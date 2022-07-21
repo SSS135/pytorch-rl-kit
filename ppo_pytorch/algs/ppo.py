@@ -60,37 +60,39 @@ def copy_state_dict(src, dst):
 
 
 def log_training_data(do_log, logger, frame_train, train_model, data: AttrDict):
-    if do_log:
-        if data.states.dim() == 4:
-            if data.states.shape[1] in (1, 3):
-                img = data.states[:4]
-                nrow = 2
-            else:
-                img = data.states[:4]
-                img = img.view(-1, *img.shape[2:]).unsqueeze(1)
-                nrow = data.states.shape[1]
-            if data.states.dtype == torch.uint8:
-                img = img.float() / 255
-            img = make_grid(img, nrow=nrow, normalize=False)
-            logger.add_image('state', img, frame_train)
-        targets = data.state_value_targets
-        values = data.state_values
-        logger.add_histogram('Rewards', data.rewards, frame_train)
-        logger.add_histogram('Value Targets', targets, frame_train)
-        logger.add_histogram('Advantages', data.advantages, frame_train)
-        logger.add_histogram('Values', values, frame_train)
-        logger.add_scalar('Value Errors/RMSE', (values - targets).pow(2).mean().sqrt(), frame_train)
-        logger.add_scalar('Value Errors/Abs', (values - targets).abs().mean(), frame_train)
-        logger.add_scalar('Value Errors/Max', (values - targets).abs().max(), frame_train)
-        if isinstance(train_model.heads.logits.pd, DiagGaussianPd):
-            mean, std = data.logits.chunk(2, dim=1)
-            logger.add_histogram('Logits Mean', mean, frame_train)
-            logger.add_histogram('Logits Std', std, frame_train)
-        elif isinstance(train_model.heads.logits.pd, CategoricalPd):
-            logger.add_histogram('Logits Log Softmax', F.log_softmax(data.logits, dim=-1), frame_train)
-        logger.add_histogram('Logits Logits', data.logits, frame_train)
-        for name, param in train_model.named_parameters():
-            logger.add_histogram(name, param, frame_train)
+    if not do_log:
+        return
+
+    if data.states.dim() == 4:
+        if data.states.shape[1] in (1, 3):
+            img = data.states[:4]
+            nrow = 2
+        else:
+            img = data.states[:4]
+            img = img.view(-1, *img.shape[2:]).unsqueeze(1)
+            nrow = data.states.shape[1]
+        if data.states.dtype == torch.uint8:
+            img = img.float() / 255
+        img = make_grid(img, nrow=nrow, normalize=False)
+        logger.add_image('state', img, frame_train)
+    targets = data.state_value_targets
+    values = data.state_values
+    logger.add_histogram('Rewards', data.rewards, frame_train)
+    logger.add_histogram('Value Targets', targets, frame_train)
+    logger.add_histogram('Advantages', data.advantages, frame_train)
+    logger.add_histogram('Values', values, frame_train)
+    logger.add_scalar('Value Errors/RMSE', (values - targets).pow(2).mean().sqrt(), frame_train)
+    logger.add_scalar('Value Errors/Abs', (values - targets).abs().mean(), frame_train)
+    logger.add_scalar('Value Errors/Max', (values - targets).abs().max(), frame_train)
+    if isinstance(train_model.heads.logits.pd, DiagGaussianPd):
+        mean, std = data.logits.chunk(2, dim=1)
+        logger.add_histogram('Logits Mean', mean, frame_train)
+        logger.add_histogram('Logits Std', std, frame_train)
+    elif isinstance(train_model.heads.logits.pd, CategoricalPd):
+        logger.add_histogram('Logits Log Softmax', F.log_softmax(data.logits, dim=-1), frame_train)
+    logger.add_histogram('Logits Logits', data.logits, frame_train)
+    for name, param in train_model.named_parameters():
+        logger.add_histogram(name, param, frame_train)
 
 
 class PPO(RLBase):

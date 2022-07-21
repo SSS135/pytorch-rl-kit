@@ -46,9 +46,9 @@ class RNNFeatureExtractor(FeatureExtractorBase):
         # self.model = QRNN(emb_size, hidden_size, num_layers)
         # self.model = DenseQRNN(emb_size, hidden_size, num_layers, output_gate=False)
         self.info_embedding = nn.Sequential(
-            nn.Linear(goal_size + pd.input_vector_len + 1, 128),
+            nn.Linear(goal_size + pd.input_vector_len + 1, hidden_size),
             nn.Tanh(),
-            nn.Linear(128, emb_size))
+            nn.Linear(hidden_size, emb_size))
         self.input_embedding = nn.Sequential(
             nn.Linear(self.input_size, hidden_size),
             nn.Tanh())

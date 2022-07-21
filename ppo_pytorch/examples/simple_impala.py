@@ -18,27 +18,27 @@ if __name__ == '__main__':
     num_envs = 16
     actors_per_env = 1
     horizon = 64
-    burnin = 0
+    burnin = 16
     env_factory = partial(make_async_env, num_envs=num_envs, env_name='CartPole-v1', frame_stack=1, frame_skip=1)
 
     alg_class = IMPALA
     alg_params = create_ppo_kwargs(
-        train_interval_frames=16 * 1024,
+        train_interval_frames=8 * 1024,
         train_horizon=horizon,
-        batch_size=16 * 1024,
+        batch_size=8 * 1024,
         value_loss_scale=1.0,
         pg_loss_scale=1.0,
         cuda_eval=False,
         cuda_train=True,
         reward_discount=0.99,
 
-        replay_buf_size=512 * 1024,
-        replay_end_sampling_factor=0.2,
+        replay_buf_size=256 * 1024,
+        replay_end_sampling_factor=0.05,
         grad_clip_norm=None,
         use_pop_art=False,
         reward_scale=0.03,
-        kl_pull=0.3,
-        eval_model_blend=0.1,
+        kl_pull=0.0,
+        eval_model_blend=1.0,
         kl_limit=0.3,
         replay_ratio=5,
         upgo_scale=0.0,
@@ -48,16 +48,16 @@ if __name__ == '__main__':
         advantage_discount=0.95,
 
         ppo_iters=1,
-        ppo_policy_clip=0.5,
-        ppo_value_clip=1.0,
+        ppo_policy_clip=None,
+        ppo_value_clip=None,
 
-        model_factory=partial(create_impala_fc_actor, hidden_sizes=(128, 128), activation=nn.Tanh),
+        model_factory=partial(create_impala_fc_actor, hidden_sizes=(128, 128), activation=nn.ReLU),
         # model_factory=partial(create_impala_rnn_actor, hidden_size=128, num_layers=2),
         # optimizer_factory=partial(GAdam, lr=5e-4, avg_sq_mode='tensor', betas=(0.9, 0.99)),
         # optimizer_factory=partial(Adam, lr=3e-4, eps=1e-6),
         # optimizer_factory=partial(
         #     optim.Adahessian,
-        #     lr=0.05,
+        #     lr=0.15,
         #     betas=(0.9, 0.999),
         #     eps=1e-4,
         #     weight_decay=0.0,
@@ -65,7 +65,7 @@ if __name__ == '__main__':
         # ),
         optimizer_factory=partial(
             optim.Lamb,
-            lr=0.01,
+            lr=0.005,
         ),
     )
     trainer_params = dict(
