@@ -70,7 +70,6 @@ class IMPALA(RLBase):
                  memory_burn_in_steps=16,
                  activation_norm_scale=0.0,
                  reward_reweight_interval=40,
-                 num_rewards=1,
                  squash_values=False,
 
                  ppo_iters=1,
@@ -107,7 +106,6 @@ class IMPALA(RLBase):
         self.memory_burn_in_steps = memory_burn_in_steps
         self.activation_norm_scale = activation_norm_scale
         self.reward_reweight_interval = reward_reweight_interval
-        self.num_rewards = num_rewards
         self.squash_values = squash_values
         self.ppo_iters = ppo_iters
         self.ppo_policy_clip = ppo_policy_clip

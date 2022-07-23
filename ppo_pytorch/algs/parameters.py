@@ -56,7 +56,7 @@ def create_fc_kwargs(learning_decay_frames=None, **kwargs):
     return defaults
 
 
-def create_sac_fc_kwargs(learning_decay_frames=None, **kwargs):
+def create_td3_fc_kwargs(learning_decay_frames=None, **kwargs):
     """
     Get hyperparameters for simple envs like CartPole or Acrobot
     Args:

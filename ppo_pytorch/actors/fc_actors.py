@@ -12,7 +12,7 @@ from ppo_pytorch.common.silu import SiLU, silu
 from torch import Tensor
 
 from .actors import FeatureExtractorBase, ModularActor, create_ppo_actor, create_impala_actor
-from .heads import PolicyHead, StateValueHead
+from .heads import PolicyHead, StateValueHead, ActionValueHead
 from .norm_factory import NormFactory
 from ..common.activation_norm import ActivationNorm
 from ..common.probability_distributions import ProbabilityDistribution, make_pd
@@ -388,8 +388,8 @@ def create_sac_fc_actor(observation_space, action_space, hidden_sizes=(256, 256)
     fx_policy, fx_q1, fx_q2 = fx_policy_factory(), fx_q_factory(), fx_q_factory()
 
     policy_head = PolicyHead(fx_policy.output_size, pd=pd)
-    head_q1 = StateValueHead(fx_q1.output_size, pd=pd)
-    head_q2 = StateValueHead(fx_q2.output_size, pd=pd)
+    head_q1 = ActionValueHead(fx_q1.output_size, pd=pd)
+    head_q2 = ActionValueHead(fx_q2.output_size, pd=pd)
     models = {
         fx_policy: dict(logits=policy_head),
         fx_q1: dict(q1=head_q1),

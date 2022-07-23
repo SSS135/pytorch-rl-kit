@@ -27,7 +27,8 @@ class RLBase:
                  model_save_interval=100_000,
                  model_init_path=None,
                  save_intermediate_models=False,
-                 actor_index=0,):
+                 actor_index=0,
+                 num_rewards=1):
         """
         Base class for all reinforcement learning algorithms. Supports running parallely on multiple envs.
         Args:
@@ -46,6 +47,7 @@ class RLBase:
         self.save_intermediate_models = save_intermediate_models
         self.model_save_tag = model_save_tag
         self.model_init_path = model_init_path
+        self.num_rewards = num_rewards
 
         self._logger = None
         self._last_log_frame = -log_interval if log_interval is not None else None
@@ -98,7 +100,7 @@ class RLBase:
         if actor_id is None:
             actor_id = torch.arange(num_actors, dtype=torch.long)
         if not self.has_variable_actor_count_support:
-            assert torch.allclose(actor_id, torch.arange(self.num_actors, dtype=torch.long))
+            assert torch.allclose(actor_id, torch.arange(self.num_actors, dtype=actor_id.dtype)), (actor_id, self.num_actors)
         if obs.dtype == torch.float64:
             obs = obs.float()
 

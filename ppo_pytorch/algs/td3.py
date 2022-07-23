@@ -14,7 +14,6 @@ import torch.optim as optim
 from ppo_pytorch.actors.actors import Actor
 from ppo_pytorch.actors.fc_actors import create_sac_fc_actor
 from ppo_pytorch.algs.ppo import copy_state_dict
-from ppo_pytorch.common.activation_norm import activation_norm_loss
 from ppo_pytorch.common.gae import calc_vtrace
 from torch.nn.utils import clip_grad_norm_
 from torchvision.utils import make_grid
@@ -26,11 +25,11 @@ from ..actors.utils import model_diff
 from ..common.attr_dict import AttrDict
 from ..common.barron_loss import barron_loss
 from ..common.data_loader import DataLoader
-from ..common.probability_distributions import DiagGaussianPd, CategoricalPd
+from ..common.probability_distributions import DiagGaussianPd, CategoricalPd, FixedStdGaussianPd
 from ..common.rl_base import RLBase, RLStepData
 
 
-class SAC(RLBase):
+class TD3(RLBase):
     def __init__(self, observation_space, action_space,
                  reward_discount=0.99,
                  train_interval=16,
@@ -51,13 +50,9 @@ class SAC(RLBase):
                  cuda_train=False,
                  grad_clip_norm=None,
                  reward_scale=1.0,
-                 # barron_alpha_c=(1.5, 1),
                  lr_scheduler_factory=None,
                  entropy_decay_factory=None,
-                 # use_pop_art=False,
-                 vtrace_max_ratio=1.0,
                  vtrace_kl_limit=0.2,
-                 act_norm_scale=0.003,
                  **kwargs):
         super().__init__(observation_space, action_space, **kwargs)
         self._init_args = locals()
@@ -78,10 +73,9 @@ class SAC(RLBase):
         self.device_train = torch.device('cuda' if cuda_train else 'cpu')
         self.grad_clip_norm = grad_clip_norm
         self.reward_scale = reward_scale
-        self.vtrace_max_ratio = vtrace_max_ratio
         self.vtrace_kl_limit = vtrace_kl_limit
-        self.act_norm_scale = act_norm_scale
 
+        assert self.num_rewards == 1
         assert rollout_length >= 2
         assert batch_size % rollout_length == 0
         assert isinstance(action_space, gym.spaces.Box), action_space
@@ -95,10 +89,11 @@ class SAC(RLBase):
         copy_state_dict(self._train_model, self._eval_model)
         copy_state_dict(self._train_model, self._target_model)
         self._train_model = self._train_model.train().to(self.device_train, non_blocking=True)
+        self._train_model_copy = deepcopy(self._train_model)
         self._eval_model = self._eval_model.eval().to(self.device_eval, non_blocking=True)
         self._target_model = self._target_model.train().to(self.device_train, non_blocking=True)
 
-        assert isinstance(self._eval_model.heads.logits.pd, DiagGaussianPd)
+        assert isinstance(self._eval_model.heads.logits.pd, FixedStdGaussianPd)
 
         self._actor_optimizer: torch.optim.Optimizer = \
             actor_optimizer_factory(self._train_model.head_parameters('logits'))
@@ -117,11 +112,11 @@ class SAC(RLBase):
     def _step(self, data: RLStepData) -> torch.Tensor:
         with torch.no_grad():
             ac_out = self._eval_model(data.obs.to(self.device_eval), evaluate_heads=['logits'])
-            pd = self._eval_model.heads.logits.pd
-            actions = pd.sample(ac_out.logits).cpu()
+            # pd = self._eval_model.heads.logits.pd
+            actions = (ac_out.logits + 0.2 * torch.randn_like(ac_out.logits)).cpu().clamp(-1, 1)
             if self.frame_eval < self.random_policy_frames:
-                actions.uniform_(-0.97, 0.97)
-                actions = 0.5 * torch.log((1 + actions) / (1 - actions))
+                actions.uniform_(-1, 1)
+                # actions = 0.5 * torch.log((1 + actions) / (1 - actions))
 
             if not self.disable_training:
                 if self._prev_data is not None and data.rewards is not None:
@@ -138,7 +133,7 @@ class SAC(RLBase):
                     self._pre_train()
                     self._train()
 
-            return actions.tanh()
+            return actions
 
     def _pre_train(self):
         self.frame_train = self.frame_eval
@@ -211,6 +206,8 @@ class SAC(RLBase):
 
         if self._do_actor_update:
             self._train_model.zero_grad()
+            self._train_model_copy.zero_grad()
+            lerp_module_(self._train_model_copy, self._train_model, 1)
             actor_loss = self._actor_step(batch, do_log)
             actor_loss.backward()
             if self.grad_clip_norm is not None:
@@ -224,38 +221,40 @@ class SAC(RLBase):
     def _critic_step(self, data: AttrDict, do_log):
         pd = self._train_model.heads.logits.pd
 
-        logits = self._train_model(data.states, evaluate_heads=['logits']).logits
-        actions = pd.sample(logits)
+        logits = self._target_model(data.states, evaluate_heads=['logits']).logits
+        actions = logits  # pd.sample(logits)
         logp = pd.logp(actions, logits)
 
-        ac_out_target = self._target_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions.tanh())
+        ac_out_target = self._target_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions)
+        assert ac_out_target.q1.shape == (*logp.shape[:-1], 1)
         q_values = torch.min(ac_out_target.q1, ac_out_target.q2).squeeze(-1) - self.entropy_scale * logp.mean(-1)
 
-        probs_ratio = (pd.logp(data.actions, logits) - pd.logp(data.actions, data.logits_old)).exp()
-        kl_replay = pd.kl(data.logits_old, logits)
-
+        probs_ratio = (pd.logp(data.actions, logits) - pd.logp(data.actions, data.logits_old)).mean(-1).exp()
+        kl_replay = pd.kl(data.logits_old, logits).mean(-1)
         vtrace_targets, _, _ = calc_vtrace(
             data.rewards[:-1], q_values,
-            data.dones[:-1], probs_ratio[:-1].detach().mean(-1), kl_replay[:-1].detach().mean(-1),
-            self.reward_discount, self.vtrace_max_ratio, self.vtrace_kl_limit)
+            data.dones[:-1], probs_ratio[:-1], kl_replay[:-1],
+            self.reward_discount, self.vtrace_kl_limit, 1.0)
         targets = data.rewards[:-1] + self.reward_discount * (1 - data.dones[:-1]) * vtrace_targets[1:]
+        assert data.rewards.shape == data.dones.shape == q_values.shape
+        # targets = data.rewards[:-1] + self.reward_discount * (1 - data.dones[:-1]) * q_values[1:]
 
         assert (targets.shape[0] + 1, *targets.shape[1:]) == data.rewards.shape == logp.shape[:-1], (targets.shape, data.rewards.shape, logp.shape)
 
         with torch.enable_grad():
-            ac = data.actions[:-1].tanh()
-            ac = ac + torch.empty_like(ac).uniform_(-0.05, 0.05)
+            ac = data.logits_old[:-1]
+            ac = (ac + torch.empty_like(ac).uniform_(-0.05, 0.05)).clamp(-1, 1)
             ac_out_first = self._train_model(data.states[:-1], evaluate_heads=['q1', 'q2'], actions=ac)
-            loss_value = (ac_out_first.q1.squeeze(-1) - targets) ** 2 + (ac_out_first.q2.squeeze(-1) - targets) ** 2
-            act_norm_loss = activation_norm_loss(self._train_model)
-            assert targets.shape == loss_value.shape
-            loss = loss_value.mean() + self.act_norm_scale * act_norm_loss
+            q1_pred = ac_out_first.q1.squeeze(-1)
+            q2_pred = ac_out_first.q2.squeeze(-1)
+            assert q1_pred.shape == q2_pred.shape == targets.shape
+            loss = (q1_pred - targets).pow(2).mean() + (q2_pred - targets).pow(2).mean()
 
         if do_log:
             q1, q2 = ac_out_first.q1, ac_out_first.q2
             q_targ_1step = data.rewards[:-1] + self.reward_discount * (1 - data.dones[:-1]) * q_values[1:]
             self.logger.add_scalar('Stability/Entropy', pd.entropy(logits).mean(), self.frame_train)
-            self.logger.add_scalar('Losses/State Value', loss_value.mean(), self.frame_train)
+            self.logger.add_scalar('Losses/State Value', loss, self.frame_train)
             self.logger.add_scalar('Values/Q1', q1.mean(), self.frame_train)
             q12_min = torch.min(q1, q2)
             q12t1t2_min = torch.stack([q1, q2, ac_out_target.q1[:-1], ac_out_target.q2[:-1]], 0).min(0)[0]
@@ -276,16 +275,15 @@ class SAC(RLBase):
 
         with torch.enable_grad():
             logits = self._train_model(data.states, evaluate_heads=['logits']).logits
-            actions = pd.sample(logits)
+            actions = logits  # pd.sample(logits)
             logp = pd.logp(actions, logits).mean(-1)
 
-            ac_out = self._train_model(data.states, evaluate_heads=['q1', 'q2'], actions=actions.tanh())
-            q_target = torch.min(ac_out.q1, ac_out.q2).squeeze(-1)
+            q1 = self._train_model_copy(data.states, evaluate_heads=['q1'], actions=actions).q1.squeeze(-1)
             kl = pd.kl(logits_target, logits)
-            loss = self.entropy_scale * logp - q_target + self.kl_pull * kl.mean(-1)
-            act_norm_loss = activation_norm_loss(self._train_model)
-            assert logp.shape == data.rewards.shape == q_target.shape == loss.shape, (logp.shape, data.rewards.shape, q_target.shape, loss.shape)
-            loss = loss.mean() + self.act_norm_scale * act_norm_loss
+            assert logp.shape == q1.shape == kl.shape[:-1]
+            bounds_loss = (logits.abs().clamp_min(0.95) - 0.95).pow(2)
+            loss = -q1.mean() + self.entropy_scale * logp.mean() + self.kl_pull * kl.mean() + bounds_loss.mean()
+            assert data.rewards.shape == q1.shape, (logp.shape, data.rewards.shape, q1.shape, loss.shape)
 
         if do_log:
             self.logger.add_scalar('Stability/KL Blend', kl.mean(), self.frame_train)

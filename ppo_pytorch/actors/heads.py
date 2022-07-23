@@ -82,6 +82,7 @@ class ActionValueHead(HeadBase):
         self.linear.bias.data.fill_(0)
 
     def forward(self, x, actions=None, action_noise_scale=0, **kwargs):
+        assert actions is not None
         actions = self.pd.to_inputs(actions)
         if action_noise_scale != 0:
             actions = actions + action_noise_scale * torch.randn_like(actions)
