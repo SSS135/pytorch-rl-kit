@@ -283,20 +283,15 @@ class TD3(RLBase):
             logp = pd.logp(actions, logits).mean(-1)
 
             q1 = self._train_model_copy(data.states, evaluate_heads=['q1'], actions=actions).q1.squeeze(-1)
+            logits_grad = torch.autograd.grad(-q1.sum(), logits)[0].detach()
+            assert logits_grad.shape == logits.shape
+            logits_grad[(logits > 1) & (logits_grad < 0)] = 0
+            logits_grad[(logits < -1) & (logits_grad > 0)] = 0
             pull_loss = self.kl_pull * 0.5 * (logits_target - logits).pow(2).mean()
-            bounds_loss = 0.5 * (logits.abs().clamp_min(0.95) - 0.95).pow(2).mean()
+            # bounds_loss = logits.abs().clamp_min(1.0).mean()
             ent_loss = self.entropy_scale * logp.mean()
-            q_loss = -q1.mean()
-            loss = q_loss + ent_loss + pull_loss + bounds_loss
-            # logits_grad = torch.autograd.grad(-q1.sum(), logits)[0].detach()
-            # assert logits_grad.shape == logits.shape
-            # logits_grad[(logits > 1) & (logits_grad < 0)] = 0
-            # logits_grad[(logits < -1) & (logits_grad > 0)] = 0
-            # pull_loss = self.kl_pull * 0.5 * (logits_target - logits).pow(2).mean()
-            # # bounds_loss = logits.abs().clamp_min(1.0).mean()
-            # ent_loss = self.entropy_scale * logp.mean()
-            # q_loss = (logits_grad * logits).mean() #-q1.mean()
-            # loss = q_loss + ent_loss + pull_loss #+ bounds_loss
+            q_loss = (logits_grad * logits).mean() #-q1.mean()
+            loss = q_loss + ent_loss + pull_loss #+ bounds_loss
             assert data.rewards.shape == q1.shape, (logp.shape, data.rewards.shape, q1.shape, loss.shape)
 
         if do_log:
