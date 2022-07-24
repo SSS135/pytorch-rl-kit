@@ -291,7 +291,7 @@ class BernoulliPd(ProbabilityDistribution):
 
 class DiagGaussianPd(ProbabilityDistribution):
     LOG_STD_MAX = 2
-    LOG_STD_MIN = -20
+    LOG_STD_MIN = -6
 
     def __init__(self, d, apply_tanh=True, max_norm=1.0):
         super().__init__(locals())
@@ -323,8 +323,6 @@ class DiagGaussianPd(ProbabilityDistribution):
             + 2 * logstd
             + np.log(2 * np.pi)
         )
-        if self.apply_tanh:
-            logp = logp - 2 * (math.log(2) - x - F.softplus(-2 * x))
         return logp
 
     def kl(self, prob1, prob2):
@@ -427,7 +425,7 @@ class PointCloudPd(ProbabilityDistribution):
     def _get_mean_std(self, prob):
         prob = self._split_probs(prob)
         mean = prob.mean(-1)
-        std = prob.std(-1)
+        std = (prob.var(-1) + 1e-8).sqrt()
         return mean, std
 
     def postprocess_action(self, action):
@@ -515,7 +513,9 @@ class FixedStdGaussianPd(ProbabilityDistribution):
         return -((x - mean) ** 2) / 2 - math.log(math.sqrt(2 * math.pi))
 
     def kl(self, mean1, mean2):
-        return 0.5 * (mean2 - mean1) ** 2
+        dist1 = Normal(mean1, self.std)
+        dist2 = Normal(mean2, self.std)
+        return kl_divergence(dist1, dist2)
 
     def entropy(self, mean):
         return torch.zeros_like(mean) + (0.5 + 0.5 * math.log(2 * math.pi) + math.log(self.std))
