@@ -14,7 +14,7 @@ if __name__ == '__main__':
     import ppo_pytorch.common.cartpole_continuous
 
     train_frames = 2_000_000
-    num_envs = 8
+    num_envs = 4
     env_factory = partial(SimpleVecEnv, env_name='Walker2d-v4')
 
     alg_class = TD3
@@ -26,15 +26,15 @@ if __name__ == '__main__':
         train_interval=16,
         batch_size=8 * 1024,
         num_batches=16,
-        kl_pull=0.01,
+        kl_pull=0.3,
         replay_buffer_size=512*1024,
         replay_end_sampling_factor=1.0,
         reward_scale=0.03,
         rollout_length=16,
-        vtrace_kl_limit=0.2,
+        vtrace_kl_limit=2.0,
         actor_update_interval=2,
         entropy_scale=0.0,
-        grad_clip_norm=2,
+        grad_clip_norm=None,
         actor_optimizer_factory=partial(Lamb, lr=0.005),
         critic_optimizer_factory=partial(Lamb, lr=0.005),
     )
@@ -42,7 +42,7 @@ if __name__ == '__main__':
         rl_alg_factory=partial(alg_class, **alg_params),
         env_factory=env_factory,
         alg_name=alg_class.__name__,
-        tag='[w]',
+        tag='[w4_kp3_gcnone_kl2stdv]',
         log_root_path=log_path,
         log_interval=2000,
     )

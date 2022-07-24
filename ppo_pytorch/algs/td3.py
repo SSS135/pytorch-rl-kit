@@ -113,7 +113,7 @@ class TD3(RLBase):
         with torch.no_grad():
             ac_out = self._eval_model(data.obs.to(self.device_eval), evaluate_heads=['logits'])
             # pd = self._eval_model.heads.logits.pd
-            actions = (ac_out.logits + torch.randn_like(ac_out.logits).clamp(-0.5, 0.5)).cpu().clamp(-1, 1)
+            actions = (ac_out.logits + 0.3 * torch.randn_like(ac_out.logits)).cpu().clamp(-1, 1)
             if self.frame_eval < self.random_policy_frames:
                 actions.uniform_(-1, 1)
                 # actions = 0.5 * torch.log((1 + actions) / (1 - actions))
@@ -125,10 +125,8 @@ class TD3(RLBase):
                 self._eval_steps += 1
                 self._prev_data = dict(logits=ac_out.logits, states=data.obs, actions=actions)
 
-                min_replay_size = self.batch_size * self.rollout_length
                 if self.frame_eval > self.random_policy_frames \
-                        and self._eval_steps >= self.train_interval \
-                        and len(self._replay_buffer) >= min_replay_size:
+                        and self._eval_steps >= self.train_interval:
                     self._eval_steps = 0
                     self._pre_train()
                     self._train()
@@ -229,11 +227,12 @@ class TD3(RLBase):
         assert ac_out_target.q1.shape == (*logp.shape[:-1], 1)
         q_values = torch.min(ac_out_target.q1, ac_out_target.q2).squeeze(-1) - self.entropy_scale * logp.mean(-1)
 
-        probs_ratio = (pd.logp(data.actions, logits) - pd.logp(data.actions, data.logits_old)).mean(-1).exp()
+        logp_ratio = (pd.logp(data.actions, logits) - pd.logp(data.actions, data.logits_old)).mean(-1)
+        probs_ratio = logp_ratio.exp()
         kl_replay = pd.kl(data.logits_old, logits).mean(-1)
-        vtrace_targets, _, _ = calc_vtrace(
+        vtrace_targets, _, vtrace_c = calc_vtrace(
             data.rewards[:-1], q_values,
-            data.dones[:-1], probs_ratio[:-1], kl_replay[:-1],
+            data.dones[:-1], probs_ratio[:-1], logp_ratio[:-1],
             self.reward_discount, self.vtrace_kl_limit, 1.0)
         targets = data.rewards[:-1] + self.reward_discount * (1 - data.dones[:-1]) * vtrace_targets[1:]
         assert data.rewards.shape == data.dones.shape == q_values.shape
@@ -266,6 +265,11 @@ class TD3(RLBase):
             self.logger.add_scalar('Value Errors/RMSE', (q1.squeeze(-1) - targets).pow(2).mean().sqrt(), self.frame_train)
             self.logger.add_scalar('Value Errors/Abs', (q1.squeeze(-1) - targets).abs().mean(), self.frame_train)
             self.logger.add_scalar('Value Errors/Max', (q1.squeeze(-1) - targets).abs().max(), self.frame_train)
+            self.logger.add_scalar('Stability/VTrace Mean', vtrace_c.mean(), self.frame_train)
+            self.logger.add_scalar('Stability/KL Replay', kl_replay.mean(), self.frame_train)
+            self.logger.add_scalar('Stability/LogP Ratio Mean', logp_ratio.mean(), self.frame_train)
+            self.logger.add_scalar('Stability/LogP Ratio AbsMean', logp_ratio.abs().mean(), self.frame_train)
+            self.logger.add_scalar('Stability/Logits Old Diff RMS', (logits - data.logits_old).pow(2).mean().sqrt(), self.frame_train)
 
         return loss
 
@@ -284,10 +288,21 @@ class TD3(RLBase):
             ent_loss = self.entropy_scale * logp.mean()
             q_loss = -q1.mean()
             loss = q_loss + ent_loss + pull_loss + bounds_loss
+            # logits_grad = torch.autograd.grad(-q1.sum(), logits)[0].detach()
+            # assert logits_grad.shape == logits.shape
+            # logits_grad[(logits > 1) & (logits_grad < 0)] = 0
+            # logits_grad[(logits < -1) & (logits_grad > 0)] = 0
+            # pull_loss = self.kl_pull * 0.5 * (logits_target - logits).pow(2).mean()
+            # # bounds_loss = logits.abs().clamp_min(1.0).mean()
+            # ent_loss = self.entropy_scale * logp.mean()
+            # q_loss = (logits_grad * logits).mean() #-q1.mean()
+            # loss = q_loss + ent_loss + pull_loss #+ bounds_loss
             assert data.rewards.shape == q1.shape, (logp.shape, data.rewards.shape, q1.shape, loss.shape)
 
         if do_log:
-            self.logger.add_scalar('Stability/KL Blend', pull_loss.mean(), self.frame_train)
+            self.logger.add_scalar('Stability/KL Target', pd.kl(logits_target, logits).mean(), self.frame_train)
+            self.logger.add_scalar('Stability/Logits Target Diff RMS', (logits - logits_target).pow(2).mean().sqrt(), self.frame_train)
+            self.logger.add_scalar('Stability/OOB Actions', (logits.abs() > 1).float().mean(), self.frame_train)
 
         return loss
 
