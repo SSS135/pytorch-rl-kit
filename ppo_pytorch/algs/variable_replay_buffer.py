@@ -164,7 +164,7 @@ class VariableReplayBuffer:
         with self._lock:
             # calc buffer index for each rollout
             buffer_chances = torch.tensor([len(buf) for buf in self._buffers], dtype=torch.float)
-            buffer_chances[buffer_chances < self.horizon] = 0
+            buffer_chances[buffer_chances < self.horizon + self.num_burn_in_samples] = 0
             rollout_buffer_indices = torch.multinomial(buffer_chances, num_rollouts, replacement=True).tolist()
 
             rollouts = []
