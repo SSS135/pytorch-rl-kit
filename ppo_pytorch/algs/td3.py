@@ -113,7 +113,7 @@ class TD3(RLBase):
         with torch.no_grad():
             ac_out = self._eval_model(data.obs.to(self.device_eval), evaluate_heads=['logits'])
             # pd = self._eval_model.heads.logits.pd
-            actions = (ac_out.logits + 0.3 * torch.randn_like(ac_out.logits)).cpu().clamp(-1, 1)
+            actions = (ac_out.logits + 0.1 * torch.randn_like(ac_out.logits)).cpu().clamp(-1, 1)
             if self.frame_eval < self.random_policy_frames:
                 actions.uniform_(-1, 1)
                 # actions = 0.5 * torch.log((1 + actions) / (1 - actions))
@@ -242,7 +242,7 @@ class TD3(RLBase):
 
         with torch.enable_grad():
             ac = data.logits_old[:-1]
-            ac = (ac + torch.empty_like(ac).uniform_(-0.1, 0.1)).clamp(-1, 1)
+            ac = (ac + torch.randn_like(ac).mul_(0.2).clamp_(-0.5, 0.5)).clamp(-1, 1)
             ac_out_first = self._train_model(data.states[:-1], evaluate_heads=['q1', 'q2'], actions=ac)
             q1_pred = ac_out_first.q1.squeeze(-1)
             q2_pred = ac_out_first.q2.squeeze(-1)
@@ -276,6 +276,7 @@ class TD3(RLBase):
     def _actor_step(self, data: AttrDict, do_log):
         pd = self._train_model.heads.logits.pd
         logits_target = self._target_model(data.states, evaluate_heads=['logits']).logits
+        logits_target.clamp_(-1, 1)
 
         with torch.enable_grad():
             logits = self._train_model(data.states, evaluate_heads=['logits']).logits
