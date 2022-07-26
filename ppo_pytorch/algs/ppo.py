@@ -227,9 +227,6 @@ class PPO(RLBase):
 
     def _train(self):
         with torch.no_grad():
-            if self._train_future is not None:
-                self._train_future.result()
-
             self.frame_train = self.frame_eval
             self._check_log()
 
