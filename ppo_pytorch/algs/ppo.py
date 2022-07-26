@@ -5,7 +5,7 @@ from concurrent.futures.thread import ThreadPoolExecutor
 from copy import deepcopy
 from enum import Enum
 from functools import partial
-from typing import Optional
+from typing import Optional, Iterator
 
 import gym.spaces
 import numpy as np
@@ -13,6 +13,9 @@ import torch
 import torch.autograd
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.nn import Parameter
+from torch_optimizer import Adahessian
+
 from ppo_pytorch.common.activation_norm import activation_norm_loss
 from rl_exp.noisy_linear import NoisyLinear
 from torch.nn.utils import clip_grad_norm_
@@ -21,14 +24,15 @@ from torchvision.utils import make_grid
 from .steps_processor import StepsProcessor
 from .utils import lerp_module_
 from ..actors.fc_actors import create_ppo_fc_actor
-from ..actors.actors import Actor
+from ..actors.actors import Actor, ModularActor
 from ..actors.utils import model_diff
 from ..common.attr_dict import AttrDict
 from ..common.barron_loss import barron_loss
 from ..common.data_loader import DataLoader
 from ..common.pop_art import PopArt
-from ..common.probability_distributions import DiagGaussianPd, CategoricalPd, ProbabilityDistribution
+from ..common.probability_distributions import DiagGaussianPd, CategoricalPd
 from ..common.rl_base import RLBase, RLStepData
+import torch.nn as nn
     
     
 class SchedulerManager:
@@ -54,7 +58,7 @@ class SchedulerManager:
             self._entropy_decay.step(current_frame)
 
 
-def copy_state_dict(src, dst):
+def copy_state_dict(src: nn.Module, dst: nn.Module):
     for src, dst in zip(src.state_dict().values(), dst.state_dict().values()):
         dst.data.copy_(src.data)
 
@@ -104,7 +108,7 @@ class PPO(RLBase):
                  batch_size=64,
                  model_factory=create_ppo_fc_actor,
                  optimizer_factory=partial(optim.Adam, lr=3e-4),
-                 value_loss_scale=0.5,
+                 value_loss_scale=1.0,
                  entropy_loss_scale=0.01,
                  policy_clip=0.2,
                  value_clip: Optional[float] = 0.2,
@@ -118,9 +122,8 @@ class PPO(RLBase):
                  clip_decay_factory=None,
                  entropy_decay_factory=None,
                  use_pop_art=False,
-                 activation_norm_scale=0.0,
                  squash_values=False,
-                 target_model_blend=0.1,
+                 target_model_blend=1.0,
                  **kwargs):
         """
         Single threaded implementation of Proximal Policy Optimization Algorithms
@@ -180,19 +183,19 @@ class PPO(RLBase):
         self.reward_scale = reward_scale
         self.use_pop_art = use_pop_art
         self.lr_scheduler_factory = lr_scheduler_factory
-        self.activation_norm_scale = activation_norm_scale
         self.squash_values = squash_values
         self.target_model_blend = target_model_blend
 
-        self._train_model: Actor = model_factory(observation_space, action_space)
-        self._target_model: Actor = model_factory(observation_space, action_space)
-        self._eval_model: Actor = model_factory(observation_space, action_space)
+        self._train_model: ModularActor = model_factory(observation_space, action_space)
+        self._target_model: ModularActor = model_factory(observation_space, action_space)
+        self._eval_model: ModularActor = model_factory(observation_space, action_space)
         if self.model_init_path is not None:
             self._train_model.load_state_dict(torch.load(self.model_init_path), True)
             print(f'loaded model {self.model_init_path}')
         copy_state_dict(self._train_model, self._target_model)
         copy_state_dict(self._train_model, self._eval_model)
         self._train_model = self._train_model.train().to(self.device_train, non_blocking=True)
+        self._prev_train_model = self._train_model.train().to(self.device_train, non_blocking=True)
         self._target_model = self._target_model.train().to(self.device_train, non_blocking=True)
         self._eval_model = self._eval_model.eval().to(self.device_eval, non_blocking=True)
 
@@ -203,9 +206,7 @@ class PPO(RLBase):
         self._first_pop_art_update = True
         self._steps_processor = self._create_steps_processor()
         self._target_step = 0
-
-        self._train_future: Optional[Future] = None
-        self._train_executor = ThreadPoolExecutor(max_workers=1)
+        self._prev_max_ppo_iter = ppo_iters - 1
 
     def _step(self, data: RLStepData) -> torch.Tensor:
         with torch.no_grad():
@@ -234,7 +235,7 @@ class PPO(RLBase):
 
             old_sp = self._steps_processor
             self._steps_processor = self._create_steps_processor()
-            self._train_future = self._train_executor.submit(self._train_async, old_sp)
+            self._train_async(old_sp)
 
     def _create_data(self):
         self._steps_processor.complete()
@@ -264,22 +265,25 @@ class PPO(RLBase):
         rand_idx = torch.cat(rand_idx, 0).chunk(batches * self.ppo_iters)
 
         old_model = deepcopy(self._train_model.state_dict())
-        kl_list = []
 
         with DataLoader(data, rand_idx, self.device_train, 4) as data_loader:
             for ppo_iter in range(self.ppo_iters):
                 for loader_iter in range(batches):
                     batch = AttrDict(data_loader.get_next_batch())
-                    loss, kl = self._ppo_step(batch, self._do_log and ppo_iter == self.ppo_iters - 1 and loader_iter == 0)
-                    kl_list.append(kl)
+                    do_log = self._do_log and ppo_iter == self._prev_max_ppo_iter and loader_iter == 0
+                    loss, kl, kl_in_range = self._ppo_step(batch, do_log)
+                    if not kl_in_range:
+                        break
+                if not kl_in_range:
+                    break
 
-        kl = np.mean(kl_list)
+        self._prev_max_ppo_iter = ppo_iter
 
         if self._do_log:
             self.logger.add_scalar('Optimizer/Learning Rate', self._learning_rate, self.frame_train)
             self.logger.add_scalar('Optimizer/Clip Mult', self._clip_mult, self.frame_train)
             self.logger.add_scalar('Losses/Total Loss', loss, self.frame_train)
-            self.logger.add_scalar('Stability/KL Blend', kl, self.frame_train)
+            self.logger.add_scalar('Stability/PPO Iters', ppo_iter + 1, self.frame_train)
             self.logger.add_scalar('Model Diff/Abs', model_diff(old_model, self._train_model), self.frame_train)
             self.logger.add_scalar('Model Diff/Max', model_diff(old_model, self._train_model, True), self.frame_train)
 
@@ -327,22 +331,21 @@ class PPO(RLBase):
                 batch[k] = v if k == 'states' else v.cpu()
 
             loss, kl = self._get_ppo_loss(batch, do_log=do_log)
-            act_norm_loss = activation_norm_loss(self._train_model).cpu()
-            loss = loss.mean() + self.activation_norm_scale * act_norm_loss
 
         kl = kl.item()
-        if self.batch_kl_limit is None or kl < self.batch_kl_limit * self._clip_mult:
-            # optimize
-            loss.backward()
+        kl_in_range = self.batch_kl_limit is None or kl < self.batch_kl_limit
+        if kl_in_range:
+            copy_state_dict(self._train_model, self._prev_train_model)
+
+            loss.backward(create_graph=isinstance(self._optimizer, Adahessian))
             if self.grad_clip_norm is not None:
                 clip_grad_norm_(self._train_model.parameters(), self.grad_clip_norm)
             self._optimizer.step()
             self._optimizer.zero_grad()
+        else:
+            copy_state_dict(self._prev_train_model, self._train_model)
 
-        if do_log:
-            self.logger.add_scalar('Losses/Activation Norm', act_norm_loss, self.frame_train)
-
-        return loss, kl
+        return loss, kl, kl_in_range
 
     def _get_ppo_loss(self, batch, pd=None, do_log=False, tag=''):
         logits, logits_old, logits_target = batch.logits, batch.logits_old, batch.logits_target
@@ -354,24 +357,24 @@ class PPO(RLBase):
         if pd is None:
             pd = self._train_model.heads.logits.pd
 
-        logp_target = pd.logp(actions, logits_target)
+        logp_old = pd.logp(actions, logits_old)
         logp = pd.logp(actions, logits)
-        # ratio = (logp - logp_old).mean(-1)
-        ratio = (logp - logp_target).mean(-1)
-        kl = pd.kl(logits_target, logits).mean(-1)
+        ratio = (logp - logp_old).mean(-1).exp()
+        kl_target = pd.kl(logits_target, logits).mean(-1)
+        kl_old = pd.kl(logits_old, logits).mean(-1)
         entropy = pd.entropy(logits)
 
-        assert kl.shape == ratio.shape == logp.shape[:-1], (kl.shape, ratio.shape, logp.shape)
-        assert kl.shape == advantages.shape, (kl.shape, advantages.shape)
+        assert kl_target.shape == ratio.shape == logp.shape[:-1], (kl_target.shape, ratio.shape, logp.shape)
+        assert kl_target.shape == advantages.shape, (kl_target.shape, advantages.shape)
 
         loss_ent = -self.entropy_loss_scale * entropy.mean()
-        # loss_kl = self.kl_pull * kl.mean()
+        # loss_kl = self.kl_pull * kl_target.mean()
         loss_kl = (logits - logits_target).pow_(2).mean().mul(0.5 * self.kl_pull)
+        oob_loss = pd.oob_loss(logits)
 
         policy_clip = self.policy_clip * self._clip_mult
-        unclipped_policy_loss = ratio * advantages
-        clipped_policy_loss = ratio.clamp(-policy_clip, policy_clip) * advantages
-        loss_clip = -torch.min(unclipped_policy_loss, clipped_policy_loss)
+        ratio_clip = ratio.clamp(1 - policy_clip, 1 + policy_clip)
+        loss_clip = -torch.min(ratio * advantages, ratio_clip * advantages)
         assert loss_clip.shape == advantages.shape
 
         # value loss
@@ -388,23 +391,26 @@ class PPO(RLBase):
         # assert loss_clip.shape == loss_value.shape, (loss_clip.shape, loss_value.shape)
         # assert loss_value.shape == loss_ent.shape, (loss_value.shape, loss_ent.shape)
 
-        loss_clip = loss_clip.mean()
+        loss_policy = loss_clip.mean() + loss_ent + loss_kl + oob_loss
         loss_value = loss_value.mean()
 
         # sum all losses
-        total_loss = loss_clip + loss_value + loss_ent + loss_kl
-        assert not np.isnan(total_loss.mean().item()) and not np.isinf(total_loss.mean().item()), \
-            (loss_clip.mean().item(), loss_value.mean().item(), loss_ent.mean().item())
+        total_loss = loss_policy + loss_value
+        assert not np.isnan(total_loss.item()) and not np.isinf(total_loss.item()), \
+            (loss_policy.item(), loss_value.item(), loss_ent.item())
 
         if do_log and tag is not None:
             with torch.no_grad():
                 self.logger.add_scalar('Stability/Entropy' + tag, entropy.mean(), self.frame_train)
                 self.logger.add_scalar('Losses/State Value' + tag, loss_value.mean(), self.frame_train)
+                self.logger.add_scalar('Losses/OOB' + tag, oob_loss, self.frame_train)
                 self.logger.add_scalar('Prob Ratio/Mean' + tag, ratio.mean(), self.frame_train)
                 self.logger.add_scalar('Prob Ratio/Abs Mean' + tag, ratio.abs().mean(), self.frame_train)
                 self.logger.add_scalar('Prob Ratio/Abs Max' + tag, ratio.abs().max(), self.frame_train)
+                self.logger.add_scalar('Stability/KL Old', kl_old.mean(), self.frame_train)
+                self.logger.add_scalar('Stability/KL Target', kl_target.mean(), self.frame_train)
 
-        return total_loss, kl.mean()
+        return total_loss, kl_target.mean()
 
     @property
     def _learning_rate(self):

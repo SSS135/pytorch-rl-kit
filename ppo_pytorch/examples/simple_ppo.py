@@ -1,44 +1,47 @@
+from torch_optimizer import Lamb, Adahessian
+
 from ppo_pytorch.algs.parameters import create_fc_kwargs
 from ppo_pytorch.algs.ppo import PPO
 from ppo_pytorch.common.env_factory import SimpleVecEnv
+from ppo_pytorch.common.env_trainer import EnvTrainer
+from ppo_pytorch.common.rl_alg_test import run_training
+from ..common.cartpole_continuous import CartPoleContinuousEnv
 
 if __name__ == '__main__':
     from .init_vars import *
 
-    env_factory = partial(SimpleVecEnv, 'CartPole-v1', parallel='dummy')
+    train_frames = 2_000_000
+    num_envs = 64
+    env_factory = partial(SimpleVecEnv, env_name='Walker2d-v4')
 
     alg_class = PPO
     alg_params = create_fc_kwargs(
-        5e5,
-
-        num_actors=8,
+        num_actors=num_envs,
         horizon=128,
-        batch_size=256,
-        value_loss_scale=0.5,
-        cuda_eval=False,
+        batch_size=8 * 1024,
+        cuda_eval=True,
         cuda_train=True,
-        batch_kl_limit=None,
 
-        use_pop_art=False,
-        reward_scale=0.1,
-        ppo_iters=6,
-        # constraint='clip',
-        value_clip=0.2,
-        policy_clip=0.2,
-        entropy_loss_scale=0.005,
-        grad_clip_norm=2,
+        kl_pull=0.5,
+        use_pop_art=True,
+        reward_scale=1.0,
+        ppo_iters=15,
+        value_clip=None,
+        policy_clip=0.3,
+        entropy_loss_scale=0.0,
+        grad_clip_norm=None,
         target_model_blend=1,
-        # barron_alpha_c=(2.0, 1),
-        # advantage_scaled_clip=False,
+        batch_kl_limit=0.03,
 
-        optimizer_factory=partial(optim.Adam, lr=3e-4),
+        optimizer_factory=partial(Lamb, lr=0.01),
     )
-    hparams = dict(
-    )
-    wrap_params = dict(
-        tag='[noblend_localadv]',
+    trainer_params = dict(
+        rl_alg_factory=partial(alg_class, **alg_params),
+        env_factory=env_factory,
+        alg_name=alg_class.__name__,
+        tag='[lr01_pa_kp5]',
         log_root_path=log_path,
         log_interval=10000,
     )
 
-    rl_alg_test(hparams, wrap_params, alg_class, alg_params, env_factory, num_processes=1, iters=1, frames=5e5)
+    run_training(EnvTrainer, trainer_params, alg_params, train_frames)

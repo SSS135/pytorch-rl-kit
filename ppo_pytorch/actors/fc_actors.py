@@ -328,9 +328,9 @@ class FCActionFeatureExtractor(FeatureExtractorBase):
         return nn.Sequential(*seq)
 
 
-def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128),
+def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(64, 64),
                         activation=nn.Tanh, norm_factory: NormFactory=None,
-                        split_policy_value_network=False, num_values=1, goal_size=0,
+                        split_policy_value_network=True, num_values=1, goal_size=0,
                         use_imagination=False):
     assert len(observation_space.shape) == 1
 

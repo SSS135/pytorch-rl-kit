@@ -21,12 +21,12 @@ def make_pd(space: gym.Space):
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
         # return LinearTanhPd(space.shape[0])
-        return FixedStdGaussianPd(space.shape[0], 0.3)
+        # return FixedStdGaussianPd(space.shape[0], 0.3)
         # return BetaPd(space.shape[0], 1)
-        # return DiagGaussianPd(space.shape[0], max_norm=2.0)
+        # return DiagGaussianPd(space.shape[0])
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
         # return PointCloudPd(space.shape[0], max_norm=2.0, cloud_size=16)
-        # return DiscretizedCategoricalPd(space.shape[0], 7, ordinal=True)
+        return DiscretizedCategoricalPd(space.shape[0], 7, ordinal=True)
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     elif isinstance(space, gym.spaces.MultiDiscrete):
@@ -77,6 +77,10 @@ class ProbabilityDistribution:
     def logp(self, a, prob):
         """Log probability"""
         raise NotImplementedError
+
+    def oob_loss(self, prob) -> float:
+        """Out of bounds loss"""
+        return 0
 
     def sample(self, prob):
         """Sample action from probabilities"""
@@ -293,11 +297,9 @@ class DiagGaussianPd(ProbabilityDistribution):
     LOG_STD_MAX = 2
     LOG_STD_MIN = -6
 
-    def __init__(self, d, apply_tanh=True, max_norm=1.0):
+    def __init__(self, d):
         super().__init__(locals())
         self.d = d
-        self.apply_tanh = apply_tanh
-        self.max_norm = max_norm
 
     @property
     def prob_vector_len(self):
@@ -339,6 +341,12 @@ class DiagGaussianPd(ProbabilityDistribution):
             math.log(2 * np.pi * np.e) + 2 * logstd
         )
 
+    def oob_loss(self, prob):
+        mean, logstd = self._split_probs(prob)
+        return mean.abs().clamp_min_(1).mean() + \
+               (logstd > self.LOG_STD_MAX).float().mul_(logstd).mean() + \
+               -(logstd < self.LOG_STD_MIN).float().mul_(logstd).mean()
+
     def sample(self, prob):
         with torch.no_grad():
             return self.rsample(prob)
@@ -350,10 +358,10 @@ class DiagGaussianPd(ProbabilityDistribution):
 
     def _split_probs(self, probs):
         mean, logstd = probs.chunk(2, -1)
-        return limit_abs_mean(mean, self.max_norm), limit_abs_mean(logstd, self.max_norm).clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)
+        return mean, logstd.clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)
 
     def postprocess_action(self, action):
-        return action.tanh() if self.apply_tanh else action
+        return action.clamp(-1, 1)
 
 
 class PointCloudPd(ProbabilityDistribution):
@@ -520,18 +528,18 @@ class FixedStdGaussianPd(ProbabilityDistribution):
     def entropy(self, mean):
         return torch.zeros_like(mean) + (0.5 + 0.5 * math.log(2 * math.pi) + math.log(self.std))
 
+    def oob_loss(self, mean):
+        return mean.abs().clamp_min_(1).mean()
+
     def sample(self, mean):
         with torch.no_grad():
             return self.rsample(mean)
 
     def rsample(self, mean):
-        return self._clamp_logits(mean + self.std * torch.randn_like(mean))
-
-    def _clamp_logits(self, logits):
-        return logits / logits.abs().mean(-1, keepdim=True).clamp_min(1.0)
+        return mean + self.std * torch.randn_like(mean)
 
     def postprocess_action(self, action):
-        return action.tanh()
+        return action.clamp(-1, 1)
 
 
 @torch.jit.script
