@@ -23,7 +23,7 @@ def create_ppo_actor(action_space, fx_factory, split_policy_value_network=True, 
     else:
         fx_policy = fx_value = fx_factory()
 
-    value_head = StateValueHead(fx_value.output_size, pd=pd, num_out=num_values)
+    value_head = StateValueHead(fx_value.output_size, num_out=num_values)
     policy_head = PolicyHead(fx_policy.output_size, pd=pd)
     if split_policy_value_network:
         models = OrderedDict([(fx_policy, dict(logits=policy_head)), (fx_value, dict(state_values=value_head))])
@@ -40,7 +40,7 @@ def create_impala_actor(action_space, fx_factory, split_policy_value_network, nu
     else:
         fx_policy = fx_value = fx_factory()
 
-    state_value_head = StateValueHead(fx_value.output_size, pd=pd, num_out=num_values)
+    state_value_head = StateValueHead(fx_value.output_size, num_out=num_values)
     policy_head = PolicyHead(fx_policy.output_size, pd=pd, layer_norm=isinstance(pd, PointCloudPd))
 
     if split_policy_value_network:

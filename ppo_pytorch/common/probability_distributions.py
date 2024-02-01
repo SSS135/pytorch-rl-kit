@@ -21,12 +21,12 @@ def make_pd(space: gym.Space):
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
         # return LinearTanhPd(space.shape[0])
-        # return FixedStdGaussianPd(space.shape[0], 0.3)
+        return FixedStdGaussianPd(space.shape[0], 0.3)
         # return BetaPd(space.shape[0], 1)
         # return DiagGaussianPd(space.shape[0])
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
         # return PointCloudPd(space.shape[0], max_norm=2.0, cloud_size=16)
-        return DiscretizedCategoricalPd(space.shape[0], 7, ordinal=True)
+        # return DiscretizedCategoricalPd(space.shape[0], 7, ordinal=True)
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     elif isinstance(space, gym.spaces.MultiDiscrete):

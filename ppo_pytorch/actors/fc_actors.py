@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from typing import List, Callable
 
 import torch
@@ -344,6 +345,29 @@ def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(64, 64),
         def fx_factory(): return FCFeatureExtractor(**fx_kwargs)
 
     return create_ppo_actor(action_space, fx_factory, split_policy_value_network, num_values=num_values)
+
+
+def create_advppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128),
+                           activation=nn.Tanh, norm_factory: NormFactory=None, num_values=1):
+    assert len(observation_space.shape) == 1
+
+    fx_kwargs = dict(hidden_sizes=hidden_sizes, activation=activation, norm_factory=norm_factory)
+
+    def fx_rand_factory(): return FCFeatureExtractor(input_size=2 * observation_space.shape[0], **fx_kwargs)
+    def fx_action_factory(): return FCActionFeatureExtractor(input_size=observation_space.shape[0], pd=pd, **fx_kwargs)
+
+    pd = make_pd(action_space)
+    fx_disc, fx_gen, fx_q = fx_action_factory(), fx_rand_factory(), fx_action_factory()
+
+    disc_head = StateValueHead(fx_disc.output_size, num_out=num_values)
+    gen_head = PolicyHead(fx_gen.output_size, pd=pd)
+    q_head = StateValueHead(fx_q.output_size, num_out=num_values)
+    models = OrderedDict([
+        (fx_disc, dict(disc=disc_head)),
+        (fx_gen, dict(gen=gen_head)),
+        (fx_q, dict(q=q_head)),
+    ])
+    return ModularActor(models, False)
 
 
 def create_impala_fc_actor(observation_space, action_space, hidden_sizes=(128, 128), activation=nn.Tanh,
