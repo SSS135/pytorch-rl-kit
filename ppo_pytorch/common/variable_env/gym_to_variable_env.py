@@ -1,6 +1,6 @@
 from functools import partial
 
-import gym
+import gymnasium as gym
 import numpy as np
 from ppo_pytorch.common.env_factory import FrameSkipEnv, ChannelTranspose
 from ppo_pytorch.common.variable_env.async_variable_env import AsyncVariableEnv

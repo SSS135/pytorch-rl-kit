@@ -7,7 +7,7 @@ from enum import Enum
 from functools import partial
 from typing import Optional, Iterator
 
-import gym.spaces
+import gymnasium.spaces
 import numpy as np
 import torch
 import torch.autograd

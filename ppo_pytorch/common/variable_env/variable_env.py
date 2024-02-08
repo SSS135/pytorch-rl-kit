@@ -1,7 +1,7 @@
 from abc import abstractmethod, ABCMeta
 from typing import List
 
-import gym
+import gymnasium as gym
 import numpy as np
 
 from .variable_step_result import VariableStepResult

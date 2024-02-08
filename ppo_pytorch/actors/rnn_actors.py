@@ -2,12 +2,10 @@ from ppo_pytorch.common.activation_norm import ActivationNorm
 from ppo_pytorch.common.probability_distributions import make_pd
 from ppo_pytorch.common.probability_distributions import ProbabilityDistribution
 from ppo_pytorch.common.squash import squash
-from torch.distributions import TanhTransform
 
 from .actors import FeatureExtractorBase, create_ppo_actor, create_impala_actor
 import torch
 from torch import nn
-from ..common.qrnn import DenseQRNN, QRNN
 from torch import Tensor
 
 

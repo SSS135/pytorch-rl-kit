@@ -5,7 +5,7 @@ from copy import deepcopy
 from functools import partial
 from typing import Optional
 
-import gym.spaces
+import gymnasium.spaces
 import torch
 import torch.autograd
 import torch.autograd

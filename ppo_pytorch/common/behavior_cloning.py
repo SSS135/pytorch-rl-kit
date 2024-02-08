@@ -1,7 +1,7 @@
 import pathlib
 
 import PIL.Image
-import gym
+import gymnasium as gym
 from torch.nn.utils import clip_grad_norm_
 from optfn.virtual_adversarial_training import get_vat_inputs
 

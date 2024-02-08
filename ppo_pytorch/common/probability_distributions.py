@@ -4,7 +4,8 @@
 import math
 from typing import Dict, Any, List
 
-import gym.spaces
+import gymnasium as gym
+import gymnasium.spaces
 import numpy as np
 import torch
 import torch.distributions

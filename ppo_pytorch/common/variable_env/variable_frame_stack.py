@@ -4,7 +4,7 @@ from itertools import count
 from typing import Dict, Deque
 from unittest.mock import Mock, MagicMock
 
-import gym
+import gymnasium as gym
 import numpy as np
 import pytest
 

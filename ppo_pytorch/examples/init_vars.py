@@ -6,8 +6,8 @@ is_linux = platform.system() == 'Linux'
 
 import torch
 import ppo_pytorch as rl
-import gym
-import gym.spaces
+import gymnasium as gym
+import gymnasium.spaces
 import math
 import numpy as np
 import numpy.random as rng

@@ -1,9 +1,9 @@
 import random
 
-import gym
+import gymnasium as gym
 import numpy as np
-from gym import spaces
-from gym.envs.registration import register
+from gymnasium import spaces
+from gymnasium.envs.registration import register
 
 register(
     id='Repeat-v0',

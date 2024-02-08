@@ -40,10 +40,11 @@ class DataLoader:
 
     def _load_chunk(self, index):
         chunk = self.chunks[index]
-        chunk = *([slice(None)] * self.dim), chunk
+        chunk_shape = (*([slice(None)] * self.dim), *chunk.shape)
+        chunk = chunk.reshape(chunk_shape)
 
         def extract_chunk(name, x):
-            x = x[chunk]
+            x = x[chunk.to(x.device)]
             if self.chunk_fn is not None:
                 x = self.chunk_fn(name, x)
             if x.device != self.device:

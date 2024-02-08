@@ -1,7 +1,7 @@
 import numpy as np
-from gym import spaces
-from gym.envs.classic_control.acrobot import AcrobotEnv
-from gym.envs.registration import register
+from gymnasium import spaces
+from gymnasium.envs.classic_control.acrobot import AcrobotEnv
+from gymnasium.envs.registration import register
 
 register(
     id='AcrobotContinuous-v1',

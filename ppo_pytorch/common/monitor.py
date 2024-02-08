@@ -1,7 +1,7 @@
-from collections import defaultdict, Iterable
+from collections import defaultdict
 from typing import List
 
-import gym
+import gymnasium as gym
 
 
 class DefaultAttrDict(defaultdict):
@@ -30,7 +30,8 @@ class Monitor(gym.Wrapper):
         return self.env.reset(**kwargs)
 
     def step(self, action):
-        state, reward, done, info = self.env.step(action)
+        state, reward, term, trunc, info = self.env.step(action)
+        done = term or trunc
 
         self._add_step_info(self._data, info, reward)
         if done:

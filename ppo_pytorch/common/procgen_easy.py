@@ -1,4 +1,4 @@
-from gym import register
+from gymnasium import register
 from procgen.env import ENV_NAMES
 
 

@@ -12,7 +12,7 @@ if __name__ == '__main__':
 
     train_frames = 2_000_000
     num_envs = 64
-    env_factory = partial(SimpleVecEnv, env_name='Hopper-v4')
+    env_factory = partial(SimpleVecEnv, env_name='CartPole-v1')
 
     alg_class = PPO
     alg_params = create_fc_kwargs(

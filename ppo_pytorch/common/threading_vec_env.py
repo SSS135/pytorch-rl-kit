@@ -2,7 +2,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
-from baselines.common.vec_env import VecEnv
+from stable_baselines3.common.vec_env import VecEnv
 
 
 class ThreadingVecEnv:
@@ -21,12 +21,12 @@ class ThreadingVecEnv:
         self.ts += 1
         for (i, done) in enumerate(dones):
             if done:
-                obs[i] = self.envs[i].reset()
+                obs[i] = self.envs[i].reset()[0]
                 self.ts[i] = 0
         return np.array(obs), np.array(rews), np.array(dones), infos
 
     def reset(self):
-        results = [env.reset() for env in self.envs]
+        results = [env.reset()[0] for env in self.envs]
         return np.array(results)
 
     @property

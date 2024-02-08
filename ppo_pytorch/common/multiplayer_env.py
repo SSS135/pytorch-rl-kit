@@ -1,6 +1,6 @@
 from typing import List, Any
 
-import gym
+import gymnasium as gym
 import numpy as np
 
 

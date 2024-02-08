@@ -1,6 +1,6 @@
 from functools import partial
 
-import gym
+import gymnasium as gym
 import numpy as np
 from ppo_pytorch.common.atari_wrappers import NoopResetEnv, MaxAndSkipEnv, EpisodicLifeEnv, FireResetEnv, \
     FrameStack
