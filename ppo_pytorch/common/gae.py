@@ -16,7 +16,7 @@ def _check_data(rewards: Tensor, values: Tensor, dones: Tensor):
     assert values.dim() == 2, (rewards.shape, dones.shape, values.shape)
 
 
-@torch.jit.script
+@torch.compile
 def calc_advantages(rewards: Tensor, values: Tensor, dones: Tensor,
                     reward_discount: float, advantage_discount: float) -> Tensor:
     """
@@ -43,7 +43,7 @@ def calc_advantages(rewards: Tensor, values: Tensor, dones: Tensor,
     return advantages
 
 
-@torch.jit.script
+@torch.compile
 def calc_advantages_noreward(rewards: Tensor, values: Tensor, dones: Tensor,
                              reward_discount: float, advantage_discount: float) -> Tensor:
     _check_data(rewards, values, dones)
@@ -60,7 +60,7 @@ def calc_advantages_noreward(rewards: Tensor, values: Tensor, dones: Tensor,
     return targets[:-1] - values[:-1]
 
 
-@torch.jit.script
+@torch.compile
 def calc_value_targets(rewards: Tensor, values: Tensor, dones: Tensor,
                        reward_discount: float, gae_lambda: float = 1.0) -> Tensor:
     """
@@ -85,7 +85,7 @@ def calc_value_targets(rewards: Tensor, values: Tensor, dones: Tensor,
     return targets[:-1]
 
 
-@torch.jit.script
+@torch.compile
 def calc_upgo(rewards: Tensor, values: Tensor, dones: Tensor,
               reward_discount: float, lam: float = 1.0, action_values: Optional[Tensor] = None) -> Tensor:
     """
@@ -118,7 +118,7 @@ def calc_upgo(rewards: Tensor, values: Tensor, dones: Tensor,
     return targets[:-1]
 
 
-@torch.jit.script
+@torch.compile
 def calc_vtrace(rewards: Tensor, values: Tensor, dones: Tensor, probs_ratio: Tensor,
                 kl_div: Tensor, discount: float, kl_limit: float, lam: float) -> Tuple[Tensor, Tensor, Tensor]:
     _check_data(rewards, values, dones)
@@ -144,7 +144,7 @@ def calc_vtrace(rewards: Tensor, values: Tensor, dones: Tensor, probs_ratio: Ten
     return value_targets, advantages, c
 
 
-@torch.jit.script
+@torch.compile
 def calc_retrace(rewards: Tensor, state_values: Tensor, action_values: Tensor, dones: Tensor, probs_ratio: Tensor,
                  kl_div: Tensor, discount: float, kl_limit: float, lam: float) -> Tensor:
     _check_data(rewards, state_values, dones)
@@ -168,6 +168,7 @@ def calc_retrace(rewards: Tensor, state_values: Tensor, action_values: Tensor, d
     return value_targets
 
 
+@torch.compile
 def assert_equal_tensors(a, b, abs_tol=1e-4):
     assert a.shape == b.shape, (a.shape, b.shape)
     assert (a - b).abs().max().item() < abs_tol, (a, b)
