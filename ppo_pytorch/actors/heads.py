@@ -33,7 +33,7 @@ class PolicyHead(HeadBase):
     Actor-critic head. Used in PPO / A3C.
     """
 
-    def __init__(self, in_features, pd: ProbabilityDistribution, layer_norm=False):
+    def __init__(self, in_features, pd: ProbabilityDistribution):
         """
         Args:
             in_features: Input feature vector width.
@@ -41,22 +41,14 @@ class PolicyHead(HeadBase):
         """
         super().__init__(in_features)
         self.pd = pd
-        self.layer_norm = layer_norm
         self.linear = Linear(in_features, self.pd.prob_vector_len)
-        self.ln = nn.LayerNorm(in_features)
         self.reset_weights()
 
     def reset_weights(self):
-        if self.layer_norm:
-            normalized_columns_initializer_(self.linear.weight.data, 1.0)
-            self.linear.bias.data.fill_(0)
-        else:
-            normalized_columns_initializer_(self.linear.weight.data, 0.1)
-            self.linear.bias.data.fill_(0)
+        self.linear.weight.data.zero_()
+        self.linear.bias.data.zero_()
 
     def forward(self, x, **kwargs):
-        if self.layer_norm:
-            x = self.ln(x)
         return self.linear(x)
 
 
@@ -121,7 +113,7 @@ class DoubleActionValueHead(HeadBase):
 
     def reset_weights(self):
         for linear in self.linears:
-            normalized_columns_initializer_(linear.weight.data, 1.0)
+            normalized_columns_initializer_(linear.weight.data, 0.01)
             linear.bias.data.fill_(0)
 
     def forward(self, features, actions=None, action_noise_scale=0, **kwargs):
@@ -159,19 +151,8 @@ class StateValueHead(HeadBase):
         self.reset_weights()
 
     def reset_weights(self):
-        normalized_columns_initializer_(self.linear.weight.data, 1.0)
-        self.linear.bias.data.fill_(0)
+        self.linear.weight.data.zero_()
+        self.linear.bias.data.zero_()
 
     def forward(self, x, **kwargs):
-        # (*xd, bins, 1)
         return self.linear(x)
-
-    def normalize(self, mean, std):
-        self.linear.bias.data -= mean
-        self.linear.bias.data /= std
-        self.linear.weight.data /= std
-
-    def unnormalize(self, mean, std):
-        self.linear.weight.data *= std
-        self.linear.bias.data *= std
-        self.linear.bias.data += mean

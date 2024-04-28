@@ -84,7 +84,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
     Convolution network.
     """
     def __init__(self, input_shape, cnn_kind: Union[str, Callable] = 'normal',
-                 cnn_activation=partial(nn.ReLU, inplace=True),
+                 cnn_activation=nn.GELU,
                  add_positional_features=False, normalize_input=False, activation_norm=True, **kwargs):
         """
         Args:
@@ -149,18 +149,18 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                     nn.MaxPool2d(3, 2, 1),
                     ResidualBlock(
                         *cnn_norm_fn(c_out),
-                        nn.ReLU(True),
+                        nn.GELU(),
                         nn.Conv2d(c_out, c_out, 3, 1, 1),
                         *cnn_norm_fn(c_out),
-                        nn.ReLU(True),
+                        nn.GELU(),
                         nn.Conv2d(c_out, c_out, 3, 1, 1),
                     ),
                     ResidualBlock(
                         *cnn_norm_fn(c_out),
-                        nn.ReLU(True),
+                        nn.GELU(),
                         nn.Conv2d(c_out, c_out, 3, 1, 1),
                         *cnn_norm_fn(c_out),
-                        nn.ReLU(True),
+                        nn.GELU(),
                         nn.Conv2d(c_out, c_out, 3, 1, 1),
                     ),
                 )
@@ -174,7 +174,7 @@ class CNNFeatureExtractor(FeatureExtractorBase):
                 # impala_block(64 * c_mult, 64 * c_mult),
                 nn.Sequential(
                     *cnn_norm_fn(32 * c_mult),
-                    nn.ReLU(True),
+                    nn.GELU(),
                 )
             )
         else:
@@ -286,7 +286,7 @@ class CNNFCFeatureExtractor(FeatureExtractorBase):
 
 
 def create_ppo_cnn_actor(observation_space, action_space, cnn_kind='normal',
-                         cnn_activation=nn.ReLU, norm_factory: NormFactory=None,
+                         cnn_activation=nn.GELU, norm_factory: NormFactory=None,
                          split_policy_value_network=False, num_values=1,
                          add_positional_features=False, normalize_input=False):
     assert len(observation_space.shape) == 3
@@ -298,7 +298,7 @@ def create_ppo_cnn_actor(observation_space, action_space, cnn_kind='normal',
 
 
 def create_impala_cnn_actor(observation_space, action_space, cnn_kind='normal',
-                            activation=nn.ReLU, norm_factory: NormFactory=None, num_values=1,
+                            activation=nn.GELU, norm_factory: NormFactory=None, num_values=1,
                             add_positional_features=False, normalize_input=False, goal_size=0, fc_size=256,
                             split_policy_value_network=False):
     assert len(observation_space.shape) == 3
@@ -314,7 +314,7 @@ def create_impala_cnn_actor(observation_space, action_space, cnn_kind='normal',
 
 
 def create_impala_cnn_rnn_actor(observation_space, action_space, cnn_kind='normal',
-                                cnn_activation=nn.ReLU, cnn_norm_factory: NormFactory=None,
+                                cnn_activation=nn.GELU, cnn_norm_factory: NormFactory=None,
                                 rnn_layers=2, rnn_hidden_size=256,
                                 num_values=1, add_positional_features=False, normalize_input=False, goal_size=0):
     assert len(observation_space.shape) == 3

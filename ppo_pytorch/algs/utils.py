@@ -19,7 +19,7 @@ def lerp_module_(start, end, factor):
             a.data.lerp_(b.data.to(a.device), factor)
 
 
-@torch.jit.script
+@torch.compile
 def v_mpo_loss(logp: Tensor, advantages: Tensor, adv_temp: Tensor, target_temp: float) -> Tensor:
     assert advantages.shape == logp.shape[:-1]
 
@@ -36,7 +36,7 @@ def v_mpo_loss(logp: Tensor, advantages: Tensor, adv_temp: Tensor, target_temp: 
     return loss_policy.mean(-1).sum() + loss_temp.mean()
 
 
-@torch.jit.script
+@torch.compile
 def impala_loss(logp: Tensor, advantages: Tensor) -> Tensor:
     assert advantages.shape == logp.shape[:-1]
     loss_policy = advantages.unsqueeze(-1).detach().mul(-logp)

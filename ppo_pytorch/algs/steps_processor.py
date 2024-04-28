@@ -13,16 +13,16 @@ class StepsProcessor:
                  pd,
                  reward_discount,
                  advantage_discount,
-                 reward_scale,
-                 mean_norm,
-                 squash_values):
+                 minmax_perc=(0.05, 0.95),
+                 perc_decay=0.99,
+                 perc_lowhigh=None):
         super().__init__()
         self.pd = pd
         self.reward_discount = reward_discount
         self.advantage_discount = advantage_discount
-        self.reward_scale = reward_scale
-        self.mean_norm = mean_norm
-        self.squash_values = squash_values
+        self.minmax_perc = minmax_perc
+        self.perc_decay = perc_decay
+        self.perc_lowhigh = perc_lowhigh or torch.tensor([0, 1])
         self.data = AttrDict()
 
     def append_values(self, **new_data: torch.Tensor):
@@ -58,17 +58,6 @@ class StepsProcessor:
         return values if torch.is_tensor(values) else torch.stack(values, dim=0)
 
     def _process_rewards(self, rewards, values, dones):
-        norm_rewards = self.reward_scale * rewards
-
-        if self.squash_values:
-            values = unsquash(values)
-        state_value_targets = calc_value_targets(norm_rewards, values, dones, self.reward_discount, self.reward_discount)
-        advantages = calc_advantages(norm_rewards, values, dones, self.reward_discount, self.advantage_discount)
-        advantages = self._normalize_advantages(advantages)
-        if self.squash_values:
-            state_value_targets = squash(state_value_targets)
-
-        return norm_rewards, state_value_targets, advantages
-
-    def _normalize_advantages(self, advantages):
-        return (advantages - advantages.mean()) / max(advantages.std(), 1e-6)
+        state_value_targets = calc_value_targets(rewards, values, dones, self.reward_discount, self.reward_discount)
+        advantages = calc_advantages(rewards, values, dones, self.reward_discount, self.advantage_discount)
+        return rewards, state_value_targets, advantages

@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 from torch import Tensor
 
@@ -29,6 +30,39 @@ class RunningNorm:
             values = values / max(rms, self.eps)
 
         return values
+
+
+class RunningQuantileNorm:
+    def __init__(self, momentum=0.99, perc_low=0.05, perc_high=0.95, min_scale=1):
+        self.momentum = momentum
+        self.perc_low = perc_low
+        self.perc_high = perc_high
+        self.min_scale = min_scale
+        self.stat_lowhigh = torch.tensor([0, 0])
+        self._iter = 0
+
+    def update(self, values):
+        q = torch.tensor([self.perc_low, self.perc_high])
+        perc = torch.quantile(values, q)
+        assert perc.shape == (2,)
+        self.stat_lowhigh = lerp(perc, self.stat_lowhigh, self.momentum)
+        self._iter += 1
+
+    @property
+    def scale(self):
+        bias_corr = 1 - self.momentum ** self._iter
+        scale = torch.maximum(torch.tensor([1]), (self.stat_lowhigh[1] - self.stat_lowhigh[0]) / bias_corr)
+        return scale
+
+    def __call__(self, values, update_stats=True):
+        if update_stats:
+            self.update(values)
+        return values / self.scale
+
+
+@torch.compile
+def lerp(a, b, t):
+    return a * (1 - t) + b * t
 
 
 class GradRunningNorm(nn.Module):

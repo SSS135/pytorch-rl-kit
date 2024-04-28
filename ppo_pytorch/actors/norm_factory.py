@@ -2,6 +2,8 @@ from typing import Callable
 
 import torch.nn as nn
 
+from ppo_pytorch.common.rmsnorm import RMSNorm, RMSNormChannelLast, LayerNormChannelLast
+
 
 class NormFactory:
     def __init__(self, allow_after_first_layer=True, allow_fc=True, allow_cnn=True, disable_bias=True):
@@ -56,14 +58,23 @@ class InstanceNormFactory(NormFactory):
 
 
 class LayerNormFactory(NormFactory):
-    def __init__(self, allow_after_first_layer=False, *args, **kwargs):
-        super().__init__(allow_after_first_layer, allow_cnn=False, *args, **kwargs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
     def _fc_factory(self, num_features):
-        return nn.LayerNorm((num_features,))
+        return LayerNormChannelLast((num_features,))
 
-    def _cnn_factory(self, num_features):
-        raise NotImplementedError()
+    _cnn_factory = _fc_factory
+
+
+class RMSNormFactory(NormFactory):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def _fc_factory(self, num_features):
+        return RMSNormChannelLast(num_features)
+
+    _cnn_factory = _fc_factory
 
 
 class BatchNormFactory(NormFactory):

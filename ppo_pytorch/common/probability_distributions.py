@@ -5,7 +5,6 @@ import math
 from typing import Dict, Any, List
 
 import gymnasium as gym
-import gymnasium.spaces
 import numpy as np
 import torch
 import torch.distributions
@@ -22,12 +21,12 @@ def make_pd(space: gym.Space):
     elif isinstance(space, gym.spaces.Box):
         assert len(space.shape) == 1
         # return LinearTanhPd(space.shape[0])
-        return FixedStdGaussianPd(space.shape[0], 0.3)
+        # return FixedStdGaussianPd(space.shape[0], 0.3)
         # return BetaPd(space.shape[0], 1)
         # return DiagGaussianPd(space.shape[0])
         # return MixturePd(space.shape[0], 4, partial(BetaPd, h=1))
         # return PointCloudPd(space.shape[0], max_norm=2.0, cloud_size=16)
-        # return DiscretizedCategoricalPd(space.shape[0], 7, ordinal=True)
+        return DiscretizedCategoricalPd(space.shape[0], 9, ordinal=True)
     elif isinstance(space, gym.spaces.MultiBinary):
         return BernoulliPd(space.n)
     elif isinstance(space, gym.spaces.MultiDiscrete):
@@ -130,8 +129,10 @@ class CategoricalPd(ProbabilityDistribution):
 
     def logp(self, a, logits):
         logits = self._process_logits(logits)
-        logp = F.log_softmax(logits, dim=-1)
-        return logp.gather(dim=-1, index=a)
+        lsm = F.log_softmax(logits, dim=-1)
+        logp = lsm.gather(dim=-1, index=a)
+        assert logp.shape == (*logits.shape[:-1], 1)
+        return logp
 
     def kl(self, logits0, logits1):
         logits0 = self._process_logits(logits0)
@@ -543,13 +544,13 @@ class FixedStdGaussianPd(ProbabilityDistribution):
         return action.clamp(-1, 1)
 
 
-@torch.jit.script
+@torch.compile
 def limit_abs_mean(v: torch.Tensor, limit: float, dim: int = -1):
     len = v.abs().mean(dim, keepdim=True).clamp(min=limit)
     return v * (limit / len)
 
 
-@torch.jit.script
+@torch.compile
 def limit_abs_max(v: torch.Tensor, limit: float, dim: int = -1):
     len = v.abs().max(dim, keepdim=True)[0].clamp(min=limit)
     return v * (limit / len)
@@ -594,7 +595,8 @@ class DiscretizedCategoricalPd(ProbabilityDistribution):
         return bin_indexes.float() * (2 / (self.num_bins - 1.0)) - 1
 
 
-@torch.jit.script
+
+@torch.compile
 def make_logits_ordnial(logits):
     logits_pos = F.logsigmoid(logits).unsqueeze(-2)
     logits_neg = F.logsigmoid(-logits).unsqueeze(-2)

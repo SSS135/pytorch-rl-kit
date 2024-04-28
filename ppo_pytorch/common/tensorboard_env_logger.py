@@ -5,6 +5,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import List, Union, Dict, Tuple, Optional
 
+import torch
+
 from .variable_env.variable_step_result import VariableStepResult
 from torch.utils.tensorboard import SummaryWriter
 from .utils import get_valid_filename
@@ -127,47 +129,52 @@ class TensorboardEnvLogger:
             self._last_log_frame += self.log_interval
             wrmean = np.mean(self._reward_window)
             wrstd = np.std(self._reward_window)
-            self._logger.add_scalar('Reward Window/Mean By Episode', wrmean, self._frame)
-            self._logger.add_scalar('Reward Window/Std By Episode', wrstd, self._frame)
-            self._logger.add_scalar('Reward Window/Norm Std By Episode', wrstd / max(1e-5, abs(wrmean)), self._frame)
-            self._logger.add_scalar('Episode Lengths/Sample', self._new_rewards[-1].len,
-                                    self._new_rewards[-1].episode_index)
-            self._logger.add_scalar('Rewards By Episode/Sample', self._new_rewards[-1].true_reward,
-                                    self._new_rewards[-1].episode_index)
-            self._logger.add_scalar('Rewards By Frame/Sample', self._new_rewards[-1].true_reward,
-                                    self._new_rewards[-1].step_index)
-            self._logger.add_histogram('Rewards By Frame/Rewards', np.array([r.true_reward for r in self._new_rewards]),
+            self.add_scalar('Reward Window/Mean By Episode', wrmean, self._frame)
+            self.add_scalar('Reward Window/Std By Episode', wrstd, self._frame)
+            self.add_scalar('Reward Window/Norm Std By Episode', wrstd / max(1e-5, abs(wrmean)), self._frame)
+            self.add_scalar('Episode Lengths/Sample', self._new_rewards[-1].len,
+                            self._new_rewards[-1].episode_index)
+            self.add_scalar('Rewards By Episode/Sample', self._new_rewards[-1].true_reward,
+                            self._new_rewards[-1].episode_index)
+            self.add_scalar('Rewards By Frame/Sample', self._new_rewards[-1].true_reward,
+                            self._new_rewards[-1].step_index)
+            self.add_histogram('Rewards By Frame/Rewards', np.array([r.true_reward for r in self._new_rewards]),
                                        self._new_rewards[-1].step_index)
 
             last_ep = self._new_rewards[-1].episode_index
             last_frame = self._new_rewards[-1].step_index
             avg_len = np.mean([r.len for r in self._new_rewards])
             avg_r = np.mean([r.true_reward for r in self._new_rewards])
-            self._logger.add_scalar('Episode Lengths/Average', avg_len, last_ep)
-            self._logger.add_scalar('Rewards By Episode/Average By Episode', avg_r, last_ep)
-            self._logger.add_scalar('Rewards By Frame/Average reward', avg_r, last_frame)
-            self._logger.add_scalar('Rewards By Frame/Average len', avg_len, last_frame)
+            self.add_scalar('Episode Lengths/Average', avg_len, last_ep)
+            self.add_scalar('Rewards By Episode/Average By Episode', avg_r, last_ep)
+            self.add_scalar('Rewards By Frame/Average reward', avg_r, last_frame)
+            self.add_scalar('Rewards By Frame/Average len', avg_len, last_frame)
 
             if self._new_rewards[0].rewards is not None:
                 # (R, B)
                 rewards = np.stack([r.rewards for r in self._new_rewards], 0).T
                 for rname, r in zip(self._aux_reward_names, rewards):
-                    self._logger.add_scalar(f'Rewards Aux/Average {rname}', np.mean(r), last_frame)
+                    self.add_scalar(f'Rewards Aux/Average {rname}', np.mean(r), last_frame)
 
             self._new_rewards.clear()
             self._episodes_file.flush()
 
-    def add_scalar(self, *args, **kwargs):
-        return self._logger.add_scalar(*args, **kwargs)
+    def add_scalar(self, name, param, *args, **kwargs):
+        return self._logger.add_scalar(name, self._cast_param(param), *args, **kwargs)
 
-    def add_histogram(self, *args, **kwargs):
-        return self._logger.add_histogram(*args, **kwargs)
+    def add_histogram(self, name, param, *args, **kwargs):
+        return self._logger.add_histogram(name, self._cast_param(param), *args, **kwargs)
 
-    def add_image(self, *args, **kwargs):
-        return self._logger.add_image(*args, **kwargs)
+    def add_image(self, name, param, *args, **kwargs):
+        return self._logger.add_image(name, self._cast_param(param), *args, **kwargs)
 
-    def add_text(self, *args, **kwargs):
-        return self._logger.add_text(*args, **kwargs)
+    def add_text(self, name, param, *args, **kwargs):
+        return self._logger.add_text(name, self._cast_param(param), *args, **kwargs)
+
+    def _cast_param(self, param):
+        if isinstance(param, torch.Tensor) and param.dtype.is_floating_point:
+            return param.float()
+        return param
 
     @staticmethod
     def get_log_dir(log_root_dir, alg_name, env_name, tag):

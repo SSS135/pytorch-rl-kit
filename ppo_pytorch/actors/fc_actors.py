@@ -17,6 +17,16 @@ from .norm_factory import NormFactory
 from ..common.activation_norm import ActivationNorm
 from ..common.probability_distributions import ProbabilityDistribution, make_pd
 from ..config import Linear
+import torch.nn.functional as F
+
+
+class SwiGLU(nn.Module):
+    def forward(self, x):
+        x, gate = x.chunk(2, dim=-1)
+        return F.silu(gate) * x
+
+
+Act = nn.SiLU
 
 
 def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm: NormFactory = None):
@@ -36,7 +46,7 @@ def create_fc(in_size: int, hidden_sizes: List[int], activation: Callable, norm:
     seq = []
     for i in range(len(hidden_sizes)):
         n_in = in_size if i == 0 else hidden_sizes[i - 1]
-        n_out = hidden_sizes[i]
+        n_out = hidden_sizes[i] * (2 if activation == SwiGLU else 1)
         layer = [Linear(n_in, n_out, bias=norm is None or not norm.disable_bias)]
         if norm is not None and norm.allow_fc and (norm.allow_after_first_layer or i != 0):
             layer.append(norm.create_fc_norm(n_out, i == 0))
@@ -52,10 +62,10 @@ def create_residual_fc(input_size, hidden_size, use_norm=False):
     def res_block():
         return ResidualBlock(
             *norm(),
-            nn.ReLU(),
+            Act(),
             Linear(hidden_size, hidden_size),
             *norm(),
-            nn.ReLU(),
+            Act(),
             Linear(hidden_size, hidden_size),
         )
     return nn.Sequential(
@@ -67,58 +77,35 @@ def create_residual_fc(input_size, hidden_size, use_norm=False):
         res_block(),
         res_block(),
         *norm(),
-        nn.ReLU(),
+        Act(),
     )
 
 
 class FCFeatureExtractor(FeatureExtractorBase):
-    def __init__(self, input_size: int, hidden_sizes=(128, 128), activation=nn.Tanh, goal_size=0, **kwargs):
+    def __init__(self, input_size: int, hidden_sizes=(128, 128), activation=Act, **kwargs):
         super().__init__(**kwargs)
         self.input_size = input_size
         self.hidden_sizes = hidden_sizes
         self.activation = activation
-        self.goal_size = goal_size
         self.model = create_fc(input_size, hidden_sizes, activation, self.norm_factory)
-        self.out_embedding = Linear(goal_size, hidden_sizes[-1]) if goal_size != 0 else None
-
-        # self.model = create_residual_fc(input_size, hidden_sizes[0])
-        # super().reset_weights()
-        # fixup_init(self.model)
-        # self.model = torch.jit.trace_module(self.model, dict(forward=torch.randn((8, input_size))))
-
-    # def reset_weights(self):
-    #     pass
-    #     # super().reset_weights()
-    #     # fixup_init(self.model)
+        self.model = torch.compile(self.model, fullgraph=True, mode='max-autotune')
 
     @property
     def output_size(self):
         return self.hidden_sizes[-1]
 
-    def forward(self, input: torch.Tensor, logger=None, cur_step=None, goal=None, **kwargs):
+    def forward(self, input: torch.Tensor, logger=None, cur_step=None, **kwargs):
         x = input.reshape(-1, input.shape[-1])
-        if self.goal_size != 0:
-            goal = goal.reshape(-1, goal.shape[-1])
-        x = self._extract_features(x, goal, logger, cur_step)
+        x = self._extract_features(x, logger, cur_step)
         return x.reshape(*input.shape[:-1], -1)
 
-    def _extract_features(self, x, goal,  logger, cur_step):
-        for i, layer in enumerate(self.model):
-            x = layer(x)
-            if logger is not None:
-                logger.add_histogram(f'layer_{i}_output', x, cur_step)
-        if self.goal_size != 0:
-            x = x * 2 * self.out_embedding(goal).sigmoid()
-        return x
-
-
-class BatchNormLast(nn.BatchNorm1d):
-    def __init__(self, num_features, eps=1e-5, momentum=0.01, affine=True,
-                 track_running_stats=True):
-        super().__init__(num_features, eps, momentum, affine, track_running_stats)
-
-    def forward(self, input):
-        return super().forward(input.reshape(-1, input.shape[-1])).reshape(input.shape)
+    def _extract_features(self, x, logger, cur_step):
+        return self.model(x)
+        # for i, layer in enumerate(self.model):
+        #     x = layer(x)
+        #     if logger is not None:
+        #         logger.add_histogram(f'layer_{i}_output', x, cur_step)
+        # return x
 
 
 class GroupNormLast(nn.GroupNorm):
@@ -197,94 +184,8 @@ class FCAttentionFeatureExtractor(FeatureExtractorBase):
         return x
 
 
-class FCImaginationFeatureExtractor(FeatureExtractorBase):
-    def __init__(self, input_size: int, hidden_sizes=(128, 128), activation=nn.Tanh, goal_size=None,
-                 pd=None, num_sims=4, sim_depth=4, **kwargs):
-        super().__init__(**kwargs)
-        self.input_size = input_size
-        self.hidden_sizes = hidden_sizes
-        self.activation = activation
-        self.goal_size = goal_size
-        self.pd = pd
-        self.num_sims = num_sims
-        self.sim_depth = sim_depth
-        self.gate_reduce = 8
-        self.model = create_fc(input_size, hidden_sizes, activation, self.norm_factory)
-        self.out_embedding = Linear(goal_size, hidden_sizes[-1]) if goal_size is not None else None
-
-        h = hidden_sizes[-1]
-        self.action_linear = Linear(pd.input_vector_len, h)
-        self.vrld_layer = nn.Sequential(SiLU(), Linear(h, 3 + pd.prob_vector_len))
-        self.feature_prepare_linear = Linear(h, h)
-        self.world_model = nn.Sequential(
-            ActivationNorm(1),
-            SiLU(),
-            Linear(h, h),
-            ActivationNorm(1),
-            SiLU(),
-            Linear(h, h + h // self.gate_reduce),
-        )
-        self._end_gate_linear = Linear(h, h // self.gate_reduce)
-
-    @property
-    def output_size(self):
-        return self.hidden_sizes[-1] * 2
-
-    def forward(self, input: torch.Tensor, logger=None, cur_step=None, goal=None, **kwargs):
-        x = input.reshape(-1, input.shape[-1])
-        if self.goal_size is not None:
-            goal = goal.reshape(-1, goal.shape[-1])
-
-        x_hall, x = self._extract_features(x, goal, logger, cur_step)
-        return dict(features=x_hall.reshape(*input.shape[:-1], -1), features_raw=x.reshape(*input.shape[:-1], -1))
-
-    def _extract_features(self, x, goal,  logger, cur_step):
-        for i, layer in enumerate(self.model):
-            x = layer(x)
-            if logger is not None:
-                logger.add_histogram(f'layer_{i}_output', x, cur_step)
-
-        if self.goal_size is not None:
-            x = x * 2 * self.out_embedding(goal).sigmoid()
-
-        x_fp = self.feature_prepare_linear(x.detach())
-        x_hall = torch.cat([x, self._imagine(x_fp)], -1)
-        return x_hall, x_fp
-
-    def _imagine(self, features: Tensor) -> Tensor:
-        features = torch.stack([features] * self.num_sims, 0)
-        for _ in range(self.sim_depth):
-            _, _, logits, _ = self._get_vrld(features)
-            ac = self.pd.sample(logits.detach())
-            features = self._world_model_step(features, ac)
-
-        return silu(features.mean(0))
-
-    def run_world_model(self, features, actions):
-        data = [self._get_vrld(features)]
-        for i, ac in enumerate(actions):
-            features = self._world_model_step(features, ac)
-            if i + 1 != len(actions):
-                data.append(self._get_vrld(features))
-        return [torch.stack(v, 0) for v in zip(*data)]
-
-    def _world_model_step(self, features, action):
-        h = self.hidden_sizes[-1]
-        ac_enc = 2 * self.action_linear(self.pd.to_inputs(action)).sigmoid()
-        new_f, gate = self.world_model(ac_enc * features).split([h, h // self.gate_reduce], -1)
-
-        gate = gate.repeat_interleave(self.gate_reduce, -1).sigmoid()
-        features = gate * new_f + (1 - gate) * features
-
-        return features
-
-    def _get_vrld(self, features):
-        v, r, l, d = self.vrld_layer(features).split([1, 1, self.pd.prob_vector_len, 1], -1)
-        return unsquash(v), r, unsquash(l), d
-
-
 class FCActionFeatureExtractor(FeatureExtractorBase):
-    def __init__(self, input_size: int, pd: ProbabilityDistribution, hidden_sizes=(256, 256), activation=nn.ReLU, **kwargs):
+    def __init__(self, input_size: int, pd: ProbabilityDistribution, hidden_sizes=(256, 256), activation=Act, **kwargs):
         super().__init__(**kwargs)
         self.input_size = input_size
         self.pd = pd
@@ -328,25 +229,20 @@ class FCActionFeatureExtractor(FeatureExtractorBase):
 
 
 def create_ppo_fc_actor(observation_space, action_space, hidden_sizes=(64, 64),
-                        activation=nn.Tanh, norm_factory: NormFactory=None,
-                        split_policy_value_network=True, num_values=1, goal_size=0,
-                        use_imagination=False):
+                        activation=Act, norm_factory: NormFactory=None,
+                        split_policy_value_network=True, num_values=1):
     assert len(observation_space.shape) == 1
 
     fx_kwargs = dict(input_size=observation_space.shape[0], hidden_sizes=hidden_sizes, activation=activation,
-                     norm_factory=norm_factory, goal_size=goal_size)
+                     norm_factory=norm_factory)
 
-    if use_imagination:
-        pd = make_pd(action_space)
-        def fx_factory(): return FCImaginationFeatureExtractor(**fx_kwargs, pd=pd)
-    else:
-        def fx_factory(): return FCFeatureExtractor(**fx_kwargs)
+    def fx_factory(): return FCFeatureExtractor(**fx_kwargs)
 
     return create_ppo_actor(action_space, fx_factory, split_policy_value_network, num_values=num_values)
 
 
 def create_advppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 128),
-                           activation=nn.Tanh, norm_factory: NormFactory=None, num_values=1):
+                           activation=Act, norm_factory: NormFactory=None, num_values=1):
     assert len(observation_space.shape) == 1
 
     fx_kwargs = dict(hidden_sizes=hidden_sizes, activation=activation, norm_factory=norm_factory)
@@ -368,19 +264,14 @@ def create_advppo_fc_actor(observation_space, action_space, hidden_sizes=(128, 1
     return ModularActor(models, False)
 
 
-def create_impala_fc_actor(observation_space, action_space, hidden_sizes=(128, 128), activation=nn.Tanh,
-                           norm_factory: NormFactory=None, num_values=1, goal_size=None, use_imagination=False,
-                           split_policy_value_network=True):
+def create_impala_fc_actor(observation_space, action_space, hidden_sizes=(128, 128), activation=Act,
+                           norm_factory: NormFactory=None, num_values=1, split_policy_value_network=True):
     assert len(observation_space.shape) == 1
 
     fx_kwargs = dict(input_size=observation_space.shape[0], hidden_sizes=hidden_sizes, activation=activation,
-                     norm_factory=norm_factory, goal_size=goal_size)
+                     norm_factory=norm_factory)
 
-    if use_imagination:
-        pd = make_pd(action_space)
-        def fx_factory(): return FCImaginationFeatureExtractor(**fx_kwargs, pd=pd)
-    else:
-        def fx_factory(): return FCFeatureExtractor(**fx_kwargs)
+    def fx_factory(): return FCFeatureExtractor(**fx_kwargs)
 
     return create_impala_actor(action_space, fx_factory, split_policy_value_network, num_values, False)
 
@@ -396,7 +287,7 @@ def create_impala_attention_actor(observation_space, action_space, num_units, un
     return create_impala_actor(action_space, fx_factory, split_policy_value_network, num_values, False)
 
 
-def create_sac_fc_actor(observation_space, action_space, hidden_sizes=(128, 128), activation=nn.Tanh,
+def create_sac_fc_actor(observation_space, action_space, hidden_sizes=(128, 128), activation=Act,
                         norm_factory: NormFactory = None):
     assert len(observation_space.shape) == 1
     pd = make_pd(action_space)
